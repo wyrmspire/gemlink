@@ -5,6 +5,7 @@ import fs from "fs/promises";
 import twilio from "twilio";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { createBoardroomSession, listBoardroomSessions, readBoardroomSession } from "./boardroom";
 
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 dotenv.config();
@@ -91,6 +92,27 @@ async function patchManifest(
 function appendLog(manifest: JobManifest, message: string) {
   const stamped = `[${new Date().toISOString()}] ${message}`;
   return [...(manifest.logs || []), stamped].slice(-40);
+}
+
+function pcm16ToWav(buffer: Buffer, sampleRate = 24000, channels = 1) {
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * channels * bitsPerSample / 8;
+  const blockAlign = channels * bitsPerSample / 8;
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + buffer.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(buffer.length, 40);
+  return Buffer.concat([header, buffer]);
 }
 
 async function collectHistory() {
@@ -328,11 +350,34 @@ async function startServer() {
         },
       });
 
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      const inlineAudio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+      const base64Audio = inlineAudio?.data;
+      const mimeType = inlineAudio?.mimeType || "audio/L16;codec=pcm;rate=24000";
       const outputs: string[] = [];
+      let savedLabel = mimeType;
       if (base64Audio) {
-        const fileName = "output.mp3";
-        await fs.writeFile(path.join(getJobDir("voice", jobId), fileName), Buffer.from(base64Audio, "base64"));
+        const rawBuffer = Buffer.from(base64Audio, "base64");
+        let fileName = "output.bin";
+        let saveBuffer = rawBuffer;
+
+        if (mimeType.includes("audio/L16") || mimeType.includes("pcm")) {
+          const rateMatch = mimeType.match(/rate=(\d+)/i);
+          const sampleRate = rateMatch ? Number(rateMatch[1]) : 24000;
+          fileName = "output.wav";
+          saveBuffer = pcm16ToWav(rawBuffer, sampleRate, 1);
+          savedLabel = `WAV wrapped from ${mimeType}`;
+        } else if (mimeType.includes("wav")) {
+          fileName = "output.wav";
+          savedLabel = "WAV";
+        } else if (mimeType.includes("mpeg") || mimeType.includes("mp3")) {
+          fileName = "output.mp3";
+          savedLabel = "MP3";
+        } else if (mimeType.includes("ogg")) {
+          fileName = "output.ogg";
+          savedLabel = "OGG";
+        }
+
+        await fs.writeFile(path.join(getJobDir("voice", jobId), fileName), saveBuffer);
         outputs.push(`/jobs/voice/${jobId}/${fileName}`);
       }
 
@@ -341,7 +386,7 @@ async function startServer() {
         status: outputs.length > 0 ? "completed" : "failed",
         outputs,
         error: outputs.length > 0 ? undefined : "Model returned no audio data.",
-        logs: appendLog(current, outputs.length > 0 ? "Audio saved locally." : "No audio data returned."),
+        logs: appendLog(current, outputs.length > 0 ? `Audio saved locally (${savedLabel}).` : "No audio data returned."),
       }));
 
       res.json(finalManifest);
@@ -357,6 +402,34 @@ async function startServer() {
     } catch (error: any) {
       console.error("History Error:", error);
       res.status(500).json({ error: "Failed to fetch history" });
+    }
+  });
+
+  api.get("/boardroom/sessions", async (_req, res) => {
+    try {
+      res.json(await listBoardroomSessions());
+    } catch (error: any) {
+      console.error("Boardroom History Error:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch boardroom sessions" });
+    }
+  });
+
+  api.get("/boardroom/sessions/:id", async (req, res) => {
+    try {
+      res.json(await readBoardroomSession(req.params.id));
+    } catch (error: any) {
+      console.error("Boardroom Session Read Error:", error);
+      res.status(404).json({ error: error.message || "Boardroom session not found" });
+    }
+  });
+
+  api.post("/boardroom/sessions", async (req, res) => {
+    try {
+      const session = await createBoardroomSession(req.body || {});
+      res.status(201).json(session);
+    } catch (error: any) {
+      console.error("Boardroom Session Error:", error);
+      res.status(500).json({ error: error.message || "Failed to create boardroom session" });
     }
   });
 

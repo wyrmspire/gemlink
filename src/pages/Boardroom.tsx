@@ -1,57 +1,145 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useBrand } from "../context/BrandContext";
 import { useApiKey } from "../components/ApiKeyGuard";
 import { motion } from "motion/react";
-import { GoogleGenAI } from "@google/genai";
-import { Loader2, Send, Users } from "lucide-react";
+import { AlertCircle, CheckCircle2, ClipboardList, Loader2, RefreshCw, Send, Users } from "lucide-react";
 
-interface Message {
+interface BoardroomParticipant {
+  id: string;
+  name: string;
   role: string;
-  content: string;
-  agent: string;
+  brief: string;
 }
+
+interface BoardroomTurn {
+  id: string;
+  participantId: string;
+  participantName: string;
+  role: "seat" | "system";
+  kind: "perspective" | "summary";
+  content: string;
+  createdAt: string;
+}
+
+interface BoardroomPerspective {
+  participantId: string;
+  participantName: string;
+  stance: string;
+  risks: string[];
+  opportunities: string[];
+  recommendations: string[];
+}
+
+interface BoardroomSession {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  status: "pending" | "completed" | "failed";
+  topic: string;
+  context: string;
+  participants: BoardroomParticipant[];
+  turns: BoardroomTurn[];
+  result: {
+    summary: string;
+    nextSteps: string[];
+    perspectives: BoardroomPerspective[];
+  } | null;
+  logs: string[];
+  error?: string;
+}
+
+const defaultSeats = [
+  {
+    id: "strategist",
+    name: "Strategy Lead",
+    role: "Strategy Lead",
+    brief: "Push on positioning, demand signals, and where the idea can win fastest.",
+  },
+  {
+    id: "operator",
+    name: "Operations Lead",
+    role: "Operations Lead",
+    brief: "Push on execution risk, delivery constraints, and what can ship with a small team.",
+  },
+];
 
 export default function Boardroom() {
   const brand = useBrand();
   const { resetKey } = useApiKey();
   const [topic, setTopic] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [context, setContext] = useState("");
+  const [sessions, setSessions] = useState<BoardroomSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchSessions = useCallback(async (silent = false) => {
+    if (silent) {
+      setRefreshing(true);
+    }
+    try {
+      const response = await fetch("/api/boardroom/sessions", { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error("Failed to load boardroom sessions.");
+      }
+      const data = (await response.json()) as BoardroomSession[];
+      setSessions(data);
+      if (!activeSessionId && data.length > 0) {
+        setActiveSessionId(data[0].id);
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    void fetchSessions();
+  }, [fetchSessions]);
+
+  const activeSession = useMemo(
+    () => sessions.find((session) => session.id === activeSessionId) || sessions[0] || null,
+    [sessions, activeSessionId],
+  );
 
   const startDiscussion = async () => {
-    if (!topic) return;
+    if (!topic.trim()) return;
     setLoading(true);
-    
-    const initialMessage = { role: "user", content: topic, agent: "You" };
-    setMessages([initialMessage]);
-    
-    try {
-      const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY });
-      
-      const agents = [
-        { name: "Marketing Director", prompt: `You are the Marketing Director for ${brand.brandName}. Focus on audience engagement, virality, and brand voice (${brand.brandVoice}). Respond to the topic.` },
-        { name: "Tech Lead", prompt: `You are the Tech Lead for ${brand.brandName}. Focus on feasibility, automation, and technical innovation. Respond to the topic.` },
-        { name: "Creative Director", prompt: `You are the Creative Director for ${brand.brandName}. Focus on aesthetics, storytelling, and emotional connection. Respond to the topic.` }
-      ];
 
-      for (const agent of agents) {
-        const response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: `Topic: ${topic}. ${agent.prompt}`,
-        });
-        
-        setMessages(prev => [...prev, {
-          role: "assistant",
-          content: response.text || "",
-          agent: agent.name
-        }]);
+    try {
+      const response = await fetch("/api/boardroom/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topic,
+          context: [
+            `Brand: ${brand.brandName}`,
+            `Description: ${brand.brandDescription}`,
+            `Audience: ${brand.targetAudience}`,
+            `Voice: ${brand.brandVoice}`,
+            context.trim(),
+          ].filter(Boolean).join("\n"),
+          participants: defaultSeats,
+          apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to create boardroom session.");
       }
+
+      setSessions((prev) => [data as BoardroomSession, ...prev]);
+      setActiveSessionId((data as BoardroomSession).id);
+      setTopic("");
+      setContext("");
     } catch (error: any) {
       console.error(error);
       if (error?.message?.includes("PERMISSION_DENIED") || error?.message?.includes("Requested entity was not found")) {
         resetKey();
       } else {
-        alert("Discussion failed.");
+        alert(error.message || "Discussion failed.");
       }
     } finally {
       setLoading(false);
@@ -59,66 +147,210 @@ export default function Boardroom() {
   };
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="p-4 md:p-8 max-w-4xl mx-auto h-[calc(100vh-4rem)] md:h-screen flex flex-col"
+      className="p-4 md:p-8 max-w-7xl mx-auto"
     >
-      <div className="mb-4 md:mb-8 shrink-0">
-        <h1 className="text-3xl font-bold tracking-tight text-white mb-2">The Boardroom</h1>
-        <p className="text-zinc-400">Pitch an idea and let your AI executive team discuss it.</p>
+      <div className="mb-6 md:mb-8 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight text-white mb-2">The Boardroom</h1>
+          <p className="text-zinc-400">Backend-backed AI strategy sessions with durable local history. This first pass runs 2 Gemini seats and stores every session in-repo.</p>
+        </div>
+        <button
+          onClick={() => fetchSessions(true)}
+          className="inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-900"
+        >
+          <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
+          Refresh sessions
+        </button>
       </div>
 
-      <div className="flex-1 bg-zinc-950 border border-zinc-800 rounded-2xl p-6 flex flex-col overflow-hidden">
-        <div className="flex-1 overflow-y-auto space-y-6 mb-6 pr-4">
-          {messages.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-zinc-500">
-              <Users className="w-16 h-16 mb-4 opacity-50" />
-              <p>The board is waiting for your pitch.</p>
+      <div className="grid grid-cols-1 xl:grid-cols-[380px_minmax(0,1fr)] gap-6">
+        <div className="space-y-6">
+          <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-5 space-y-4">
+            <div>
+              <h2 className="text-lg font-semibold text-white">Start a session</h2>
+              <p className="text-sm text-zinc-400 mt-1">Two seats are active now. The backend shape supports growth up to five later.</p>
             </div>
-          ) : (
-            messages.map((msg, idx) => (
-              <motion.div 
-                key={idx}
-                initial={{ opacity: 0, x: msg.role === "user" ? 20 : -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}
-              >
-                <span className="text-xs font-medium text-zinc-500 mb-1 ml-1">{msg.agent}</span>
-                <div className={`max-w-[80%] p-4 rounded-2xl ${
-                  msg.role === "user" 
-                    ? "bg-indigo-600 text-white rounded-br-none" 
-                    : "bg-zinc-800 text-zinc-200 rounded-bl-none"
-                }`}>
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</p>
-                </div>
-              </motion.div>
-            ))
-          )}
-          {loading && (
-            <div className="flex items-center gap-3 text-zinc-400">
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <span className="text-sm">The board is discussing...</span>
+
+            <div className="space-y-2">
+              <label className="text-sm text-zinc-300">Topic</label>
+              <input
+                type="text"
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && startDiscussion()}
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="Should we launch a niche AI service for local businesses?"
+              />
             </div>
-          )}
+
+            <div className="space-y-2">
+              <label className="text-sm text-zinc-300">Extra context</label>
+              <textarea
+                value={context}
+                onChange={(e) => setContext(e.target.value)}
+                rows={5}
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="Budget, timing, constraints, target launch window, current traction..."
+              />
+            </div>
+
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+              <div className="flex items-center gap-2 text-sm text-zinc-300 mb-3">
+                <Users className="w-4 h-4 text-indigo-400" />
+                Active seats
+              </div>
+              <div className="space-y-3">
+                {defaultSeats.map((seat) => (
+                  <div key={seat.id} className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2">
+                    <p className="text-sm font-medium text-white">{seat.name}</p>
+                    <p className="text-xs text-zinc-500">{seat.brief}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <button
+              onClick={startDiscussion}
+              disabled={loading || !topic.trim()}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-6 py-3 rounded-xl flex items-center justify-center gap-2 transition-colors"
+            >
+              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+              {loading ? "Running boardroom..." : "Start boardroom session"}
+            </button>
+          </div>
+
+          <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <ClipboardList className="w-5 h-5 text-indigo-400" />
+              <h2 className="text-lg font-semibold text-white">Recent sessions</h2>
+            </div>
+
+            {sessions.length === 0 ? (
+              <div className="text-sm text-zinc-500 rounded-xl border border-dashed border-zinc-800 p-4">No boardroom sessions yet.</div>
+            ) : (
+              <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                {sessions.map((session) => (
+                  <button
+                    key={session.id}
+                    onClick={() => setActiveSessionId(session.id)}
+                    className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${activeSession?.id === session.id ? "border-indigo-500 bg-indigo-500/10" : "border-zinc-800 bg-zinc-900 hover:bg-zinc-800/70"}`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-white line-clamp-2">{session.topic}</p>
+                        <p className="text-xs text-zinc-500 mt-1">{new Date(session.createdAt).toLocaleString()}</p>
+                      </div>
+                      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs ${session.status === "completed" ? "bg-emerald-500/10 text-emerald-300" : session.status === "failed" ? "bg-red-500/10 text-red-300" : "bg-amber-500/10 text-amber-300"}`}>
+                        {session.status === "completed" ? <CheckCircle2 className="w-3 h-3" /> : session.status === "failed" ? <AlertCircle className="w-3 h-3" /> : <Loader2 className="w-3 h-3 animate-spin" />}
+                        {session.status}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
-        <div className="flex gap-4">
-          <input 
-            type="text" 
-            value={topic}
-            onChange={(e) => setTopic(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && startDiscussion()}
-            className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="Pitch a new campaign or product idea..."
-          />
-          <button
-            onClick={startDiscussion}
-            disabled={loading || !topic}
-            className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-6 py-3 rounded-xl flex items-center justify-center transition-colors"
-          >
-            <Send className="w-5 h-5" />
-          </button>
+        <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-6 min-h-[700px]">
+          {!activeSession ? (
+            <div className="h-full flex flex-col items-center justify-center text-zinc-500">
+              <Users className="w-16 h-16 mb-4 opacity-50" />
+              <p>The board is waiting for a real session.</p>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div>
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <h2 className="text-2xl font-semibold text-white">{activeSession.topic}</h2>
+                    <p className="text-sm text-zinc-500 mt-2">Started {new Date(activeSession.createdAt).toLocaleString()}</p>
+                  </div>
+                  <div className="text-xs text-zinc-400 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2">
+                    {activeSession.participants.length} seat{activeSession.participants.length === 1 ? "" : "s"}
+                  </div>
+                </div>
+                {activeSession.context ? (
+                  <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-300 whitespace-pre-wrap">
+                    {activeSession.context}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="space-y-4">
+                {activeSession.turns.map((turn) => (
+                  <motion.div
+                    key={turn.id}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className={`rounded-2xl border p-4 ${turn.role === "system" ? "border-indigo-500/30 bg-indigo-500/10" : "border-zinc-800 bg-zinc-900"}`}
+                  >
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <p className="text-sm font-medium text-white">{turn.participantName}</p>
+                      <span className="text-xs uppercase tracking-wider text-zinc-500">{turn.kind}</span>
+                    </div>
+                    <p className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">{turn.content}</p>
+                  </motion.div>
+                ))}
+              </div>
+
+              {activeSession.result ? (
+                <div className="grid grid-cols-1 2xl:grid-cols-2 gap-6">
+                  <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
+                    <h3 className="text-lg font-semibold text-white mb-3">Summary</h3>
+                    <p className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">{activeSession.result.summary}</p>
+                    <div className="mt-5">
+                      <h4 className="text-sm font-medium text-white mb-2">Next steps</h4>
+                      <ul className="space-y-2 text-sm text-zinc-300 list-disc pl-5">
+                        {activeSession.result.nextSteps.map((step, index) => (
+                          <li key={`${activeSession.id}-step-${index}`}>{step}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    {activeSession.result.perspectives.map((perspective) => (
+                      <div key={perspective.participantId} className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
+                        <h3 className="text-lg font-semibold text-white">{perspective.participantName}</h3>
+                        <p className="text-sm text-zinc-300 mt-2">{perspective.stance}</p>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 text-sm">
+                          <div>
+                            <h4 className="font-medium text-red-300 mb-2">Risks</h4>
+                            <ul className="space-y-1 text-zinc-300 list-disc pl-5">
+                              {perspective.risks.map((item, index) => <li key={`risk-${index}`}>{item}</li>)}
+                            </ul>
+                          </div>
+                          <div>
+                            <h4 className="font-medium text-emerald-300 mb-2">Opportunities</h4>
+                            <ul className="space-y-1 text-zinc-300 list-disc pl-5">
+                              {perspective.opportunities.map((item, index) => <li key={`opportunity-${index}`}>{item}</li>)}
+                            </ul>
+                          </div>
+                          <div>
+                            <h4 className="font-medium text-indigo-300 mb-2">Recommendations</h4>
+                            <ul className="space-y-1 text-zinc-300 list-disc pl-5">
+                              {perspective.recommendations.map((item, index) => <li key={`recommendation-${index}`}>{item}</li>)}
+                            </ul>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {activeSession.error ? (
+                <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
+                  {activeSession.error}
+                </div>
+              ) : null}
+            </div>
+          )}
         </div>
       </div>
     </motion.div>
