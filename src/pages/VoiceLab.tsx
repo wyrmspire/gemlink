@@ -1,9 +1,17 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef } from "react";
 import { useBrand } from "../context/BrandContext";
 import { useApiKey } from "../components/ApiKeyGuard";
 import { motion } from "motion/react";
 import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
-import { Loader2, Mic, Play, Square } from "lucide-react";
+import { Loader2, Mic, Play, Square, CheckCircle2, Clock, AlertCircle } from "lucide-react";
+
+interface VoiceJob {
+  id: string;
+  status: "pending" | "completed" | "failed";
+  outputs: string[];
+  logs?: string[];
+  error?: string;
+}
 
 export default function VoiceLab() {
   const brand = useBrand();
@@ -12,16 +20,17 @@ export default function VoiceLab() {
   const [loading, setLoading] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [voice, setVoice] = useState("Kore");
-  
-  // Live API State
+  const [job, setJob] = useState<VoiceJob | null>(null);
+
   const [isLive, setIsLive] = useState(false);
   const [session, setSession] = useState<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
 
   const generateSpeech = async () => {
     if (!text) return;
     setLoading(true);
+    setAudioUrl(null);
+    setJob(null);
     try {
       const response = await fetch("/api/media/voice", {
         method: "POST",
@@ -32,7 +41,7 @@ export default function VoiceLab() {
           text: `Say in a ${brand.brandVoice} tone: ${text}`,
           voice,
           brandContext: brand,
-          apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY
+          apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY,
         }),
       });
 
@@ -42,10 +51,8 @@ export default function VoiceLab() {
       }
 
       const data = await response.json();
-      
-      // Since this is a stub, we just alert the user that the job started
-      alert(`Voice generation job started (ID: ${data.id}). Check the library later.`);
-      
+      setJob(data);
+      setAudioUrl(data.outputs?.[0] || null);
     } catch (error: any) {
       console.error(error);
       if (error?.message?.includes("PERMISSION_DENIED") || error?.message?.includes("Requested entity was not found")) {
@@ -60,47 +67,46 @@ export default function VoiceLab() {
 
   const toggleLiveSession = async () => {
     if (isLive) {
-      session?.close();
+      const liveSession = await session;
+      liveSession?.close();
       setIsLive(false);
       return;
     }
 
     try {
       const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY });
-      
+
       const sessionPromise = ai.live.connect({
         model: "gemini-2.5-flash-native-audio-preview-09-2025",
         callbacks: {
           onopen: () => {
             setIsLive(true);
-            // Setup microphone capture here
             navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
               const audioContext = new AudioContext({ sampleRate: 16000 });
               const source = audioContext.createMediaStreamSource(stream);
               const processor = audioContext.createScriptProcessor(4096, 1, 1);
-              
+
               source.connect(processor);
               processor.connect(audioContext.destination);
-              
+
               processor.onaudioprocess = (e) => {
                 const inputData = e.inputBuffer.getChannelData(0);
                 const pcm16 = new Int16Array(inputData.length);
                 for (let i = 0; i < inputData.length; i++) {
                   pcm16[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
                 }
-                
-                // Convert to base64
+
                 const uint8Array = new Uint8Array(pcm16.buffer);
-                let binary = '';
+                let binary = "";
                 for (let i = 0; i < uint8Array.byteLength; i++) {
                   binary += String.fromCharCode(uint8Array[i]);
                 }
                 const base64Data = btoa(binary);
-                
-                sessionPromise.then((s) => 
+
+                sessionPromise.then((s) =>
                   s.sendRealtimeInput({
-                    media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' }
-                  })
+                    media: { data: base64Data, mimeType: "audio/pcm;rate=16000" },
+                  }),
                 );
               };
             });
@@ -108,28 +114,26 @@ export default function VoiceLab() {
           onmessage: async (message: LiveServerMessage) => {
             const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
             if (base64Audio) {
-              // Decode and play audio
               if (!audioContextRef.current) {
                 audioContextRef.current = new AudioContext({ sampleRate: 24000 });
               }
-              
+
               const binaryString = atob(base64Audio);
               const len = binaryString.length;
               const bytes = new Uint8Array(len);
               for (let i = 0; i < len; i++) {
                 bytes[i] = binaryString.charCodeAt(i);
               }
-              
-              // Convert PCM16 to Float32
+
               const pcm16 = new Int16Array(bytes.buffer);
               const float32 = new Float32Array(pcm16.length);
               for (let i = 0; i < pcm16.length; i++) {
                 float32[i] = pcm16[i] / 32768.0;
               }
-              
+
               const audioBuffer = audioContextRef.current.createBuffer(1, float32.length, 24000);
               audioBuffer.getChannelData(0).set(float32);
-              
+
               const source = audioContextRef.current.createBufferSource();
               source.buffer = audioBuffer;
               source.connect(audioContextRef.current.destination);
@@ -159,7 +163,7 @@ export default function VoiceLab() {
   };
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       className="p-4 md:p-8 max-w-6xl mx-auto"
@@ -170,13 +174,12 @@ export default function VoiceLab() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* TTS Generation */}
         <div className="space-y-6 bg-zinc-950 p-6 rounded-2xl border border-zinc-800">
           <h2 className="text-xl font-semibold text-white">Generate Speech</h2>
-          
+
           <div>
             <label className="block text-sm font-medium text-zinc-300 mb-2">Voice</label>
-            <select 
+            <select
               value={voice}
               onChange={(e) => setVoice(e.target.value)}
               className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -191,7 +194,7 @@ export default function VoiceLab() {
 
           <div>
             <label className="block text-sm font-medium text-zinc-300 mb-2">Text to Speak</label>
-            <textarea 
+            <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
               rows={4}
@@ -209,6 +212,23 @@ export default function VoiceLab() {
             Generate Audio
           </button>
 
+          {job && (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-zinc-300 font-medium">Job {job.id}</span>
+                {job.status === "pending" ? (
+                  <span className="inline-flex items-center gap-1 text-amber-300"><Clock className="w-4 h-4" />Pending</span>
+                ) : job.status === "completed" ? (
+                  <span className="inline-flex items-center gap-1 text-emerald-300"><CheckCircle2 className="w-4 h-4" />Completed</span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-red-300"><AlertCircle className="w-4 h-4" />Failed</span>
+                )}
+              </div>
+              {job.logs?.length ? <p className="text-xs text-zinc-500">{job.logs[job.logs.length - 1]}</p> : null}
+              {job.error ? <p className="text-xs text-red-300">{job.error}</p> : null}
+            </div>
+          )}
+
           {audioUrl && (
             <div className="mt-4 p-4 bg-zinc-900 rounded-xl border border-zinc-800">
               <audio src={audioUrl} controls className="w-full" />
@@ -216,11 +236,10 @@ export default function VoiceLab() {
           )}
         </div>
 
-        {/* Live API */}
         <div className="space-y-6 bg-zinc-950 p-6 rounded-2xl border border-zinc-800">
           <h2 className="text-xl font-semibold text-white">Conversational Voice App</h2>
           <p className="text-sm text-zinc-400">Talk directly to your brand's AI persona in real-time using the Gemini Live API.</p>
-          
+
           <div className="h-48 flex items-center justify-center border-2 border-dashed border-zinc-800 rounded-xl bg-zinc-900">
             {isLive ? (
               <div className="flex flex-col items-center gap-4">
@@ -240,8 +259,8 @@ export default function VoiceLab() {
           <button
             onClick={toggleLiveSession}
             className={`w-full font-medium py-3 rounded-lg flex items-center justify-center gap-2 transition-colors ${
-              isLive 
-                ? "bg-red-600 hover:bg-red-700 text-white" 
+              isLive
+                ? "bg-red-600 hover:bg-red-700 text-white"
                 : "bg-emerald-600 hover:bg-emerald-700 text-white"
             }`}
           >

@@ -3,7 +3,15 @@ import { useBrand } from "../context/BrandContext";
 import { useApiKey } from "../components/ApiKeyGuard";
 import { motion } from "motion/react";
 import { GoogleGenAI } from "@google/genai";
-import { Loader2, Video, Upload } from "lucide-react";
+import { Loader2, Video, Upload, Clock, CheckCircle2, AlertCircle } from "lucide-react";
+
+interface VideoJob {
+  id: string;
+  status: "pending" | "completed" | "failed";
+  outputs: string[];
+  logs?: string[];
+  error?: string;
+}
 
 export default function VideoLab() {
   const brand = useBrand();
@@ -11,7 +19,7 @@ export default function VideoLab() {
   const [prompt, setPrompt] = useState("");
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [job, setJob] = useState<VideoJob | null>(null);
   const [analysisResult, setAnalysisResult] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [aspectRatio, setAspectRatio] = useState("16:9");
@@ -22,9 +30,10 @@ export default function VideoLab() {
   const generateVideo = async () => {
     if (!prompt && !imageFile) return;
     setLoading(true);
+    setJob(null);
     try {
       const fullPrompt = `Brand: ${brand.brandName}. Style: ${brand.brandVoice}. ${prompt}`;
-      
+
       let base64Data = null;
       let mimeType = null;
 
@@ -33,7 +42,7 @@ export default function VideoLab() {
         reader.readAsDataURL(imageFile);
         await new Promise<void>((resolve) => {
           reader.onload = () => {
-            base64Data = (reader.result as string).split(',')[1];
+            base64Data = (reader.result as string).split(",")[1];
             mimeType = imageFile.type;
             resolve();
           };
@@ -42,18 +51,16 @@ export default function VideoLab() {
 
       const response = await fetch("/api/media/video", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: fullPrompt,
-          model: 'veo-3.1-fast-generate-preview',
+          model: "veo-3.1-fast-generate-preview",
           resolution,
           aspectRatio,
           brandContext: brand,
           apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY,
           imageBytes: base64Data,
-          mimeType: mimeType
+          mimeType,
         }),
       });
 
@@ -63,12 +70,7 @@ export default function VideoLab() {
       }
 
       const data = await response.json();
-      
-      // Since this is a stub, we just alert the user that the job started
-      alert(`Video generation job started (ID: ${data.id}). Check the library later.`);
-      
-      // In a real implementation, we would poll the status here or use websockets
-      
+      setJob(data);
     } catch (error: any) {
       console.error(error);
       if (error?.message?.includes("PERMISSION_DENIED") || error?.message?.includes("Requested entity was not found")) {
@@ -88,14 +90,13 @@ export default function VideoLab() {
     setAnalyzing(true);
     try {
       const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY });
-      
-      // Convert file to base64
+
       const reader = new FileReader();
       reader.readAsDataURL(file);
       reader.onload = async () => {
         try {
-          const base64Data = (reader.result as string).split(',')[1];
-          
+          const base64Data = (reader.result as string).split(",")[1];
+
           const response = await ai.models.generateContent({
             model: "gemini-3.1-pro-preview",
             contents: {
@@ -104,13 +105,13 @@ export default function VideoLab() {
                   inlineData: {
                     data: base64Data,
                     mimeType: file.type,
-                  }
+                  },
                 },
-                { text: "Analyze this video for key information, brand alignment, and potential improvements." }
-              ]
-            }
+                { text: "Analyze this video for key information, brand alignment, and potential improvements." },
+              ],
+            },
           });
-          
+
           setAnalysisResult(response.text || "No analysis generated.");
         } catch (error: any) {
           console.error(error);
@@ -135,7 +136,7 @@ export default function VideoLab() {
   };
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       className="p-4 md:p-8 max-w-6xl mx-auto"
@@ -146,16 +147,15 @@ export default function VideoLab() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Video Generation */}
         <div className="space-y-6 bg-zinc-950 p-6 rounded-2xl border border-zinc-800">
           <h2 className="text-xl font-semibold text-white">Generate Video</h2>
-          
+
           <div>
             <label className="block text-sm font-medium text-zinc-300 mb-2">Starting Image (Optional)</label>
-            <input 
-              type="file" 
-              accept="image/*" 
-              className="hidden" 
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
               ref={imageInputRef}
               onChange={(e) => setImageFile(e.target.files?.[0] || null)}
             />
@@ -173,7 +173,7 @@ export default function VideoLab() {
 
           <div>
             <label className="block text-sm font-medium text-zinc-300 mb-2">Video Prompt</label>
-            <textarea 
+            <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               rows={4}
@@ -185,7 +185,7 @@ export default function VideoLab() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-zinc-300 mb-2">Aspect Ratio</label>
-              <select 
+              <select
                 value={aspectRatio}
                 onChange={(e) => setAspectRatio(e.target.value)}
                 className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -196,7 +196,7 @@ export default function VideoLab() {
             </div>
             <div>
               <label className="block text-sm font-medium text-zinc-300 mb-2">Resolution</label>
-              <select 
+              <select
                 value={resolution}
                 onChange={(e) => setResolution(e.target.value)}
                 className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -213,29 +213,40 @@ export default function VideoLab() {
             className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-medium py-3 rounded-lg flex items-center justify-center gap-2 transition-colors"
           >
             {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Video className="w-5 h-5" />}
-            {loading ? "Generating (This takes a few minutes)..." : "Generate Video"}
+            {loading ? "Starting job..." : "Generate Video"}
           </button>
 
-          {videoUrl && (
-            <div className="mt-4 aspect-video bg-black rounded-xl overflow-hidden border border-zinc-800">
-              <video src={videoUrl} controls className="w-full h-full" />
+          {job && (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-zinc-300 font-medium">Job {job.id}</span>
+                {job.status === "pending" ? (
+                  <span className="inline-flex items-center gap-1 text-amber-300"><Clock className="w-4 h-4" />Pending</span>
+                ) : job.status === "completed" ? (
+                  <span className="inline-flex items-center gap-1 text-emerald-300"><CheckCircle2 className="w-4 h-4" />Completed</span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-red-300"><AlertCircle className="w-4 h-4" />Failed</span>
+                )}
+              </div>
+              <p className="text-zinc-400">The backend is polling this job in the background. Open the Media Library to watch it update.</p>
+              {job.logs?.length ? <p className="text-xs text-zinc-500">{job.logs[job.logs.length - 1]}</p> : null}
+              {job.error ? <p className="text-xs text-red-300">{job.error}</p> : null}
             </div>
           )}
         </div>
 
-        {/* Video Analysis */}
         <div className="space-y-6 bg-zinc-950 p-6 rounded-2xl border border-zinc-800">
           <h2 className="text-xl font-semibold text-white">Video Understanding</h2>
           <p className="text-sm text-zinc-400">Upload a video to analyze its content using Gemini Pro.</p>
-          
-          <input 
-            type="file" 
-            accept="video/*" 
-            className="hidden" 
+
+          <input
+            type="file"
+            accept="video/*"
+            className="hidden"
             ref={fileInputRef}
             onChange={analyzeVideo}
           />
-          
+
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={analyzing}
