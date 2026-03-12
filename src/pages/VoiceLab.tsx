@@ -23,31 +23,35 @@ export default function VoiceLab() {
     if (!text) return;
     setLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY });
-      
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-tts",
-        contents: [{ parts: [{ text: `Say in a ${brand.brandVoice} tone: ${text}` }] }],
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: voice },
-            },
-          },
+      const response = await fetch("/api/media/voice", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          text: `Say in a ${brand.brandVoice} tone: ${text}`,
+          voice,
+          brandContext: brand,
+          apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY
+        }),
       });
 
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (base64Audio) {
-        setAudioUrl(`data:audio/mp3;base64,${base64Audio}`);
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to generate speech");
       }
+
+      const data = await response.json();
+      
+      // Since this is a stub, we just alert the user that the job started
+      alert(`Voice generation job started (ID: ${data.id}). Check the library later.`);
+      
     } catch (error: any) {
       console.error(error);
       if (error?.message?.includes("PERMISSION_DENIED") || error?.message?.includes("Requested entity was not found")) {
         resetKey();
       } else {
-        alert("Failed to generate speech.");
+        alert(error.message || "Failed to generate speech.");
       }
     } finally {
       setLoading(false);
@@ -158,7 +162,7 @@ export default function VoiceLab() {
     <motion.div 
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="p-8 max-w-6xl mx-auto"
+      className="p-4 md:p-8 max-w-6xl mx-auto"
     >
       <div className="mb-8">
         <h1 className="text-3xl font-bold tracking-tight text-white mb-2">Voice Lab</h1>

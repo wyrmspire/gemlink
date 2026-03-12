@@ -14,6 +14,7 @@ import VoiceLab from "./pages/VoiceLab";
 import Boardroom from "./pages/Boardroom";
 import Research from "./pages/Research";
 import SalesAgent from "./pages/SalesAgent";
+import Library from "./pages/Library";
 import ApiKeyGuard from "./components/ApiKeyGuard";
 
 export default function App() {
@@ -31,6 +32,7 @@ export default function App() {
               <Route path="boardroom" element={<Boardroom />} />
               <Route path="research" element={<Research />} />
               <Route path="sales" element={<SalesAgent />} />
+              <Route path="library" element={<Library />} />
             </Route>
           </Routes>
         </BrowserRouter>

@@ -23,62 +23,58 @@ export default function VideoLab() {
     if (!prompt && !imageFile) return;
     setLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY });
-      
       const fullPrompt = `Brand: ${brand.brandName}. Style: ${brand.brandVoice}. ${prompt}`;
-
-      let operation;
       
+      let base64Data = null;
+      let mimeType = null;
+
       if (imageFile) {
         const reader = new FileReader();
         reader.readAsDataURL(imageFile);
-        
         await new Promise<void>((resolve) => {
-          reader.onload = async () => {
-            const base64Data = (reader.result as string).split(',')[1];
-            operation = await ai.models.generateVideos({
-              model: 'veo-3.1-fast-generate-preview',
-              prompt: fullPrompt,
-              image: {
-                imageBytes: base64Data,
-                mimeType: imageFile.type,
-              },
-              config: {
-                numberOfVideos: 1,
-                resolution: resolution,
-                aspectRatio: aspectRatio
-              }
-            });
+          reader.onload = () => {
+            base64Data = (reader.result as string).split(',')[1];
+            mimeType = imageFile.type;
             resolve();
           };
         });
-      } else {
-        operation = await ai.models.generateVideos({
-          model: 'veo-3.1-fast-generate-preview',
+      }
+
+      const response = await fetch("/api/media/video", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
           prompt: fullPrompt,
-          config: {
-            numberOfVideos: 1,
-            resolution: resolution,
-            aspectRatio: aspectRatio
-          }
-        });
+          model: 'veo-3.1-fast-generate-preview',
+          resolution,
+          aspectRatio,
+          brandContext: brand,
+          apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY,
+          imageBytes: base64Data,
+          mimeType: mimeType
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to generate video");
       }
 
-      while (!operation.done) {
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        operation = await ai.operations.getVideosOperation({operation: operation});
-      }
-
-      const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-      if (downloadLink) {
-        setVideoUrl(downloadLink);
-      }
+      const data = await response.json();
+      
+      // Since this is a stub, we just alert the user that the job started
+      alert(`Video generation job started (ID: ${data.id}). Check the library later.`);
+      
+      // In a real implementation, we would poll the status here or use websockets
+      
     } catch (error: any) {
       console.error(error);
       if (error?.message?.includes("PERMISSION_DENIED") || error?.message?.includes("Requested entity was not found")) {
         resetKey();
       } else {
-        alert("Failed to generate video.");
+        alert(error.message || "Failed to generate video.");
       }
     } finally {
       setLoading(false);
@@ -142,7 +138,7 @@ export default function VideoLab() {
     <motion.div 
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="p-8 max-w-6xl mx-auto"
+      className="p-4 md:p-8 max-w-6xl mx-auto"
     >
       <div className="mb-8">
         <h1 className="text-3xl font-bold tracking-tight text-white mb-2">Video Lab</h1>

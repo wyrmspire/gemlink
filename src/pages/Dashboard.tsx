@@ -17,7 +17,7 @@ export default function Dashboard() {
     <motion.div 
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="p-8 max-w-6xl mx-auto"
+      className="p-4 md:p-8 max-w-6xl mx-auto"
     >
       <div className="mb-12">
         <h1 className="text-4xl font-bold tracking-tight text-white mb-4">Agentic Workspace</h1>

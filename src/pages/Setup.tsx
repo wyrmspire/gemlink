@@ -8,7 +8,7 @@ export default function Setup() {
     <motion.div 
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="p-8 max-w-3xl mx-auto"
+      className="p-4 md:p-8 max-w-3xl mx-auto"
     >
       <div className="mb-8">
         <h1 className="text-3xl font-bold tracking-tight text-white mb-2">Brand Setup</h1>

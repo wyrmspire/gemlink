@@ -19,7 +19,7 @@ export default function SalesAgent() {
     <motion.div 
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="p-8 max-w-4xl mx-auto"
+      className="p-4 md:p-8 max-w-4xl mx-auto"
     >
       <div className="mb-8">
         <h1 className="text-3xl font-bold tracking-tight text-white mb-2">Twilio Sales Agent</h1>

@@ -18,36 +18,35 @@ export default function SocialMedia() {
     if (!prompt) return;
     setLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY });
-      
-      const fullPrompt = `Brand: ${brand.brandName}. Description: ${brand.brandDescription}. Audience: ${brand.targetAudience}. Style: ${brand.brandVoice}. Generate an image for social media: ${prompt}`;
-
-      const response = await ai.models.generateContent({
-        model: model,
-        contents: {
-          parts: [{ text: fullPrompt }],
+      const response = await fetch("/api/media/image", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-        config: {
-          imageConfig: {
-            aspectRatio: "1:1",
-            imageSize: size,
-          },
-        },
+        body: JSON.stringify({
+          prompt: `Brand: ${brand.brandName}. Description: ${brand.brandDescription}. Audience: ${brand.targetAudience}. Style: ${brand.brandVoice}. Generate an image for social media: ${prompt}`,
+          model,
+          size,
+          brandContext: brand,
+          apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY
+        }),
       });
 
-      const newImages: string[] = [];
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          newImages.push(`data:image/png;base64,${part.inlineData.data}`);
-        }
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to generate image");
       }
-      setImages(prev => [...newImages, ...prev]);
+
+      const data = await response.json();
+      if (data.outputs && data.outputs.length > 0) {
+        setImages(prev => [...data.outputs, ...prev]);
+      }
     } catch (error: any) {
       console.error(error);
       if (error?.message?.includes("PERMISSION_DENIED") || error?.message?.includes("Requested entity was not found")) {
         resetKey();
       } else {
-        alert("Failed to generate image.");
+        alert(error.message || "Failed to generate image.");
       }
     } finally {
       setLoading(false);
@@ -58,7 +57,7 @@ export default function SocialMedia() {
     <motion.div 
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="p-8 max-w-6xl mx-auto"
+      className="p-4 md:p-8 max-w-6xl mx-auto"
     >
       <div className="mb-8">
         <h1 className="text-3xl font-bold tracking-tight text-white mb-2">Social Media Generation</h1>
