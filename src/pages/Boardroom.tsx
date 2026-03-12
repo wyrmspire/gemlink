@@ -2,9 +2,21 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useBrand } from "../context/BrandContext";
 import { useApiKey } from "../components/ApiKeyGuard";
 import { motion } from "motion/react";
-import { AlertCircle, CheckCircle2, ClipboardList, Loader2, RefreshCw, Send, Users } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  ClipboardList,
+  Loader2,
+  RefreshCw,
+  Send,
+  Users,
+  Target,
+  Layers3,
+  MessageSquareQuote,
+} from "lucide-react";
 
 type ThoughtDepth = "light" | "standard" | "deep";
+type BoardroomPhase = "opening_brief" | "first_pass" | "challenge" | "refinement" | "convergence";
 
 interface BoardroomParticipant {
   id: string;
@@ -13,18 +25,57 @@ interface BoardroomParticipant {
   brief: string;
 }
 
+interface BoardroomObjective {
+  primaryGoal: string;
+  hardConstraints: string[];
+  softHints: string[];
+  throwawayExamples: string[];
+  importantFocus: string[];
+  namingExplicitlyRequested: boolean;
+  briefing: string;
+}
+
+interface BoardroomSeatState {
+  participantId: string;
+  participantName: string;
+  focus: string;
+  priorities: string[];
+  concerns: string[];
+  internalNotes: string[];
+  updatedAt: string;
+}
+
+interface BoardroomStateSnapshot {
+  id: string;
+  phase: BoardroomPhase;
+  phaseLabel: string;
+  round: number;
+  roomFocus: string;
+  openQuestions: string[];
+  emergingConsensus: string[];
+  tensions: string[];
+  provisionalItems: string[];
+  importantItems: string[];
+  seatStates: BoardroomSeatState[];
+  summary: string;
+  createdAt: string;
+}
+
 interface BoardroomTurn {
   id: string;
   participantId: string;
   participantName: string;
   role: "seat" | "system";
-  kind: "perspective" | "response" | "summary";
+  kind: "brief" | "perspective" | "challenge" | "refinement" | "convergence" | "state_update" | "summary";
   round: number;
+  phase: BoardroomPhase;
+  phaseLabel: string;
   content: string;
   stance?: string;
   risks?: string[];
   opportunities?: string[];
   recommendations?: string[];
+  stateSummary?: string;
   createdAt: string;
 }
 
@@ -48,13 +99,17 @@ interface BoardroomSession {
     seatCount: number;
     rounds: number;
     depth: ThoughtDepth;
+    protocol?: BoardroomPhase[];
   };
+  objective: BoardroomObjective | null;
   participants: BoardroomParticipant[];
   turns: BoardroomTurn[];
+  stateHistory: BoardroomStateSnapshot[];
   result: {
     summary: string;
     nextSteps: string[];
     perspectives: BoardroomPerspective[];
+    finalState: BoardroomStateSnapshot | null;
   } | null;
   logs: string[];
   error?: string;
@@ -99,13 +154,41 @@ const depthOptions: { value: ThoughtDepth; label: string; hint: string }[] = [
   { value: "deep", label: "Deep", hint: "Stronger challenge/refinement and heavier reasoning." },
 ];
 
+const protocolHints: Record<number, string> = {
+  1: "Opening brief only",
+  2: "Opening brief + first-pass reactions",
+  3: "Adds a challenge round",
+  4: "Adds refinement",
+  5: "Full script through convergence",
+};
+
+const phaseTone: Record<string, string> = {
+  opening_brief: "border-indigo-500/30 bg-indigo-500/10",
+  first_pass: "border-sky-500/20 bg-sky-500/5",
+  challenge: "border-amber-500/20 bg-amber-500/5",
+  refinement: "border-emerald-500/20 bg-emerald-500/5",
+  convergence: "border-fuchsia-500/20 bg-fuchsia-500/5",
+};
+
+function SectionList({ title, items, tone = "text-zinc-300" }: { title: string; items: string[]; tone?: string }) {
+  if (!items?.length) return null;
+  return (
+    <div>
+      <h4 className="text-sm font-medium text-white mb-2">{title}</h4>
+      <ul className={`space-y-1 list-disc pl-5 text-sm ${tone}`}>
+        {items.map((item, index) => <li key={`${title}-${index}`}>{item}</li>)}
+      </ul>
+    </div>
+  );
+}
+
 export default function Boardroom() {
   const brand = useBrand();
   const { resetKey } = useApiKey();
   const [topic, setTopic] = useState("");
   const [context, setContext] = useState("");
   const [seatCount, setSeatCount] = useState(3);
-  const [rounds, setRounds] = useState(3);
+  const [rounds, setRounds] = useState(5);
   const [depth, setDepth] = useState<ThoughtDepth>("standard");
   const [sessions, setSessions] = useState<BoardroomSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -198,7 +281,7 @@ export default function Boardroom() {
       <div className="mb-6 md:mb-8 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-white mb-2">The Boardroom</h1>
-          <p className="text-zinc-400">Debate-style AI strategy sessions with configurable seats, rounds, analysis depth, and durable local history.</p>
+          <p className="text-zinc-400">Objective-anchored AI strategy sessions with a visible meeting script, evolving room state, and durable local history.</p>
         </div>
         <button
           onClick={() => fetchSessions(true)}
@@ -214,7 +297,7 @@ export default function Boardroom() {
           <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-5 space-y-4">
             <div>
               <h2 className="text-lg font-semibold text-white">Start a session</h2>
-              <p className="text-sm text-zinc-400 mt-1">Pick how many voices you want in the room, how many rounds they should debate, and how hard they should think.</p>
+              <p className="text-sm text-zinc-400 mt-1">The room now anchors on objective first, then moves through a visible protocol instead of free-form ping-pong.</p>
             </div>
 
             <div className="space-y-2">
@@ -225,7 +308,7 @@ export default function Boardroom() {
                 onChange={(e) => setTopic(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && startDiscussion()}
                 className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                placeholder="Should we launch a beginner-friendly AI media + funnel brand?"
+                placeholder="Should we build a media + funnel business around beginner-friendly AI workflows?"
               />
             </div>
 
@@ -244,7 +327,7 @@ export default function Boardroom() {
               </div>
 
               <div className="space-y-2">
-                <label className="text-sm text-zinc-300">Rounds</label>
+                <label className="text-sm text-zinc-300">Protocol depth</label>
                 <select
                   value={rounds}
                   onChange={(e) => setRounds(Number(e.target.value))}
@@ -254,6 +337,7 @@ export default function Boardroom() {
                     <option key={value} value={value}>{value}</option>
                   ))}
                 </select>
+                <p className="text-xs text-zinc-500">{protocolHints[rounds]}</p>
               </div>
             </div>
 
@@ -281,8 +365,22 @@ export default function Boardroom() {
                 onChange={(e) => setContext(e.target.value)}
                 rows={5}
                 className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                placeholder="Budget, timing, constraints, target launch window, current traction..."
+                placeholder="Goals, constraints, timing, budget, traction, and any examples the room should treat as provisional unless explicitly important..."
               />
+            </div>
+
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
+              <div className="flex items-center gap-2 text-sm text-zinc-300">
+                <Layers3 className="w-4 h-4 text-indigo-400" />
+                Meeting script preview
+              </div>
+              <div className="grid grid-cols-1 gap-2 text-sm">
+                {["Opening brief", "First-pass reactions", "Challenge round", "Refinement round", "Convergence"].map((step, index) => (
+                  <div key={step} className={`rounded-lg border px-3 py-2 ${index < rounds ? "border-zinc-700 bg-zinc-950 text-zinc-200" : "border-zinc-800 bg-zinc-950/40 text-zinc-500"}`}>
+                    {index + 1}. {step}
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -331,7 +429,7 @@ export default function Boardroom() {
                         <p className="text-sm font-medium text-white line-clamp-2">{session.topic}</p>
                         <p className="text-xs text-zinc-500 mt-1">{new Date(session.createdAt).toLocaleString()}</p>
                         <p className="text-xs text-zinc-500 mt-1">
-                          {(session.config?.seatCount || session.participants.length)} seat(s) • {session.config?.rounds || 1} round(s) • {session.config?.depth || "standard"}
+                          {(session.config?.seatCount || session.participants.length)} seat(s) • {session.config?.protocol?.length || session.config?.rounds || 1} stage(s) • {session.config?.depth || "standard"}
                         </p>
                       </div>
                       <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs ${session.status === "completed" ? "bg-emerald-500/10 text-emerald-300" : session.status === "failed" ? "bg-red-500/10 text-red-300" : "bg-amber-500/10 text-amber-300"}`}>
@@ -362,7 +460,7 @@ export default function Boardroom() {
                   </div>
                   <div className="text-xs text-zinc-400 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 space-y-1">
                     <div>{activeSession.participants.length} seat{activeSession.participants.length === 1 ? "" : "s"}</div>
-                    <div>{activeSession.config?.rounds || 1} round{(activeSession.config?.rounds || 1) === 1 ? "" : "s"}</div>
+                    <div>{activeSession.config?.protocol?.length || activeSession.config?.rounds || 1} stage{(activeSession.config?.protocol?.length || activeSession.config?.rounds || 1) === 1 ? "" : "s"}</div>
                     <div>{activeSession.config?.depth || "standard"} depth</div>
                   </div>
                 </div>
@@ -373,25 +471,113 @@ export default function Boardroom() {
                 ) : null}
               </div>
 
+              {activeSession.objective ? (
+                <div className="rounded-2xl border border-indigo-500/30 bg-indigo-500/10 p-5 space-y-4">
+                  <div className="flex items-center gap-2 text-white">
+                    <Target className="w-5 h-5 text-indigo-300" />
+                    <h3 className="text-lg font-semibold">Objective anchor</h3>
+                  </div>
+                  <p className="text-sm text-zinc-200 leading-relaxed">{activeSession.objective.primaryGoal}</p>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <SectionList title="Hard constraints" items={activeSession.objective.hardConstraints} />
+                    <SectionList title="Important focus" items={activeSession.objective.importantFocus} />
+                    <SectionList title="Soft hints" items={activeSession.objective.softHints} />
+                    <SectionList title="Provisional / throwaway examples" items={activeSession.objective.throwawayExamples} tone="text-amber-200" />
+                  </div>
+                  <div className="rounded-xl border border-zinc-700 bg-zinc-950/70 px-4 py-3 text-sm text-zinc-300">
+                    <span className="font-medium text-white">Briefing:</span> {activeSession.objective.briefing}
+                    <div className="mt-2 text-xs text-zinc-500">Naming explicitly requested: {activeSession.objective.namingExplicitlyRequested ? "yes" : "no"}</div>
+                  </div>
+                </div>
+              ) : null}
+
+              {activeSession.config?.protocol?.length ? (
+                <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
+                  <div className="flex items-center gap-2 mb-4 text-white">
+                    <Layers3 className="w-5 h-5 text-indigo-400" />
+                    <h3 className="text-lg font-semibold">Protocol</h3>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+                    {activeSession.config.protocol.map((phase, index) => (
+                      <div key={phase} className={`rounded-xl border px-3 py-3 ${phaseTone[phase] || "border-zinc-800 bg-zinc-950"}`}>
+                        <div className="text-xs uppercase tracking-wider text-zinc-400">Stage {index + 1}</div>
+                        <div className="text-sm font-medium text-white mt-1">{phase.replaceAll("_", " ")}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               <div className="space-y-4">
                 {activeSession.turns.map((turn) => (
                   <motion.div
                     key={turn.id}
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className={`rounded-2xl border p-4 ${turn.role === "system" ? "border-indigo-500/30 bg-indigo-500/10" : "border-zinc-800 bg-zinc-900"}`}
+                    className={`rounded-2xl border p-4 ${phaseTone[turn.phase] || (turn.role === "system" ? "border-indigo-500/30 bg-indigo-500/10" : "border-zinc-800 bg-zinc-900")}`}
                   >
                     <div className="flex items-center justify-between gap-3 mb-2">
                       <div>
                         <p className="text-sm font-medium text-white">{turn.participantName}</p>
-                        <p className="text-xs text-zinc-500 mt-1">Round {turn.round}</p>
+                        <p className="text-xs text-zinc-500 mt-1">{turn.phaseLabel} • Round {turn.round}</p>
                       </div>
                       <span className="text-xs uppercase tracking-wider text-zinc-500">{turn.kind}</span>
                     </div>
                     <p className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">{turn.content}</p>
+                    {turn.stateSummary ? <p className="text-xs text-zinc-500 mt-3">State focus: {turn.stateSummary}</p> : null}
                   </motion.div>
                 ))}
               </div>
+
+              {activeSession.stateHistory?.length ? (
+                <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5 space-y-4">
+                  <div className="flex items-center gap-2 text-white">
+                    <MessageSquareQuote className="w-5 h-5 text-indigo-400" />
+                    <h3 className="text-lg font-semibold">Room state evolution</h3>
+                  </div>
+                  {activeSession.stateHistory.map((state) => (
+                    <div key={state.id} className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4 space-y-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium text-white">{state.phaseLabel}</p>
+                          <p className="text-xs text-zinc-500 mt-1">Round {state.round}</p>
+                        </div>
+                        <div className="text-xs text-zinc-500">{new Date(state.createdAt).toLocaleTimeString()}</div>
+                      </div>
+                      <p className="text-sm text-zinc-300 leading-relaxed">{state.summary}</p>
+                      <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3">
+                        <div className="text-xs uppercase tracking-wider text-zinc-500 mb-1">Room focus</div>
+                        <div className="text-sm text-zinc-200">{state.roomFocus}</div>
+                      </div>
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <SectionList title="Open questions" items={state.openQuestions} />
+                        <SectionList title="Emerging consensus" items={state.emergingConsensus} tone="text-emerald-200" />
+                        <SectionList title="Tensions" items={state.tensions} tone="text-amber-200" />
+                        <SectionList title="Important items" items={state.importantItems} />
+                        <SectionList title="Provisional items" items={state.provisionalItems} tone="text-zinc-400" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-medium text-white mb-3">Seat state</h4>
+                        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                          {state.seatStates.map((seat) => (
+                            <div key={`${state.id}-${seat.participantId}`} className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
+                              <div>
+                                <div className="text-sm font-medium text-white">{seat.participantName}</div>
+                                <div className="text-sm text-zinc-300 mt-1">{seat.focus}</div>
+                              </div>
+                              <div className="grid grid-cols-1 gap-3 text-sm">
+                                <SectionList title="Priorities" items={seat.priorities} />
+                                <SectionList title="Concerns" items={seat.concerns} tone="text-amber-200" />
+                                <SectionList title="Internal notes" items={seat.internalNotes} tone="text-zinc-400" />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
 
               {activeSession.result ? (
                 <div className="grid grid-cols-1 2xl:grid-cols-2 gap-6">
