@@ -4,6 +4,7 @@ import { GoogleGenAI } from "@google/genai";
 
 export type BoardroomSessionStatus = "pending" | "completed" | "failed";
 export type BoardroomParticipantProvider = "gemini";
+export type BoardroomThoughtDepth = "light" | "standard" | "deep";
 
 export interface BoardroomParticipantInput {
   id?: string;
@@ -23,13 +24,24 @@ export interface BoardroomParticipant {
   model: string;
 }
 
+export interface BoardroomSessionConfig {
+  seatCount: number;
+  rounds: number;
+  depth: BoardroomThoughtDepth;
+}
+
 export interface BoardroomTurn {
   id: string;
   participantId: string;
   participantName: string;
   role: "seat" | "system";
-  kind: "perspective" | "summary";
+  kind: "perspective" | "response" | "summary";
+  round: number;
   content: string;
+  stance?: string;
+  risks?: string[];
+  opportunities?: string[];
+  recommendations?: string[];
   createdAt: string;
 }
 
@@ -55,6 +67,7 @@ export interface BoardroomSession {
   status: BoardroomSessionStatus;
   topic: string;
   context: string;
+  config: BoardroomSessionConfig;
   participants: BoardroomParticipant[];
   turns: BoardroomTurn[];
   result: BoardroomResult | null;
@@ -66,11 +79,24 @@ interface BoardroomSessionRequest {
   topic: string;
   context?: string;
   participants?: BoardroomParticipantInput[];
+  rounds?: number;
+  depth?: BoardroomThoughtDepth;
   apiKey?: string;
 }
 
+interface BoardroomModelReply {
+  stance?: string;
+  message?: string;
+  risks?: string[];
+  opportunities?: string[];
+  recommendations?: string[];
+}
+
 const MAX_SEATS = 5;
+const MAX_ROUNDS = 5;
 const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_DEPTH: BoardroomThoughtDepth = "standard";
+const DEFAULT_ROUNDS = 2;
 const boardroomRoot = path.join(process.cwd(), "jobs", "boardroom");
 
 function stamp() {
@@ -79,6 +105,16 @@ function stamp() {
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function clampInteger(value: unknown, min: number, max: number, fallback: number) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(numeric)));
+}
+
+function sanitizeDepth(depth?: string): BoardroomThoughtDepth {
+  return depth === "light" || depth === "deep" || depth === "standard" ? depth : DEFAULT_DEPTH;
 }
 
 function sanitizeParticipants(participants?: BoardroomParticipantInput[]) {
@@ -98,8 +134,8 @@ function sanitizeParticipants(participants?: BoardroomParticipantInput[]) {
   ];
 
   const source = participants?.length ? participants : defaults;
-  if (source.length < 2) {
-    throw new Error("Boardroom needs at least 2 participants.");
+  if (source.length < 1) {
+    throw new Error("Boardroom needs at least 1 participant.");
   }
   if (source.length > MAX_SEATS) {
     throw new Error(`Boardroom currently supports up to ${MAX_SEATS} seats per session.`);
@@ -116,7 +152,7 @@ function sanitizeParticipants(participants?: BoardroomParticipantInput[]) {
 }
 
 function appendLog(session: BoardroomSession, message: string) {
-  return [...session.logs, `[${stamp()}] ${message}`].slice(-60);
+  return [...session.logs, `[${stamp()}] ${message}`].slice(-120);
 }
 
 function extractJson(text: string) {
@@ -129,6 +165,38 @@ function extractJson(text: string) {
     throw new Error("Model did not return JSON.");
   }
   return JSON.parse(candidate.slice(start, end + 1));
+}
+
+function depthGuidance(depth: BoardroomThoughtDepth) {
+  if (depth === "light") {
+    return "Keep it sharp and lightweight. Favor clear tradeoffs over long analysis.";
+  }
+  if (depth === "deep") {
+    return "Think harder. Surface second-order effects, objections, and practical edge cases before you answer.";
+  }
+  return "Be balanced: practical, moderately detailed, and willing to make tradeoffs explicit.";
+}
+
+function formatTurnsForPrompt(turns: BoardroomTurn[], currentParticipantId?: string) {
+  if (turns.length === 0) return "No prior turns yet.";
+  return turns
+    .filter((turn) => turn.role === "system" || turn.participantId !== currentParticipantId)
+    .map((turn) => {
+      const meta = [`round ${turn.round}`, turn.kind, turn.participantName].join(" • ");
+      return `- ${meta}: ${turn.content}`;
+    })
+    .join("\n");
+}
+
+function normalizeReply(parsed: BoardroomModelReply, participant: BoardroomParticipant): BoardroomPerspective {
+  return {
+    participantId: participant.id,
+    participantName: participant.name,
+    stance: String(parsed.stance || parsed.message || "").trim(),
+    risks: Array.isArray(parsed.risks) ? parsed.risks.map(String).filter(Boolean).slice(0, 5) : [],
+    opportunities: Array.isArray(parsed.opportunities) ? parsed.opportunities.map(String).filter(Boolean).slice(0, 5) : [],
+    recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String).filter(Boolean).slice(0, 5) : [],
+  };
 }
 
 async function ensureBoardroomDirectory() {
@@ -168,19 +236,26 @@ async function writeBoardroomSession(session: BoardroomSession) {
   await fs.writeFile(getSessionPath(session.id), JSON.stringify(session, null, 2));
 }
 
-async function requestPerspective(ai: GoogleGenAI, session: BoardroomSession, participant: BoardroomParticipant) {
+async function requestRoundReply(
+  ai: GoogleGenAI,
+  session: BoardroomSession,
+  participant: BoardroomParticipant,
+  round: number,
+  priorTurns: BoardroomTurn[],
+) {
+  const isOpeningRound = round === 1;
   const response = await ai.models.generateContent({
     model: participant.model,
-    contents: `You are ${participant.name}, the ${participant.role}, inside a startup boardroom discussion.\nReturn only JSON with this shape: {\n  "stance": string,\n  "message": string,\n  "risks": string[],\n  "opportunities": string[],\n  "recommendations": string[]\n}.\n\nDiscussion topic: ${session.topic}\nContext: ${session.context || "No extra context provided."}\nParticipant brief: ${participant.brief}\n\nBe specific, opinionated, and practical. Keep the message under 140 words and recommendations to 3 items max.`,
+    contents: `You are ${participant.name}, the ${participant.role}, inside a startup boardroom discussion.\nReturn only JSON with this shape: {\n  "stance": string,\n  "message": string,\n  "risks": string[],\n  "opportunities": string[],\n  "recommendations": string[]\n}.\n\nDiscussion topic: ${session.topic}\nContext: ${session.context || "No extra context provided."}\nParticipant brief: ${participant.brief}\nAnalysis intensity: ${session.config.depth}\nGuidance: ${depthGuidance(session.config.depth)}\nCurrent round: ${round} of ${session.config.rounds}\n\n${isOpeningRound ? "This is round 1. Give your initial perspective." : "This is a later round. Read the prior turns from the other seats, then respond, refine your view, and challenge weak assumptions where needed."}\n\nPrior turns from the room:\n${formatTurnsForPrompt(priorTurns, participant.id)}\n\nBe specific, opinionated, and practical. Keep the message under 180 words and recommendations to 3 items max.`,
   });
 
-  return extractJson(response.text || "");
+  return extractJson(response.text || "") as BoardroomModelReply;
 }
 
 async function requestSummary(ai: GoogleGenAI, session: BoardroomSession, perspectives: BoardroomPerspective[]) {
   const response = await ai.models.generateContent({
     model: DEFAULT_MODEL,
-    contents: `You are summarizing a boardroom discussion. Return only JSON with this shape: {\n  "summary": string,\n  "nextSteps": string[]\n}.\n\nTopic: ${session.topic}\nContext: ${session.context || "No extra context provided."}\nPerspectives: ${JSON.stringify(perspectives, null, 2)}\n\nWrite a concise synthesis and up to 5 next steps that a product/UI surface could render directly.`,
+    contents: `You are summarizing a multi-round boardroom discussion. Return only JSON with this shape: {\n  "summary": string,\n  "nextSteps": string[]\n}.\n\nTopic: ${session.topic}\nContext: ${session.context || "No extra context provided."}\nConfig: ${JSON.stringify(session.config)}\nFinal perspectives: ${JSON.stringify(perspectives, null, 2)}\nFull turn log: ${JSON.stringify(session.turns, null, 2)}\n\nWrite a concise synthesis and up to 5 next steps that a product/UI surface could render directly. Focus on what survived debate, where tension remains, and what should happen next.`,
   });
 
   return extractJson(response.text || "");
@@ -197,6 +272,12 @@ export async function createBoardroomSession(request: BoardroomSessionRequest) {
   }
 
   const participants = sanitizeParticipants(request.participants);
+  const config: BoardroomSessionConfig = {
+    seatCount: participants.length,
+    rounds: clampInteger(request.rounds, 1, MAX_ROUNDS, DEFAULT_ROUNDS),
+    depth: sanitizeDepth(request.depth),
+  };
+
   const session: BoardroomSession = {
     id: createId("boardroom"),
     createdAt: stamp(),
@@ -204,41 +285,53 @@ export async function createBoardroomSession(request: BoardroomSessionRequest) {
     status: "pending",
     topic: request.topic.trim(),
     context: request.context?.trim() || "",
+    config,
     participants,
     turns: [],
     result: null,
-    logs: [`[${stamp()}] Session created with ${participants.length} seat(s).`],
+    logs: [`[${stamp()}] Session created with ${participants.length} seat(s), ${config.rounds} round(s), depth ${config.depth}.`],
   };
 
   await writeBoardroomSession(session);
 
   try {
     const ai = new GoogleGenAI({ apiKey });
-    const perspectives: BoardroomPerspective[] = [];
+    const finalPerspectives = new Map<string, BoardroomPerspective>();
 
-    for (const participant of participants) {
-      const parsed = await requestPerspective(ai, session, participant);
-      perspectives.push({
-        participantId: participant.id,
-        participantName: participant.name,
-        stance: String(parsed.stance || "").trim(),
-        risks: Array.isArray(parsed.risks) ? parsed.risks.map(String).slice(0, 5) : [],
-        opportunities: Array.isArray(parsed.opportunities) ? parsed.opportunities.map(String).slice(0, 5) : [],
-        recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String).slice(0, 5) : [],
-      });
-      session.turns.push({
-        id: createId("turn"),
-        participantId: participant.id,
-        participantName: participant.name,
-        role: "seat",
-        kind: "perspective",
-        content: String(parsed.message || parsed.stance || "").trim(),
-        createdAt: stamp(),
-      });
+    for (let round = 1; round <= config.rounds; round += 1) {
+      session.logs = appendLog(session, `Starting round ${round} of ${config.rounds}.`);
       session.updatedAt = stamp();
-      session.logs = appendLog(session, `${participant.name} perspective captured.`);
       await writeBoardroomSession(session);
+
+      const roundStartTurns = [...session.turns];
+      for (const participant of participants) {
+        const parsed = await requestRoundReply(ai, session, participant, round, round === 1 ? [] : roundStartTurns);
+        const normalized = normalizeReply(parsed, participant);
+        finalPerspectives.set(participant.id, normalized);
+
+        session.turns.push({
+          id: createId("turn"),
+          participantId: participant.id,
+          participantName: participant.name,
+          role: "seat",
+          kind: round === 1 ? "perspective" : "response",
+          round,
+          content: String(parsed.message || parsed.stance || "").trim(),
+          stance: normalized.stance,
+          risks: normalized.risks,
+          opportunities: normalized.opportunities,
+          recommendations: normalized.recommendations,
+          createdAt: stamp(),
+        });
+        session.updatedAt = stamp();
+        session.logs = appendLog(session, `${participant.name} completed round ${round}.`);
+        await writeBoardroomSession(session);
+      }
     }
+
+    const perspectives = participants
+      .map((participant) => finalPerspectives.get(participant.id))
+      .filter(Boolean) as BoardroomPerspective[];
 
     const summary = await requestSummary(ai, session, perspectives);
     session.turns.push({
@@ -247,6 +340,7 @@ export async function createBoardroomSession(request: BoardroomSessionRequest) {
       participantName: "Boardroom Summary",
       role: "system",
       kind: "summary",
+      round: config.rounds + 1,
       content: String(summary.summary || "").trim(),
       createdAt: stamp(),
     });

@@ -4,6 +4,8 @@ import { useApiKey } from "../components/ApiKeyGuard";
 import { motion } from "motion/react";
 import { AlertCircle, CheckCircle2, ClipboardList, Loader2, RefreshCw, Send, Users } from "lucide-react";
 
+type ThoughtDepth = "light" | "standard" | "deep";
+
 interface BoardroomParticipant {
   id: string;
   name: string;
@@ -16,8 +18,13 @@ interface BoardroomTurn {
   participantId: string;
   participantName: string;
   role: "seat" | "system";
-  kind: "perspective" | "summary";
+  kind: "perspective" | "response" | "summary";
+  round: number;
   content: string;
+  stance?: string;
+  risks?: string[];
+  opportunities?: string[];
+  recommendations?: string[];
   createdAt: string;
 }
 
@@ -37,6 +44,11 @@ interface BoardroomSession {
   status: "pending" | "completed" | "failed";
   topic: string;
   context: string;
+  config?: {
+    seatCount: number;
+    rounds: number;
+    depth: ThoughtDepth;
+  };
   participants: BoardroomParticipant[];
   turns: BoardroomTurn[];
   result: {
@@ -48,19 +60,43 @@ interface BoardroomSession {
   error?: string;
 }
 
-const defaultSeats = [
+const seatTemplates: BoardroomParticipant[] = [
   {
     id: "strategist",
     name: "Strategy Lead",
     role: "Strategy Lead",
-    brief: "Push on positioning, demand signals, and where the idea can win fastest.",
+    brief: "Push on positioning, demand signals, market timing, and where the idea can win fastest.",
   },
   {
     id: "operator",
     name: "Operations Lead",
     role: "Operations Lead",
-    brief: "Push on execution risk, delivery constraints, and what can ship with a small team.",
+    brief: "Push on execution risk, delivery constraints, scope control, and what a small team can actually ship.",
   },
+  {
+    id: "editor",
+    name: "Editorial Lead",
+    role: "Editorial Lead",
+    brief: "Push on message clarity, audience trust, recurring content angles, and whether the story is compelling enough to publish repeatedly.",
+  },
+  {
+    id: "growth",
+    name: "Growth Lead",
+    role: "Growth Lead",
+    brief: "Push on distribution, funnel design, demand capture, retention loops, and measurable growth levers.",
+  },
+  {
+    id: "skeptic",
+    name: "Skeptical Advisor",
+    role: "Skeptical Advisor",
+    brief: "Pressure-test the idea, attack weak assumptions, identify blind spots, and force sharper tradeoffs.",
+  },
+];
+
+const depthOptions: { value: ThoughtDepth; label: string; hint: string }[] = [
+  { value: "light", label: "Light", hint: "Fast, crisp, lower-latency analysis." },
+  { value: "standard", label: "Standard", hint: "Balanced practical depth." },
+  { value: "deep", label: "Deep", hint: "Stronger challenge/refinement and heavier reasoning." },
 ];
 
 export default function Boardroom() {
@@ -68,10 +104,15 @@ export default function Boardroom() {
   const { resetKey } = useApiKey();
   const [topic, setTopic] = useState("");
   const [context, setContext] = useState("");
+  const [seatCount, setSeatCount] = useState(3);
+  const [rounds, setRounds] = useState(3);
+  const [depth, setDepth] = useState<ThoughtDepth>("standard");
   const [sessions, setSessions] = useState<BoardroomSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+
+  const selectedSeats = useMemo(() => seatTemplates.slice(0, seatCount), [seatCount]);
 
   const fetchSessions = useCallback(async (silent = false) => {
     if (silent) {
@@ -120,7 +161,9 @@ export default function Boardroom() {
             `Voice: ${brand.brandVoice}`,
             context.trim(),
           ].filter(Boolean).join("\n"),
-          participants: defaultSeats,
+          participants: selectedSeats,
+          rounds,
+          depth,
           apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY,
         }),
       });
@@ -155,7 +198,7 @@ export default function Boardroom() {
       <div className="mb-6 md:mb-8 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-white mb-2">The Boardroom</h1>
-          <p className="text-zinc-400">Backend-backed AI strategy sessions with durable local history. This first pass runs 2 Gemini seats and stores every session in-repo.</p>
+          <p className="text-zinc-400">Debate-style AI strategy sessions with configurable seats, rounds, analysis depth, and durable local history.</p>
         </div>
         <button
           onClick={() => fetchSessions(true)}
@@ -171,7 +214,7 @@ export default function Boardroom() {
           <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-5 space-y-4">
             <div>
               <h2 className="text-lg font-semibold text-white">Start a session</h2>
-              <p className="text-sm text-zinc-400 mt-1">Two seats are active now. The backend shape supports growth up to five later.</p>
+              <p className="text-sm text-zinc-400 mt-1">Pick how many voices you want in the room, how many rounds they should debate, and how hard they should think.</p>
             </div>
 
             <div className="space-y-2">
@@ -182,8 +225,53 @@ export default function Boardroom() {
                 onChange={(e) => setTopic(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && startDiscussion()}
                 className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                placeholder="Should we launch a niche AI service for local businesses?"
+                placeholder="Should we launch a beginner-friendly AI media + funnel brand?"
               />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <label className="text-sm text-zinc-300">Seats</label>
+                <select
+                  value={seatCount}
+                  onChange={(e) => setSeatCount(Number(e.target.value))}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {[1, 2, 3, 4, 5].map((value) => (
+                    <option key={value} value={value}>{value}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm text-zinc-300">Rounds</label>
+                <select
+                  value={rounds}
+                  onChange={(e) => setRounds(Number(e.target.value))}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {[1, 2, 3, 4, 5].map((value) => (
+                    <option key={value} value={value}>{value}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm text-zinc-300">Thought depth</label>
+              <div className="grid grid-cols-1 gap-2">
+                {depthOptions.map((option) => (
+                  <button
+                    type="button"
+                    key={option.value}
+                    onClick={() => setDepth(option.value)}
+                    className={`rounded-xl border px-4 py-3 text-left transition-colors ${depth === option.value ? "border-indigo-500 bg-indigo-500/10" : "border-zinc-800 bg-zinc-900 hover:bg-zinc-800/70"}`}
+                  >
+                    <div className="text-sm font-medium text-white">{option.label}</div>
+                    <div className="text-xs text-zinc-400 mt-1">{option.hint}</div>
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -203,7 +291,7 @@ export default function Boardroom() {
                 Active seats
               </div>
               <div className="space-y-3">
-                {defaultSeats.map((seat) => (
+                {selectedSeats.map((seat) => (
                   <div key={seat.id} className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2">
                     <p className="text-sm font-medium text-white">{seat.name}</p>
                     <p className="text-xs text-zinc-500">{seat.brief}</p>
@@ -242,6 +330,9 @@ export default function Boardroom() {
                       <div>
                         <p className="text-sm font-medium text-white line-clamp-2">{session.topic}</p>
                         <p className="text-xs text-zinc-500 mt-1">{new Date(session.createdAt).toLocaleString()}</p>
+                        <p className="text-xs text-zinc-500 mt-1">
+                          {(session.config?.seatCount || session.participants.length)} seat(s) • {session.config?.rounds || 1} round(s) • {session.config?.depth || "standard"}
+                        </p>
                       </div>
                       <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs ${session.status === "completed" ? "bg-emerald-500/10 text-emerald-300" : session.status === "failed" ? "bg-red-500/10 text-red-300" : "bg-amber-500/10 text-amber-300"}`}>
                         {session.status === "completed" ? <CheckCircle2 className="w-3 h-3" /> : session.status === "failed" ? <AlertCircle className="w-3 h-3" /> : <Loader2 className="w-3 h-3 animate-spin" />}
@@ -269,8 +360,10 @@ export default function Boardroom() {
                     <h2 className="text-2xl font-semibold text-white">{activeSession.topic}</h2>
                     <p className="text-sm text-zinc-500 mt-2">Started {new Date(activeSession.createdAt).toLocaleString()}</p>
                   </div>
-                  <div className="text-xs text-zinc-400 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2">
-                    {activeSession.participants.length} seat{activeSession.participants.length === 1 ? "" : "s"}
+                  <div className="text-xs text-zinc-400 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 space-y-1">
+                    <div>{activeSession.participants.length} seat{activeSession.participants.length === 1 ? "" : "s"}</div>
+                    <div>{activeSession.config?.rounds || 1} round{(activeSession.config?.rounds || 1) === 1 ? "" : "s"}</div>
+                    <div>{activeSession.config?.depth || "standard"} depth</div>
                   </div>
                 </div>
                 {activeSession.context ? (
@@ -289,7 +382,10 @@ export default function Boardroom() {
                     className={`rounded-2xl border p-4 ${turn.role === "system" ? "border-indigo-500/30 bg-indigo-500/10" : "border-zinc-800 bg-zinc-900"}`}
                   >
                     <div className="flex items-center justify-between gap-3 mb-2">
-                      <p className="text-sm font-medium text-white">{turn.participantName}</p>
+                      <div>
+                        <p className="text-sm font-medium text-white">{turn.participantName}</p>
+                        <p className="text-xs text-zinc-500 mt-1">Round {turn.round}</p>
+                      </div>
                       <span className="text-xs uppercase tracking-wider text-zinc-500">{turn.kind}</span>
                     </div>
                     <p className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">{turn.content}</p>
@@ -300,7 +396,7 @@ export default function Boardroom() {
               {activeSession.result ? (
                 <div className="grid grid-cols-1 2xl:grid-cols-2 gap-6">
                   <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
-                    <h3 className="text-lg font-semibold text-white mb-3">Summary</h3>
+                    <h3 className="text-lg font-semibold text-white mb-3">Final synthesis</h3>
                     <p className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">{activeSession.result.summary}</p>
                     <div className="mt-5">
                       <h4 className="text-sm font-medium text-white mb-2">Next steps</h4>
@@ -338,6 +434,19 @@ export default function Boardroom() {
                             </ul>
                           </div>
                         </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {activeSession.logs?.length ? (
+                <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
+                  <h3 className="text-lg font-semibold text-white mb-3">Session log</h3>
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                    {activeSession.logs.map((line, index) => (
+                      <div key={`${activeSession.id}-log-${index}`} className="text-xs text-zinc-400 font-mono whitespace-pre-wrap">
+                        {line}
                       </div>
                     ))}
                   </div>
