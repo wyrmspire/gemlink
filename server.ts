@@ -90,8 +90,36 @@ async function startServer() {
   app.post("/api/media/video", async (req, res) => {
     try {
       const { prompt, model, resolution, aspectRatio, brandContext, apiKey, imageBytes, mimeType } = req.body;
+      const key = apiKey || process.env.GEMINI_API_KEY;
+      const ai = new GoogleGenAI({ apiKey: key });
       
-      // STUB: We will simulate a job creation for now
+      let operation;
+      if (imageBytes && mimeType) {
+        operation = await ai.models.generateVideos({
+          model: 'veo-3.1-fast-generate-preview',
+          prompt,
+          image: {
+            imageBytes,
+            mimeType,
+          },
+          config: {
+            numberOfVideos: 1,
+            resolution,
+            aspectRatio
+          }
+        });
+      } else {
+        operation = await ai.models.generateVideos({
+          model: 'veo-3.1-fast-generate-preview',
+          prompt,
+          config: {
+            numberOfVideos: 1,
+            resolution,
+            aspectRatio
+          }
+        });
+      }
+
       const jobId = Date.now().toString() + '-' + Math.random().toString(36).substring(7);
       const jobPath = path.join(jobsDir, 'videos', jobId);
       await fs.mkdir(jobPath, { recursive: true });
@@ -106,12 +134,46 @@ async function startServer() {
         aspectRatio,
         brandContext,
         createdAt: new Date().toISOString(),
-        status: 'pending', // In a real implementation, this would be updated when polling finishes
-        outputs: [] // Would contain the video URL once done
+        status: 'pending',
+        outputs: [] as string[]
       };
       await fs.writeFile(path.join(jobPath, 'manifest.json'), JSON.stringify(manifest, null, 2));
 
-      // Return the stubbed manifest
+      // Background polling
+      (async () => {
+        try {
+          let currentOp = operation;
+          while (!currentOp.done) {
+            await new Promise(resolve => setTimeout(resolve, 10000));
+            currentOp = await ai.operations.getVideosOperation({operation: currentOp});
+          }
+          
+          const downloadLink = currentOp.response?.generatedVideos?.[0]?.video?.uri;
+          if (downloadLink) {
+            const videoRes = await fetch(downloadLink, {
+              headers: { 'x-goog-api-key': key }
+            });
+            const arrayBuffer = await videoRes.arrayBuffer();
+            const fileName = `output.mp4`;
+            const filePath = path.join(jobPath, fileName);
+            
+            await fs.writeFile(filePath, Buffer.from(arrayBuffer));
+            
+            manifest.status = 'completed';
+            manifest.outputs = [`/jobs/videos/${jobId}/${fileName}`];
+            await fs.writeFile(path.join(jobPath, 'manifest.json'), JSON.stringify(manifest, null, 2));
+          } else {
+            manifest.status = 'failed';
+            await fs.writeFile(path.join(jobPath, 'manifest.json'), JSON.stringify(manifest, null, 2));
+          }
+        } catch (err) {
+          console.error("Background video polling error:", err);
+          manifest.status = 'failed';
+          await fs.writeFile(path.join(jobPath, 'manifest.json'), JSON.stringify(manifest, null, 2));
+        }
+      })();
+
+      // Return the manifest immediately
       res.json(manifest);
     } catch (error: any) {
       console.error("Video Generation Error:", error);
@@ -122,11 +184,35 @@ async function startServer() {
   app.post("/api/media/voice", async (req, res) => {
     try {
       const { text, voice, brandContext, apiKey } = req.body;
+      const key = apiKey || process.env.GEMINI_API_KEY;
+      const ai = new GoogleGenAI({ apiKey: key });
       
-      // STUB: We will simulate a job creation for now
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-tts",
+        contents: [{ parts: [{ text }] }],
+        config: {
+          responseModalities: ["AUDIO"],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: voice },
+            },
+          },
+        },
+      });
+
+      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+
       const jobId = Date.now().toString() + '-' + Math.random().toString(36).substring(7);
       const jobPath = path.join(jobsDir, 'voice', jobId);
       await fs.mkdir(jobPath, { recursive: true });
+
+      const outputs = [];
+      if (base64Audio) {
+        const fileName = `output.mp3`;
+        const filePath = path.join(jobPath, fileName);
+        await fs.writeFile(filePath, Buffer.from(base64Audio, 'base64'));
+        outputs.push(`/jobs/voice/${jobId}/${fileName}`);
+      }
 
       // Save manifest
       const manifest = {
@@ -136,8 +222,8 @@ async function startServer() {
         voice,
         brandContext,
         createdAt: new Date().toISOString(),
-        status: 'pending',
-        outputs: [] 
+        status: 'completed',
+        outputs
       };
       await fs.writeFile(path.join(jobPath, 'manifest.json'), JSON.stringify(manifest, null, 2));
 

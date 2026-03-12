@@ -9,12 +9,16 @@ Gemlink is designed as a multi-agent workspace where different AI personas colla
 3. **Creative Director**: Focuses on aesthetics, storytelling, and emotional connection.
 4. **Sales Agent**: A Twilio-integrated SMS bot that responds to customer inquiries using the brand's established voice.
 
-## Architecture Assumptions
-- **Server-Side Generation**: Media generation (images, video, voice) has been refactored to go through server endpoints (`/api/media/*`). This is to ensure API keys are kept secure and to allow for local job storage.
-- **Job Storage**: Jobs are stored locally in the `jobs/` directory with a `manifest.json` containing metadata. This is a stub for a future cloud storage solution (e.g., S3, Cloud Storage) or database (e.g., Postgres, Firestore).
-- **Mobile-First**: The UI is designed to be touch-friendly and responsive, with a mobile hamburger menu and appropriate padding for smaller screens.
+## Architecture & Job Model
+- **Server-Side Generation**: All media generation (images, video, voice) goes through server endpoints (`/api/media/*`). This ensures API keys are kept secure and allows for consistent background job processing.
+- **Consistent Job Model**: All media generations (image, video, voice) create a job directory with a `manifest.json` containing metadata (prompt, model, status, outputs).
+- **Local File Persistence**: 
+  - **Images**: Saved locally as `.png` files.
+  - **Voice**: Saved locally as `.mp3` files.
+  - **Video**: Handled via an asynchronous polling mechanism on the server that downloads the final `.mp4` file once the Gemini operation completes.
+- **Mobile-First**: The UI is designed to be touch-friendly and responsive, with a mobile hamburger menu and appropriate padding for smaller screens. The Media Library provides a unified view of all generated assets across devices.
 
 ## Future Plans
-- **Catalog/Storage**: Move the local `jobs/` directory to a robust cloud storage solution.
-- **Voice/Video File Saving**: Implement actual file saving for video and voice generations (currently stubbed).
-- **Agent Memory**: Implement a database to store agent conversations and brand context persistently.
+- **Cloud Storage**: Move the local `jobs/` directory to a robust cloud storage solution (e.g., S3, Cloud Storage) for production deployments.
+- **Database**: Implement a database (e.g., Postgres, Firestore) to store agent conversations, brand context, and job metadata persistently instead of relying on the filesystem.
+- **User Authentication**: Scope jobs and brand context to specific users.

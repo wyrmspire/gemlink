@@ -76,6 +76,13 @@ export default function Library() {
               <div className="aspect-square bg-zinc-900 relative flex items-center justify-center overflow-hidden">
                 {job.type === 'image' && job.outputs.length > 0 ? (
                   <img src={job.outputs[0]} alt={job.prompt} className="w-full h-full object-cover" />
+                ) : job.type === 'video' && job.status === 'completed' && job.outputs.length > 0 ? (
+                  <video src={job.outputs[0]} controls className="w-full h-full object-cover" />
+                ) : job.type === 'voice' && job.status === 'completed' && job.outputs.length > 0 ? (
+                  <div className="w-full h-full flex flex-col items-center justify-center bg-zinc-900 p-4">
+                    <Mic className="w-12 h-12 text-amber-400 mb-6 opacity-80" />
+                    <audio src={job.outputs[0]} controls className="w-full max-w-[240px]" />
+                  </div>
                 ) : (
                   <div className="flex flex-col items-center text-zinc-600">
                     {getIcon(job.type)}
