@@ -1,9 +1,8 @@
-import { useState, useRef, ChangeEvent } from "react";
+import { useState, useRef, useEffect, ChangeEvent } from "react";
 import { useBrand } from "../context/BrandContext";
 import { useApiKey } from "../components/ApiKeyGuard";
 import { motion } from "motion/react";
-import { GoogleGenAI } from "@google/genai";
-import { Loader2, Video, Upload, Clock, CheckCircle2, AlertCircle } from "lucide-react";
+import { Loader2, Video, Upload, CheckCircle2, AlertCircle } from "lucide-react";
 
 interface VideoJob {
   id: string;
@@ -58,7 +57,6 @@ export default function VideoLab() {
           resolution,
           aspectRatio,
           brandContext: brand,
-          apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY,
           imageBytes: base64Data,
           mimeType,
         }),
@@ -89,36 +87,34 @@ export default function VideoLab() {
 
     setAnalyzing(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY });
-
       const reader = new FileReader();
       reader.readAsDataURL(file);
       reader.onload = async () => {
         try {
           const base64Data = (reader.result as string).split(",")[1];
 
-          const response = await ai.models.generateContent({
-            model: "gemini-3.1-pro-preview",
-            contents: {
-              parts: [
-                {
-                  inlineData: {
-                    data: base64Data,
-                    mimeType: file.type,
-                  },
-                },
-                { text: "Analyze this video for key information, brand alignment, and potential improvements." },
-              ],
-            },
+          const response = await fetch("/api/media/video/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              videoData: base64Data,
+              mimeType: file.type,
+            }),
           });
 
-          setAnalysisResult(response.text || "No analysis generated.");
+          if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || "Failed to analyze video");
+          }
+
+          const data = await response.json();
+          setAnalysisResult(data.text || "No analysis generated.");
         } catch (error: any) {
           console.error(error);
           if (error?.message?.includes("PERMISSION_DENIED") || error?.message?.includes("Requested entity was not found")) {
             resetKey();
           } else {
-            alert("Failed to analyze video.");
+            alert(error.message || "Failed to analyze video.");
           }
         } finally {
           setAnalyzing(false);
@@ -129,11 +125,32 @@ export default function VideoLab() {
       if (error?.message?.includes("PERMISSION_DENIED") || error?.message?.includes("Requested entity was not found")) {
         resetKey();
       } else {
-        alert("Failed to analyze video.");
+        alert(error.message || "Failed to analyze video.");
       }
       setAnalyzing(false);
     }
   };
+
+  // B3: Poll pending video jobs for live status updates
+  useEffect(() => {
+    if (!job || job.status !== "pending") return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/media/job/video/${job.id}`);
+        if (!res.ok) return;
+        const updated = await res.json();
+        setJob(updated);
+        if (updated.status !== "pending") {
+          clearInterval(interval);
+        }
+      } catch {
+        // Silently retry on next interval
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [job?.id, job?.status]);
 
   return (
     <motion.div
@@ -221,14 +238,37 @@ export default function VideoLab() {
               <div className="flex items-center justify-between gap-3">
                 <span className="text-zinc-300 font-medium">Job {job.id}</span>
                 {job.status === "pending" ? (
-                  <span className="inline-flex items-center gap-1 text-amber-300"><Clock className="w-4 h-4" />Pending</span>
+                  <span className="inline-flex items-center gap-1.5 text-amber-300">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Processing…
+                  </span>
                 ) : job.status === "completed" ? (
                   <span className="inline-flex items-center gap-1 text-emerald-300"><CheckCircle2 className="w-4 h-4" />Completed</span>
                 ) : (
                   <span className="inline-flex items-center gap-1 text-red-300"><AlertCircle className="w-4 h-4" />Failed</span>
                 )}
               </div>
-              <p className="text-zinc-400">The backend is polling this job in the background. Open the Media Library to watch it update.</p>
+
+              {job.status === "pending" && (
+                <div className="space-y-2">
+                  <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                    <div className="h-full bg-amber-400/70 rounded-full animate-pulse" style={{ width: "60%" }} />
+                  </div>
+                  <p className="text-zinc-400">Your video is being generated. This page auto-refreshes every 5 seconds.</p>
+                </div>
+              )}
+
+              {job.status === "completed" && job.outputs?.length > 0 && (
+                <div className="space-y-2">
+                  <video
+                    src={job.outputs[0]}
+                    controls
+                    className="w-full rounded-lg border border-zinc-700"
+                  />
+                  <p className="text-xs text-zinc-500">Video ready — also available in the Media Library.</p>
+                </div>
+              )}
+
               {job.logs?.length ? <p className="text-xs text-zinc-500">{job.logs[job.logs.length - 1]}</p> : null}
               {job.error ? <p className="text-xs text-red-300">{job.error}</p> : null}
             </div>
