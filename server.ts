@@ -5,7 +5,7 @@ import fs from "fs/promises";
 import twilio from "twilio";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
-import { startBoardroomSessionAsync, listBoardroomSessions, readBoardroomSession } from "./boardroom.ts";
+import { startBoardroomSessionAsync, listBoardroomSessions, readBoardroomSession, extractMediaBriefs } from "./boardroom.ts";
 
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 dotenv.config();
@@ -449,6 +449,20 @@ async function startServer() {
     } catch (error: any) {
       console.error("Boardroom Session Error:", error);
       res.status(500).json({ error: error.message || "Failed to start boardroom session" });
+    }
+  });
+
+  // I2: Extract media briefs from a completed boardroom session (Lane 2).
+  api.post("/boardroom/sessions/:id/media-briefs", async (req, res) => {
+    try {
+      const briefs = await extractMediaBriefs(req.params.id, req.body?.apiKey);
+      res.json(briefs);
+    } catch (error: any) {
+      console.error("Media Briefs Extraction Error:", error);
+      const status = error.message?.includes("not found") ? 404
+        : error.message?.includes("status") ? 400
+        : 500;
+      res.status(status).json({ error: error.message || "Failed to extract media briefs" });
     }
   });
 

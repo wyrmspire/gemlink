@@ -152,6 +152,7 @@
 - **Files**: `boardroom.ts`
 - **Dependencies**: None
 - **Parallelizable with**: Everything
+- **Done**: Lane 2 — `validateBoardroomSession()` validates required fields (id, createdAt, updatedAt, status, topic, turns, participants, logs), status enum, and array types. `readBoardroomSession()` has separate try/catch for file read and JSON parse with descriptive error messages. Verified working.
 
 ---
 
@@ -320,6 +321,16 @@
 - **Files**: `src/pages/Research.tsx`
 - **Lane 3 — started 2026-03-14**
 
+### I2. Boardroom → Media Brief Pipeline 🟢
+- **Priority**: P2
+- **What**: After a completed boardroom session, extract actionable media briefs from the convergence output. Includes a "Media Strategy" session template.
+- **Deliverables**:
+  - `boardroom.ts`: `extractMediaBriefs(sessionId)` — reads convergence output, calls Gemini to extract structured MediaPlanItem suggestions. `MEDIA_STRATEGY_TEMPLATE` constant with pre-configured seats.
+  - `server.ts`: `POST /api/boardroom/sessions/:id/media-briefs` endpoint.
+  - `Boardroom.tsx`: "Extract Media Briefs" button on completed sessions, media brief cards with type icons/tags, "Send to Plan" copy-to-clipboard per item, "Media Strategy" template button on session form.
+- **Files**: `boardroom.ts`, `server.ts` (boardroom section), `src/pages/Boardroom.tsx`
+- **Done**: Lane 2 — 2026-03-14. All deliverables implemented. Lint clean.**
+
 ---
 
 ## Track J — Presentation & Export (upgrade.md)
@@ -347,8 +358,8 @@
 
 ## Current State Snapshot
 
-- **Working**: Image gen, video gen (with background polling + live UI refresh), voice TTS, boardroom sessions (5-phase async protocol with session replay), research (server-proxied), video analysis (server-proxied), live voice (client-side — known trade-off), Twilio SMS webhook, media library with skeletons + auto-refresh, mobile-responsive layout, error boundaries on all routes, brand context persisted across refreshes.
+- **Working**: Image gen, video gen (with background polling + live UI refresh), voice TTS, boardroom sessions (5-phase async protocol with session replay + **media brief extraction**), research (server-proxied), video analysis (server-proxied), live voice (client-side — known trade-off), Twilio SMS webhook, media library with skeletons + auto-refresh, mobile-responsive layout, error boundaries on all routes, brand context persisted across refreshes, **Media Strategy session template**.
 - **In Progress (Lane 3)**: D2 (toast system), G1 (ProjectContext + project switcher), Quick Wins (Library search, count selector, presets, regen/copy), H1 (MediaPlan page), I1 (Research→Media modal), J1 (Collections), J2 (Present).
-- **Remaining / Not started**: A3 (VoiceLab WS proxy — accepted trade-off pending decision), E2 (frontend component smoke tests), H2/H3/H4 (batch queue, prompt expansion, variants — Lane 1 dependency), G2 (project-scoped media — Lane 1 dependency), I2 (Boardroom→Media — Lane 2 dependency), I3/I4 (AI scoring, tags — Lane 1 dependency), J3 (bulk export — Lane 1 dependency), D2 (toast system).
+- **Remaining / Not started**: A3 (VoiceLab WS proxy — accepted trade-off pending decision), E2 (frontend component smoke tests), H2/H3/H4 (batch queue, prompt expansion, variants — Lane 1 dependency), G2 (project-scoped media — Lane 1 dependency), I3/I4 (AI scoring, tags — Lane 1 dependency), J3 (bulk export — Lane 1 dependency), D2 (toast system).
 - **Technical debt**: `better-sqlite3` unused — decision note at `docs/decisions/A5-better-sqlite3.md` recommends removal; awaiting explicit approval before touching `package.json`. `vite.config.ts` now allows `.trycloudflare.com` hosts (tunnelling convenience — review if not needed).
 - **Untracked files that should be committed**: `src/components/ErrorBoundary.tsx`, `tests/`, `vitest.config.ts`, `docs/`, `WORKSPACE-NOTES.md`.

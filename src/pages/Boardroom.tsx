@@ -6,6 +6,12 @@ import {
   AlertCircle,
   CheckCircle2,
   ClipboardList,
+  Clipboard,
+  ClipboardCheck,
+  Image,
+  Film,
+  Mic,
+  Sparkles,
   Loader2,
   RefreshCw,
   Send,
@@ -18,6 +24,7 @@ import {
   PenLine,
   Filter,
   Clock,
+  Wand2,
 } from "lucide-react";
 
 type ThoughtDepth = "light" | "standard" | "deep";
@@ -120,6 +127,60 @@ interface BoardroomSession {
   error?: string;
 }
 
+interface MediaPlanItem {
+  id: string;
+  type: "image" | "video" | "voice";
+  label: string;
+  purpose: string;
+  promptTemplate: string;
+  tags?: string[];
+  status: "draft";
+  generatedJobIds: string[];
+}
+
+// Media Strategy session template — pre-fills the form with a media-focused topic.
+const MEDIA_STRATEGY_TEMPLATE = {
+  topic:
+    "What visual and media assets does {brandName} need for {goal}? Consider website, social media, video, and presentation materials.",
+  context:
+    "Focus on concrete, actionable asset types. Each seat should recommend specific formats, dimensions, and use-cases, not just vague categories.",
+  participants: [
+    {
+      id: "media-strategist",
+      name: "Media Strategist",
+      role: "Media Strategist",
+      brief:
+        "Identify the full set of visual assets needed across every channel. Push for specificity: format, dimensions, placement, and primary message for each asset.",
+    },
+    {
+      id: "content-producer",
+      name: "Content Producer",
+      role: "Content Producer",
+      brief:
+        "Assess production feasibility and sequencing. Which assets should be created first? What can be repurposed across channels?",
+    },
+    {
+      id: "brand-director",
+      name: "Brand Director",
+      role: "Brand Director",
+      brief:
+        "Ensure every asset recommendation aligns with brand voice, visual identity, and target audience expectations.",
+    },
+  ],
+} as const;
+
+const mediaTypeIcon: Record<string, typeof Image> = {
+  image: Image,
+  video: Film,
+  voice: Mic,
+};
+
+const mediaTypeColor: Record<string, string> = {
+  image: "text-sky-400",
+  video: "text-fuchsia-400",
+  voice: "text-amber-400",
+};
+
 const seatTemplates: BoardroomParticipant[] = [
   {
     id: "strategist",
@@ -203,6 +264,10 @@ export default function Boardroom() {
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // C2: Left-panel tab ("new" = creation form, "history" = expanded session history).
   const [leftPanel, setLeftPanel] = useState<"new" | "history">("new");
+  // I2: Media briefs state.
+  const [mediaBriefs, setMediaBriefs] = useState<MediaPlanItem[]>([]);
+  const [extractingBriefs, setExtractingBriefs] = useState(false);
+  const [copiedBriefId, setCopiedBriefId] = useState<string | null>(null);
   // C2: Phase filter for the turn transcript replay — null means show all turns.
   const [phaseFilter, setPhaseFilter] = useState<BoardroomPhase | null>(null);
 
@@ -274,7 +339,56 @@ export default function Boardroom() {
   // C2: Reset phase filter whenever the active session changes.
   useEffect(() => {
     setPhaseFilter(null);
+    setMediaBriefs([]);
   }, [activeSessionId]);
+
+  // I2: Extract media briefs from finished session.
+  const handleExtractBriefs = useCallback(async () => {
+    if (!activeSession || activeSession.status !== "completed") return;
+    setExtractingBriefs(true);
+    try {
+      const res = await fetch(`/api/boardroom/sessions/${activeSession.id}/media-briefs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey: import.meta.env.VITE_GEMINI_API_KEY || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to extract media briefs.");
+      }
+      const briefs = (await res.json()) as MediaPlanItem[];
+      setMediaBriefs(briefs);
+    } catch (err: any) {
+      alert(err.message || "Media brief extraction failed.");
+    } finally {
+      setExtractingBriefs(false);
+    }
+  }, [activeSession]);
+
+  // I2: Copy a single media brief item to clipboard ("Send to Media Plan").
+  const copyBriefToClipboard = useCallback(async (brief: MediaPlanItem) => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(brief, null, 2));
+      setCopiedBriefId(brief.id);
+      setTimeout(() => setCopiedBriefId(null), 2000);
+    } catch {
+      alert("Failed to copy to clipboard.");
+    }
+  }, []);
+
+  // I2: Apply the Media Strategy template to the form.
+  const applyMediaStrategyTemplate = useCallback(() => {
+    const filledTopic = MEDIA_STRATEGY_TEMPLATE.topic
+      .replace("{brandName}", brand.brandName || "your brand")
+      .replace("{goal}", "[your stated goal]");
+    setTopic(filledTopic);
+    setContext(MEDIA_STRATEGY_TEMPLATE.context);
+    setSeatCount(3);
+    setRounds(5);
+    setDepth("standard");
+  }, [brand.brandName]);
 
   // C2: Derive the visible turns based on the current phase filter.
   const visibleTurns = useMemo(() => {
@@ -408,9 +522,20 @@ export default function Boardroom() {
 
           {leftPanel === "new" ? (
           <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-5 space-y-4">
-            <div>
-              <h2 className="text-lg font-semibold text-white">Start a session</h2>
-              <p className="text-sm text-zinc-400 mt-1">The room now anchors on objective first, then moves through a visible protocol instead of free-form ping-pong.</p>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-white">Start a session</h2>
+                <p className="text-sm text-zinc-400 mt-1">The room now anchors on objective first, then moves through a visible protocol instead of free-form ping-pong.</p>
+              </div>
+              <button
+                type="button"
+                onClick={applyMediaStrategyTemplate}
+                title="Load Media Strategy template"
+                className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-fuchsia-500/30 bg-fuchsia-500/10 px-3 py-1.5 text-xs font-medium text-fuchsia-300 hover:bg-fuchsia-500/20 transition-colors"
+              >
+                <Wand2 className="w-3.5 h-3.5" />
+                Media Strategy
+              </button>
             </div>
 
             <div className="space-y-2">
@@ -866,6 +991,82 @@ export default function Boardroom() {
                   </div>
                 </div>
               ) : null}
+
+              {/* I2: Extract Media Briefs button + results (completed sessions only) */}
+              {activeSession.status === "completed" && (
+                <div className="rounded-2xl border border-fuchsia-500/20 bg-fuchsia-500/5 p-5 space-y-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-5 h-5 text-fuchsia-400" />
+                      <h3 className="text-lg font-semibold text-white">Media Briefs</h3>
+                    </div>
+                    <button
+                      onClick={handleExtractBriefs}
+                      disabled={extractingBriefs}
+                      className="inline-flex items-center gap-2 rounded-xl border border-fuchsia-500/30 bg-fuchsia-600 hover:bg-fuchsia-700 disabled:opacity-50 text-white px-4 py-2 text-sm font-medium transition-colors"
+                    >
+                      {extractingBriefs ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+                      {extractingBriefs ? "Extracting..." : mediaBriefs.length > 0 ? "Re-extract" : "Extract Media Briefs"}
+                    </button>
+                  </div>
+
+                  {mediaBriefs.length === 0 && !extractingBriefs && (
+                    <p className="text-sm text-zinc-500">
+                      Click "Extract Media Briefs" to surface actionable media asset suggestions from this session's convergence output.
+                    </p>
+                  )}
+
+                  {mediaBriefs.length > 0 && (
+                    <div className="space-y-3">
+                      {mediaBriefs.map((brief) => {
+                        const TypeIcon = mediaTypeIcon[brief.type] || Image;
+                        const typeColor = mediaTypeColor[brief.type] || "text-zinc-400";
+                        const isCopied = copiedBriefId === brief.id;
+                        return (
+                          <motion.div
+                            key={brief.id}
+                            initial={{ opacity: 0, y: 8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="rounded-xl border border-zinc-800 bg-zinc-950 p-4 space-y-2"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <TypeIcon className={`w-4 h-4 shrink-0 ${typeColor}`} />
+                                <h4 className="text-sm font-medium text-white truncate">{brief.label}</h4>
+                              </div>
+                              <button
+                                onClick={() => copyBriefToClipboard(brief)}
+                                title="Copy to clipboard (Send to Media Plan)"
+                                className={`shrink-0 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
+                                  isCopied
+                                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                                    : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                                }`}
+                              >
+                                {isCopied ? <ClipboardCheck className="w-3 h-3" /> : <Clipboard className="w-3 h-3" />}
+                                {isCopied ? "Copied!" : "Send to Plan"}
+                              </button>
+                            </div>
+                            <p className="text-xs text-zinc-400">{brief.purpose}</p>
+                            <div className="rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2">
+                              <p className="text-xs text-zinc-300 leading-relaxed">{brief.promptTemplate}</p>
+                            </div>
+                            {brief.tags && brief.tags.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5">
+                                {brief.tags.map((tag) => (
+                                  <span key={tag} className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">
+                                    {tag}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </motion.div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {activeSession.logs?.length ? (
                 <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
