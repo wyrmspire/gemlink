@@ -392,11 +392,67 @@
 
 ---
 
-## Current State Snapshot
+---
 
-- **Working**: Image gen, video gen (with background polling + live UI refresh), voice TTS, boardroom sessions (5-phase async protocol with session replay + media brief extraction), research (server-proxied), video analysis (server-proxied), live voice (client-side — known trade-off), Twilio SMS webhook (brand-context-aware), media library (search/filter, regen/copy, skeletons), mobile-responsive layout, error boundaries, brand context persisted, **ProjectContext** (multi-project switcher, per-project Setup), **MediaPlan** page, **Collections**, **Present** slideshow, toast notification system, **G2** (projectId in all manifests + history filter), **H2** (batch queue with semaphore + backoff), **H3** (3-step prompt expansion), **H4** (prompt variants), **I3** (LLM-as-judge scoring), **I4** (auto-tagging on generation), **J3** (ZIP export endpoint).
-- **In Progress**: none.
-- **Remaining / Not started**: A3 (VoiceLab WS proxy — accepted trade-off), E2 (frontend component smoke tests), D2 (toast system — partially done via Lane 3), J3 requires `archiver` from Lane 4.
-- **Lane 4 action required**: `npm install archiver @types/archiver` to enable J3 collection ZIP export.
-- **NOT tested**: All Lane 1 sprint items were verified via `tsc --noEmit` only. No runtime or end-to-end testing was performed. Key risk: Gemini model strings (`gemini-2.5-flash-preview`, `gemini-3-flash-preview`) may need version suffix updates if API rejects them.
-- **Technical debt**: `better-sqlite3` unused — `docs/decisions/A5-better-sqlite3.md` recommends removal. `batchStore` is in-memory only — batch state lost on server restart.
+## Sprint 2 — Lane 1 (Media Pipeline Server)
+
+> Last updated: 2026-03-14 (Lane 1 — Sprint 2 starting)
+> Owner: Lane 1 — server.ts (media endpoints) + jobs/ directory
+
+### W1. Wire SQLite into media job lifecycle 🟡
+- **Priority**: P0
+- **Status**: In progress
+- **Plan**: Import `mediaJobQueries` from `src/db.ts`. After every `writeManifest()` and `patchManifest()` call in image/video/voice endpoints and `GenerationQueue.runJob()`, call `mediaJobQueries.upsert()`. Update `collectHistory()` to use `mediaJobQueries.listByProject()` when projectId filter is provided.
+
+### W2. Build `POST /api/media/plan/suggest` 🟡
+- **Priority**: P0
+- **Status**: In progress
+- **Plan**: Accept `{ description, projectContext, apiKey }`. Call Gemini with JSON mode to return structured array of `MediaPlanItem` objects.
+
+### W3. Persist batch state to disk 🟡
+- **Priority**: P1
+- **Status**: In progress
+- **Plan**: On every `batchStore.set()` mutation write `jobs/batches/<batchId>/state.json`. On server startup, reload pending batches from disk and mark mid-generation ones as `failed`.
+
+### W4. Wire auto-scoring after batch completion 🟡
+- **Priority**: P1
+- **Status**: In progress
+- **Plan**: After all items in a batch complete, call scoring logic for each completed item. Update manifest + SQLite with scores.
+
+### W5. Add `POST /api/collections` server-side CRUD 🟡
+- **Priority**: P2
+- **Status**: In progress
+- **Plan**: Add REST endpoints for collections using `collectionQueries` and `collectionItemQueries` from `db.ts`.
+
+---
+
+## Sprint 2 — Lane 2 (Boardroom Engine)
+
+> Last updated: 2026-03-14 (Lane 2 — Sprint 2 complete)
+> Owner: Lane 2 — boardroom.ts, src/pages/Boardroom.tsx, /api/boardroom/* endpoints
+
+### W1. Wire "Send to Plan" properly 🟢
+- **Priority**: P1
+- **Status**: Done
+- **What was done**: Replaced the old clipboard-copy approach with a proper sessionStorage write + `useNavigate("/plan")`. `sendBriefToPlan()` appends the brief to `"pending-media-items"` (same key `Research.tsx` uses) then navigates to `/plan` after a 600ms toast flash. The `MediaPlan.tsx` import `useEffect` then picks it up and merges it into the plan. Also wired `useToast` for all three `alert()` calls in `Boardroom.tsx` (brief extraction errors, session start errors), replaced the old `copyBriefToClipboard` callback entirely.
+
+### W2. Session summary cards in history 🟢
+- **Priority**: P2
+- **Status**: Done
+- **What was done**: Added a convergence summary preview to each history session card. Cards now show `session.result.summary` truncated to 220 chars with CSS `line-clamp-3`, separated by a border-top rule. Completed sessions that have a summary show a useful 3-line preview so users can scan history without opening each session.
+
+### W3. Runtime test media briefs flow 🟢
+- **Priority**: P1
+- **Status**: Done
+- **Session tested**: `boardroom-1773368685318-3u3epm` (status: completed, topic: "Brand/media property for AI-curious…")
+- **Endpoint**: `POST /api/boardroom/sessions/boardroom-1773368685318-3u3epm/media-briefs`
+- **Result**: 200 OK — returned array of structured `MediaPlanItem` objects. Sample response excerpt:
+  ```json
+  [
+    {"id":"brief-0-…","type":"image","label":"Strange-to-Leverage Framework Visual","purpose":"Website explainer, social shareable","promptTemplate":"An abstract sophisticated infographic…","tags":["infographic","AI_concept"],"status":"draft","generatedJobIds":[]},
+    {"id":"brief-1-…","type":"video","label":"Micro-Explainer: AI-Adjacent Concept","purpose":"Social media (TikTok/Reels)",…},
+    {"id":"brief-2-…","type":"voice","label":"Expert Insight Audio Clip",…}
+  ]
+  ```
+- **Conclusion**: `extractMediaBriefs()` in `boardroom.ts` works correctly end-to-end. The Gemini call succeeds, JSON array parsed cleanly, IDs generated, all items have `status: "draft"` and `generatedJobIds: []` as expected.
+

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import { useBrand } from "../context/BrandContext";
 import { useApiKey } from "../components/ApiKeyGuard";
+import { useToast } from "../context/ToastContext";
+import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import {
   AlertCircle,
   CheckCircle2,
   ClipboardList,
-  Clipboard,
   ClipboardCheck,
   Image,
   Film,
@@ -251,6 +252,8 @@ function SectionList({ title, items, tone = "text-zinc-300" }: { title: string; 
 export default function Boardroom() {
   const brand = useBrand();
   const { resetKey } = useApiKey();
+  const { toast } = useToast();
+  const navigate = useNavigate();
   const [topic, setTopic] = useState("");
   const [context, setContext] = useState("");
   const [seatCount, setSeatCount] = useState(3);
@@ -360,23 +363,27 @@ export default function Boardroom() {
       }
       const briefs = (await res.json()) as MediaPlanItem[];
       setMediaBriefs(briefs);
+      toast(`Extracted ${briefs.length} media brief${briefs.length === 1 ? "" : "s"}.`, "success");
     } catch (err: any) {
-      alert(err.message || "Media brief extraction failed.");
+      toast(err.message || "Media brief extraction failed.", "error");
     } finally {
       setExtractingBriefs(false);
     }
-  }, [activeSession]);
+  }, [activeSession, toast]);
 
-  // I2: Copy a single media brief item to clipboard ("Send to Media Plan").
-  const copyBriefToClipboard = useCallback(async (brief: MediaPlanItem) => {
+  // W1 (S2): Send a single media brief item to the Media Plan via sessionStorage → /plan.
+  const sendBriefToPlan = useCallback((brief: MediaPlanItem) => {
     try {
-      await navigator.clipboard.writeText(JSON.stringify(brief, null, 2));
+      const existing = JSON.parse(sessionStorage.getItem("pending-media-items") ?? "[]");
+      sessionStorage.setItem("pending-media-items", JSON.stringify([...existing, brief]));
       setCopiedBriefId(brief.id);
-      setTimeout(() => setCopiedBriefId(null), 2000);
+      toast("Item added to Media Plan.", "success");
+      // Navigate after a brief flash so the user sees the confirmation.
+      setTimeout(() => navigate("/plan"), 600);
     } catch {
-      alert("Failed to copy to clipboard.");
+      toast("Failed to send to Media Plan.", "error");
     }
-  }, []);
+  }, [navigate, toast]);
 
   // I2: Apply the Media Strategy template to the form.
   const applyMediaStrategyTemplate = useCallback(() => {
@@ -459,7 +466,7 @@ export default function Boardroom() {
       if (error?.message?.includes("PERMISSION_DENIED") || error?.message?.includes("Requested entity was not found")) {
         resetKey();
       } else {
-        alert(error.message || "Discussion failed.");
+        toast(error.message || "Discussion failed.", "error");
       }
     } finally {
       setLoading(false);
@@ -671,6 +678,10 @@ export default function Boardroom() {
                 {sessions.map((session) => {
                   const elapsed = elapsedLabel(session);
                   const turnCount = session.turns.filter((t) => t.role === "seat").length;
+                  // W2 (S2): Extract a short preview of the convergence synthesis for the card.
+                  const convergenceSummary = session.result?.summary
+                    ? session.result.summary.slice(0, 220)
+                    : null;
                   return (
                   <button
                     key={session.id}
@@ -696,6 +707,12 @@ export default function Boardroom() {
                             </span>
                           )}
                         </div>
+                        {/* W2: Convergence summary preview (3-line truncate) */}
+                        {convergenceSummary && (
+                          <p className="mt-2 text-xs text-zinc-400 line-clamp-3 leading-relaxed border-t border-zinc-800 pt-2">
+                            {convergenceSummary}{session.result!.summary.length > 220 ? "…" : ""}
+                          </p>
+                        )}
                       </div>
                       <span className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs ${
                         session.status === "completed" ? "bg-emerald-500/10 text-emerald-300"
@@ -1035,16 +1052,16 @@ export default function Boardroom() {
                                 <h4 className="text-sm font-medium text-white truncate">{brief.label}</h4>
                               </div>
                               <button
-                                onClick={() => copyBriefToClipboard(brief)}
-                                title="Copy to clipboard (Send to Media Plan)"
+                                onClick={() => sendBriefToPlan(brief)}
+                                title="Send to Media Plan"
                                 className={`shrink-0 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
                                   isCopied
                                     ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                                    : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                                    : "border-fuchsia-500/30 bg-fuchsia-600/20 text-fuchsia-300 hover:bg-fuchsia-600/30 hover:text-white"
                                 }`}
                               >
-                                {isCopied ? <ClipboardCheck className="w-3 h-3" /> : <Clipboard className="w-3 h-3" />}
-                                {isCopied ? "Copied!" : "Send to Plan"}
+                                {isCopied ? <ClipboardCheck className="w-3 h-3" /> : <Send className="w-3 h-3" />}
+                                {isCopied ? "Sent!" : "Send to Plan"}
                               </button>
                             </div>
                             <p className="text-xs text-zinc-400">{brief.purpose}</p>
