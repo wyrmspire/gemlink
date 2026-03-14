@@ -68,15 +68,15 @@
 - **Parallelizable with**: All other items
 - **Done**: Lane 3 — `ErrorBoundary.tsx` created (class component, retry button, styled error card). Wired into `Layout.tsx` wrapping the `<Outlet />`.
 
-### A5. Decide on better-sqlite3: use it or remove it 🟡
+### A5. Decide on better-sqlite3: use it or remove it 🟢
 - **Priority**: P2 (code hygiene)
 - **Why**: `better-sqlite3` is in `package.json` dependencies but never imported anywhere. It adds native compilation overhead to `npm install`. Either use it for job/session metadata or remove it.
 - **Deliverables**: Either a migration plan to SQLite-backed persistence or removal from `package.json`.
 - **Files**: `package.json`, potentially `server.ts` + `boardroom.ts` if adopting
 - **Dependencies**: Decision needed — this affects Track B and Track C
 - **Parallelizable with**: A4
-- **Decision note**: [`docs/decisions/A5-better-sqlite3.md`](docs/decisions/A5-better-sqlite3.md) — original recommendation was Option A (remove). **Re-evaluated in light of `upgrade.md` bulk media sprint**: adopted Option B (use SQLite) — the batch queue (H2), AI scoring (I3), project-scoped library (G2), and collections (J1) all require structured queries that flat files cannot serve efficiently. Created `src/db.ts` with full schema. See updated decision doc.
-- **Lane 4 — started 2026-03-14**
+- **Decision note**: [`docs/decisions/A5-better-sqlite3.md`](docs/decisions/A5-better-sqlite3.md) — original recommendation was Option A (remove). **Re-evaluated in light of `upgrade.md` bulk media sprint**: adopted Option B (use SQLite) — the batch queue (H2), AI scoring (I3), project-scoped library (G2), and collections (J1) all require structured queries that flat files cannot serve efficiently.
+- **Done**: Lane 4 — created `src/db.ts` with full schema (projects, media_jobs, collections, collection_items, media_plans). WAL mode, FK enforcement, typed query helpers exported. Decision doc updated at `docs/decisions/A5-better-sqlite3.md`. Also installed `archiver` + `@types/archiver` (for J3 ZIP export, Lane 1) and `@dnd-kit/core` + `@dnd-kit/sortable` (for J1 drag-and-drop, Lane 3). Added `@types/better-sqlite3` devDependency.
 
 ---
 
@@ -208,7 +208,7 @@
 - **Dependencies**: None
 - **Parallelizable with**: E2
 
-### E2. Add frontend component smoke tests 🟡
+### E2. Add frontend component smoke tests 🟢
 - **Priority**: P2 (reliability)
 - **Why**: No component tests exist. At minimum, verify pages render without crashing.
 - **Deliverables**:
@@ -217,7 +217,7 @@
 - **Files**: `package.json`, `tests/` (new directory)
 - **Dependencies**: E1 (shared test infrastructure setup)
 - **Parallelizable with**: E1 (after shared setup)
-- **Lane 4 — started 2026-03-14**
+- **Done**: Lane 4 — 14 tests passing (Dashboard ×2, Setup ×2, SocialMedia ×1, VideoLab ×1, VoiceLab ×1, Boardroom ×2, Research ×1, SalesAgent ×1, Library ×3). Installed `@testing-library/react`, `@testing-library/jest-dom`, `@testing-library/user-event`, `jsdom`. Updated `vitest.config.ts` to support both node and jsdom environments per-file. Added `tests/setup.ts` global setup and `tests/helpers/renderWithProviders.tsx` with full provider stack (ApiKeyGuard mock, BrandProvider, ProjectProvider, ToastProvider, MemoryRouter). All 31 tests pass (17 API + 14 component).
 
 ---
 

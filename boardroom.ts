@@ -385,9 +385,214 @@ export async function listBoardroomSessions() {
   return sessions;
 }
 
-export async function readBoardroomSession(id: string) {
-  const raw = await fs.readFile(getSessionPath(id), "utf8");
-  return JSON.parse(raw) as BoardroomSession;
+// C3: Validate required fields on a parsed boardroom session object.
+function validateBoardroomSession(parsed: unknown, id: string): BoardroomSession {
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error(`Boardroom session ${id}: file is not a JSON object.`);
+  }
+  const obj = parsed as Record<string, unknown>;
+  const required: (keyof BoardroomSession)[] = ["id", "createdAt", "updatedAt", "status", "topic", "turns", "participants", "logs"];
+  for (const field of required) {
+    if (!(field in obj)) {
+      throw new Error(`Boardroom session ${id}: missing required field "${field}". The file may be corrupted.`);
+    }
+  }
+  const validStatuses: BoardroomSessionStatus[] = ["pending", "completed", "failed"];
+  if (!validStatuses.includes(obj.status as BoardroomSessionStatus)) {
+    throw new Error(`Boardroom session ${id}: invalid status "${obj.status}".`);
+  }
+  if (!Array.isArray(obj.turns)) {
+    throw new Error(`Boardroom session ${id}: "turns" must be an array.`);
+  }
+  if (!Array.isArray(obj.participants)) {
+    throw new Error(`Boardroom session ${id}: "participants" must be an array.`);
+  }
+  return obj as unknown as BoardroomSession;
+}
+
+export async function readBoardroomSession(id: string): Promise<BoardroomSession> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(getSessionPath(id), "utf8");
+  } catch (err: any) {
+    throw new Error(`Boardroom session ${id} not found or unreadable: ${err?.message || err}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err: any) {
+    throw new Error(`Boardroom session ${id} contains invalid JSON (file may be corrupted): ${err?.message || err}`);
+  }
+  return validateBoardroomSession(parsed, id);
+}
+
+// C1: Async session creation — returns a pending session immediately, runs orchestration in background.
+export async function startBoardroomSessionAsync(request: BoardroomSessionRequest): Promise<BoardroomSession> {
+  if (!request.topic?.trim()) {
+    throw new Error("Topic is required.");
+  }
+
+  const apiKey = request.apiKey || process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is missing. Set it in .env.local or provide apiKey in the request.");
+  }
+
+  const participants = sanitizeParticipants(request.participants);
+  const rounds = clampInteger(request.rounds, 1, MAX_ROUNDS, DEFAULT_ROUNDS);
+  const config: BoardroomSessionConfig = {
+    seatCount: participants.length,
+    rounds,
+    depth: sanitizeDepth(request.depth),
+    protocol: PROTOCOL.slice(0, rounds),
+  };
+
+  const session: BoardroomSession = {
+    id: createId("boardroom"),
+    createdAt: stamp(),
+    updatedAt: stamp(),
+    status: "pending",
+    topic: request.topic.trim(),
+    context: request.context?.trim() || "",
+    config,
+    objective: null,
+    participants,
+    turns: [],
+    stateHistory: [],
+    result: null,
+    logs: [`[${stamp()}] Session queued — ${participants.length} seat(s), protocol ${config.protocol.map(phaseLabel).join(" → ")}, depth ${config.depth}.`],
+  };
+
+  // Write pending session immediately so the client can start polling.
+  await writeBoardroomSession(session);
+
+  // Run orchestration in the background — do not await.
+  void runBoardroomOrchestration(session, apiKey);
+
+  return session;
+}
+
+// Internal: background orchestration loop (same logic as the synchronous createBoardroomSession, but persisting after every turn).
+async function runBoardroomOrchestration(session: BoardroomSession, apiKey: string) {
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    const finalPerspectives = new Map<string, BoardroomPerspective>();
+
+    session.objective = await requestObjective(ai, session);
+    session.turns.push({
+      id: createId("turn"),
+      participantId: "system-brief",
+      participantName: "Boardroom Brief",
+      role: "system",
+      kind: "brief",
+      round: 1,
+      phase: "opening_brief",
+      phaseLabel: phaseLabel("opening_brief"),
+      content: session.objective.briefing,
+      stateSummary: session.objective.primaryGoal,
+      createdAt: stamp(),
+    });
+    session.logs = appendLog(session, "Objective anchor prepared.");
+    session.updatedAt = stamp();
+    await writeBoardroomSession(session);
+
+    let latestState: BoardroomStateSnapshot | null = null;
+
+    for (const [index, phase] of session.config.protocol.entries()) {
+      const round = index + 1;
+      session.logs = appendLog(session, `Starting ${phaseLabel(phase)} (${round} of ${session.config.rounds}).`);
+      session.updatedAt = stamp();
+      await writeBoardroomSession(session);
+
+      if (phase !== "opening_brief") {
+        const roundStartTurns = [...session.turns];
+        const phaseTurns: BoardroomTurn[] = [];
+
+        for (const participant of session.participants) {
+          const parsed = await requestRoundReply(ai, session, participant, phase, round, roundStartTurns, latestState);
+          const normalized = normalizeReply(parsed, participant);
+          finalPerspectives.set(participant.id, normalized);
+
+          const turn: BoardroomTurn = {
+            id: createId("turn"),
+            participantId: participant.id,
+            participantName: participant.name,
+            role: "seat",
+            kind: phaseKind(phase),
+            round,
+            phase,
+            phaseLabel: phaseLabel(phase),
+            content: String(parsed.message || parsed.stance || "").trim(),
+            stance: normalized.stance,
+            risks: normalized.risks,
+            opportunities: normalized.opportunities,
+            recommendations: normalized.recommendations,
+            createdAt: stamp(),
+          };
+
+          session.turns.push(turn);
+          phaseTurns.push(turn);
+          session.updatedAt = stamp();
+          session.logs = appendLog(session, `${participant.name} completed ${phaseLabel(phase)}.`);
+          // Persist after every individual turn so the client sees incremental progress.
+          await writeBoardroomSession(session);
+        }
+
+        latestState = await requestStateUpdate(ai, session, phase, round, phaseTurns, latestState);
+        session.stateHistory.push(latestState);
+        session.turns.push({
+          id: createId("turn"),
+          participantId: "system-state",
+          participantName: "Room State",
+          role: "system",
+          kind: "state_update",
+          round,
+          phase,
+          phaseLabel: phaseLabel(phase),
+          content: latestState.summary,
+          stateSummary: latestState.roomFocus,
+          createdAt: stamp(),
+        });
+        session.logs = appendLog(session, `State updated after ${phaseLabel(phase)}.`);
+        session.updatedAt = stamp();
+        await writeBoardroomSession(session);
+      }
+    }
+
+    const perspectives = session.participants
+      .map((participant) => finalPerspectives.get(participant.id))
+      .filter(Boolean) as BoardroomPerspective[];
+
+    const summary = await requestSummary(ai, session, perspectives);
+    session.turns.push({
+      id: createId("turn"),
+      participantId: "system-summary",
+      participantName: "Boardroom Summary",
+      role: "system",
+      kind: "summary",
+      round: session.config.rounds + 1,
+      phase: "convergence",
+      phaseLabel: "Final synthesis",
+      content: String(summary.summary || "").trim(),
+      createdAt: stamp(),
+    });
+    session.result = {
+      summary: String(summary.summary || "").trim(),
+      nextSteps: Array.isArray(summary.nextSteps) ? summary.nextSteps.map(String).slice(0, 5) : [],
+      perspectives,
+      finalState: latestState,
+    };
+    session.status = "completed";
+    session.updatedAt = stamp();
+    session.logs = appendLog(session, "Session completed.");
+    await writeBoardroomSession(session);
+  } catch (error: any) {
+    console.error("Boardroom background orchestration error:", error);
+    session.status = "failed";
+    session.error = error?.message || "Boardroom session failed.";
+    session.updatedAt = stamp();
+    session.logs = appendLog(session, `Session failed: ${session.error}`);
+    await writeBoardroomSession(session);
+  }
 }
 
 async function writeBoardroomSession(session: BoardroomSession) {
@@ -719,3 +924,200 @@ export async function createBoardroomSession(request: BoardroomSessionRequest) {
     throw error;
   }
 }
+
+// ── I2: Media Brief Pipeline ──────────────────────────────────────────────────
+
+/**
+ * MediaPlanItem — mirrors the interface defined in upgrade.md Track H.
+ * Returned by extractMediaBriefs() so the frontend / Media Plan page can
+ * ingest the suggestions without any further transformation.
+ */
+export interface MediaPlanItem {
+  id: string;
+  type: "image" | "video" | "voice";
+  label: string;            // e.g. "Hero banner for landing page"
+  purpose: string;          // e.g. "Website hero", "Instagram post"
+  promptTemplate: string;   // Ready-to-use generation prompt
+  model?: string;
+  size?: string;
+  aspectRatio?: string;
+  status: "draft";          // Always "draft" when freshly extracted
+  generatedJobIds: string[];
+  rating?: number;
+  tags?: string[];
+}
+
+/**
+ * Pre-configured Media Strategy session template (I2 companion feature).
+ * The topic uses {brandName} / {goal} placeholders so the frontend can
+ * substitute them before submitting.
+ */
+export const MEDIA_STRATEGY_TEMPLATE = {
+  id: "media-strategy",
+  label: "Media Strategy",
+  description:
+    "Ask the AI seats to brainstorm every visual and media asset a brand or project needs — website, social, video, and presentation.",
+  defaultTopic:
+    "What visual and media assets does {brandName} need for {goal}? Consider website, social media, video, and presentation materials.",
+  defaultContext:
+    "Focus on concrete, actionable asset types. Each seat should recommend specific formats, dimensions, and use-cases, not just vague categories.",
+  participants: [
+    {
+      id: "media-strategist",
+      name: "Media Strategist",
+      role: "Media Strategist",
+      brief:
+        "Identify the full set of visual assets needed across every channel. Push for specificity: format, dimensions, placement, and primary message for each asset.",
+    },
+    {
+      id: "content-producer",
+      name: "Content Producer",
+      role: "Content Producer",
+      brief:
+        "Assess production feasibility and sequencing. Which assets should be created first? What can be repurposed across channels?",
+    },
+    {
+      id: "brand-director",
+      name: "Brand Director",
+      role: "Brand Director",
+      brief:
+        "Ensure every asset recommendation aligns with brand voice, visual identity, and target audience expectations.",
+    },
+  ],
+} as const;
+
+/** Keywords used to scan convergence output for media-related sentences. */
+const MEDIA_KEYWORDS = [
+  "visual", "image", "video", "content", "asset", "graphic", "photo",
+  "illustration", "animation", "banner", "poster", "thumbnail", "logo",
+  "icon", "infographic", "presentation", "slide", "hero", "social",
+  "instagram", "twitter", "linkedin", "youtube", "reel", "story",
+  "advertisement", "ad", "brand", "media",
+];
+
+function containsMediaKeyword(sentence: string): boolean {
+  const lower = sentence.toLowerCase();
+  return MEDIA_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+/**
+ * I2: Extract actionable media briefs from a completed boardroom session.
+ *
+ * 1. Validates the session is completed.
+ * 2. Gathers convergence-phase turns + final synthesis text.
+ * 3. Calls Gemini to extract structured MediaPlanItem suggestions.
+ * 4. Returns a normalised array ready for the Media Plan page (or clipboard).
+ */
+export async function extractMediaBriefs(
+  sessionId: string,
+  apiKey?: string,
+): Promise<MediaPlanItem[]> {
+  const session = await readBoardroomSession(sessionId);
+
+  if (session.status !== "completed") {
+    throw new Error(
+      `Cannot extract media briefs from a session with status "${session.status}". Session must be completed.`,
+    );
+  }
+
+  const key = apiKey || process.env.GEMINI_API_KEY;
+  if (!key) {
+    throw new Error(
+      "GEMINI_API_KEY is missing. Set it in .env.local or provide apiKey in the request.",
+    );
+  }
+
+  // Gather convergence-phase content: convergence turns + final result summary.
+  const convergenceTurns = session.turns.filter(
+    (t) => t.phase === "convergence" || t.kind === "summary",
+  );
+
+  const convergenceText = [
+    ...convergenceTurns.map((t) => `[${t.participantName}]: ${t.content}`),
+    session.result?.summary ? `\nFinal synthesis:\n${session.result.summary}` : "",
+    session.result?.nextSteps?.length
+      ? `\nNext steps:\n${session.result.nextSteps.join("\n")}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  if (!convergenceText.trim()) {
+    return [];
+  }
+
+  // Quick heuristic: surface sentences most likely to mention media assets.
+  const sentences = convergenceText.split(/[.!?]+/).filter(Boolean);
+  const mediaHints = sentences
+    .filter(containsMediaKeyword)
+    .slice(0, 20)
+    .join(". ");
+
+  const promptContext = (mediaHints || convergenceText).slice(0, 3000);
+
+  const ai = new GoogleGenAI({ apiKey: key });
+
+  const systemPrompt = `You are a media planning assistant. Given the following boardroom session output about "${session.topic}", extract actionable media asset suggestions.
+
+Return ONLY a JSON array (no markdown fences, no commentary) of objects with this exact shape:
+[
+  {
+    "type": "image" | "video" | "voice",
+    "label": "Short descriptive name for the asset",
+    "purpose": "Where/how it will be used (e.g. Website hero, Instagram post, Pitch deck slide)",
+    "promptTemplate": "A concrete, ready-to-use generation prompt for this asset",
+    "tags": ["tag1", "tag2"]
+  }
+]
+
+Rules:
+- Extract 3–8 concrete media suggestions (not vague categories).
+- Each promptTemplate should be a specific, actionable generation prompt mentioning brand tone, visual style, and purpose.
+- type "image" for static visuals, "video" for motion content, "voice" for audio/voiceover.
+- Focus on assets clearly implied or recommended by the session output.
+- If no clear media suggestions are present, return an empty array [].
+
+Session topic: ${session.topic}
+Session output to analyze:
+${promptContext}`;
+
+  const response = await ai.models.generateContent({
+    model: DEFAULT_MODEL,
+    contents: systemPrompt,
+  });
+
+  const rawText = (response.text || "").trim();
+
+  let parsed: unknown;
+  try {
+    const arrayStart = rawText.indexOf("[");
+    const arrayEnd = rawText.lastIndexOf("]");
+    if (arrayStart === -1 || arrayEnd === -1 || arrayEnd <= arrayStart) {
+      return [];
+    }
+    parsed = JSON.parse(rawText.slice(arrayStart, arrayEnd + 1));
+  } catch {
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) return [];
+
+  const validTypes = new Set(["image", "video", "voice"]);
+
+  return parsed
+    .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+    .map((item, index): MediaPlanItem => ({
+      id: createId(`brief-${index}`),
+      type: validTypes.has(String(item.type)) ? (item.type as MediaPlanItem["type"]) : "image",
+      label: String(item.label || "Untitled asset").trim().slice(0, 120),
+      purpose: String(item.purpose || "General use").trim().slice(0, 200),
+      promptTemplate: String(item.promptTemplate || "").trim().slice(0, 1000),
+      tags: Array.isArray(item.tags)
+        ? item.tags.map(String).filter(Boolean).slice(0, 8)
+        : [],
+      status: "draft",
+      generatedJobIds: [],
+    }))
+    .filter((item) => item.label && item.promptTemplate);
+}
+

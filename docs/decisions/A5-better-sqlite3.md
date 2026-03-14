@@ -1,70 +1,83 @@
 # Decision Note: A5 — better-sqlite3: Use It or Remove It
 
-> Status: **Options captured — awaiting decision**
-> Author: Lane 5 | Date: 2026-03-13
+> Status: **DECIDED — Option B (Adopt for structured metadata)**
+> Original author: Lane 5 | Date: 2026-03-13
+> Revised by: Lane 4 | Date: 2026-03-14
 
 ## Context
 
-`better-sqlite3@^12.4.1` is in `package.json` dependencies but is **never imported anywhere** in the codebase. It adds native compilation overhead (C++ binding via `node-gyp`) to every `npm install`, which slows installation and can fail on systems without build tools.
+`better-sqlite3@^12.4.1` is in `package.json` dependencies but was never
+imported anywhere in the codebase. The original recommendation (Option A) was
+to remove it.
 
-Currently, all persistence is flat-file JSON:
-- **Media jobs**: `jobs/images/<id>/manifest.json`, `jobs/videos/<id>/manifest.json`, `jobs/voice/<id>/manifest.json`
-- **Boardroom sessions**: `jobs/boardroom/<id>.json`
-- **Brand context**: Not persisted at all (in-memory only — see B1)
+## Re-evaluation: upgrade.md bulk media sprint
 
-## Option A: Remove It (Recommended for Now)
+The `upgrade.md` document introduces a suite of features that require
+structured queries on media metadata:
 
-**Action**: Remove `better-sqlite3` from `package.json`, run `npm install`.
+| Feature | Query need |
+|---------|-----------|
+| **G2** — Project-scoped media | `WHERE projectId = ?` on media_jobs |
+| **H2** — Batch queue | `WHERE status = 'pending'` + `ORDER BY createdAt` |
+| **I3** — AI scoring | Store + query `scores` JSON per job |
+| **I4** — Tag & organize | `WHERE tags LIKE ?` / full-text search |
+| **J1** — Collections | Join table: `collection_items(collectionId, jobId)` |
+| **J3** — Bulk export | Collect all items in a collection efficiently |
+| **H1** — Media plans | Persist + retrieve plan item arrays per project |
 
-**Pros**:
-- Eliminates native compilation overhead (~10–30s on install, more on CI)
-- Reduces attack surface and dependency count
-- The current file-backed approach works fine for a single-user/single-server app
-- Can always add it back later if needed
+None of these are efficient with flat-file JSON. With SQLite, each is a single
+indexed query. The flat-file approach would require reading every manifest on
+every request.
 
-**Cons**:
-- If we later want structured queries (e.g., "all video jobs from last week"), we'd need to re-add it
+## Decision: Option B — Adopt SQLite
 
-**Effort**: 5 minutes.
+**Implementation**: `src/db.ts` created. See that file for full schema details.
 
-## Option B: Adopt It for Job/Session Metadata
+### Tables created
 
-**Action**: Create a `db.ts` module that initializes a SQLite database, create tables for job manifests and boardroom sessions, and migrate the read/write paths in `server.ts` and `boardroom.ts`.
+| Table | Purpose |
+|-------|---------|
+| `projects` | Project profiles (replaces single BrandContext) |
+| `media_jobs` | Indexed manifest metadata (binary files stay on disk) |
+| `collections` | Named curated media sets |
+| `collection_items` | Join table with sort order |
+| `media_plans` | AI-generated media plans (JSON items column) |
 
-**Pros**:
-- Structured queries and filtering (e.g., by status, date, type)
-- Atomic writes — no risk of partial JSON files on crash
-- Scales better if job volume grows
-- Could also store brand config (solves B1 server-side)
+### Key design choices
 
-**Cons**:
-- Significant refactor of `server.ts` (Lane 1) and `boardroom.ts` (Lane 2)
-- Need to coordinate across 3 lanes (1, 2, 4)
-- Adds operational complexity (DB file management, migrations)
-- Overkill for a single-user tool that currently has < 100 jobs
+1. **Binary files remain on disk** — images/videos/audio are NOT in SQLite.
+   The DB only indexes the metadata (prompts, status, tags, scores, paths).
+   This avoids SQLite blob performance issues and keeps the file-based output
+   system compatible with the existing `jobs/` directory structure.
 
-**Effort**: 4–8 hours across multiple lanes.
+2. **WAL mode** — `PRAGMA journal_mode = WAL` for better concurrent reads
+   (relevant once the batch queue runs multiple concurrent jobs that are also
+   being polled from the UI).
 
-## Option C: Adopt It Only for Brand Config (Minimal)
+3. **Foreign keys on** — `PRAGMA foreign_keys = ON`. Referential integrity
+   enforced: deleting a project cascades to its media plans and collections.
 
-**Action**: Use SQLite only for persisting brand configuration server-side. Keep file-based job persistence as-is.
+4. **INSERT OR REPLACE for media_jobs** — allows the batch job runner to
+   upsert status updates without checking existence first.
 
-**Pros**:
-- Solves B1 and partially B2 (brand context available server-side for Twilio)
-- Minimal surface area — only one new module, no existing code migration
+5. **Typed helpers exported** — `projectQueries`, `mediaJobQueries`,
+   `collectionQueries`, `collectionItemQueries`, `mediaPlanQueries`. Other
+   lanes import these helpers, not `db` directly (except for custom queries).
 
-**Cons**:
-- Mixed persistence model (SQLite for config, files for jobs)
-- Still has the native compilation cost for a small use case
-- `localStorage` (proposed in B1) would solve the same problem without SQLite
+## Migration path from flat files
 
-**Effort**: 1–2 hours.
+The DB is **additive** — existing flat-file jobs in `jobs/images/`, `jobs/videos/`,
+`jobs/voice/` continue to work. Lane 1 will backfill `media_jobs` rows when
+serving history (or on first access). There is no hard cutover.
 
-## Recommendation
+## Reversing this decision
 
-**Go with Option A (remove it) for now.** The app is a single-user local tool. The flat-file approach is sufficient, and `localStorage` (B1) handles brand persistence. If the app grows to need structured queries or multi-user support, revisit Option B.
+If SQLite causes issues (e.g. native build failures on a target platform),
+remove the `db.ts` import from server-side modules and switch back to flat
+files. The schema drop is: `rm jobs/gemlink.db`.
 
-## Decision Required From
+## Decision authority
 
-- **Lane 4** (owns `package.json`) for removal
-- **Lane 1 + Lane 2** if adoption is chosen instead
+- **Lane 4** owns `package.json` and made the final call.
+- **Lane 1** (server.ts endpoints) and **Lane 3** (context) should import
+  `src/db.ts` for any new persistence needs related to the upgrade sprint.

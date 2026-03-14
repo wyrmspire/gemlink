@@ -1,5 +1,5 @@
 {
-  "name": "",
-  "description": "",
+  "name": "Gemlink",
+  "description": "An AI-powered brand marketing workspace built with React, Express, and Gemini APIs. Features include multi-modal media generation (image, video, voice), multi-seat boardroom strategy sessions, grounded research, and Twilio SMS sales agent integration.",
   "requestFramePermissions": []
 }

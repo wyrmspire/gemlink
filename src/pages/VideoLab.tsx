@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, ChangeEvent } from "react";
 import { useBrand } from "../context/BrandContext";
 import { useApiKey } from "../components/ApiKeyGuard";
+import { useToast } from "../context/ToastContext";
 import { motion } from "motion/react";
 import { Loader2, Video, Upload, CheckCircle2, AlertCircle } from "lucide-react";
 
@@ -12,9 +13,18 @@ interface VideoJob {
   error?: string;
 }
 
+const VIDEO_PRESETS = [
+  { label: "Custom", value: "custom", aspectRatio: "16:9", resolution: "1080p" },
+  { label: "YouTube Intro (16:9 1080p)", value: "yt-intro", aspectRatio: "16:9", resolution: "1080p" },
+  { label: "Instagram Reel (9:16 1080p)", value: "ig-reel", aspectRatio: "9:16", resolution: "1080p" },
+  { label: "TikTok (9:16 720p)", value: "tiktok", aspectRatio: "9:16", resolution: "720p" },
+  { label: "Twitter/X Landscape (16:9 720p)", value: "twitter", aspectRatio: "16:9", resolution: "720p" },
+];
+
 export default function VideoLab() {
   const brand = useBrand();
   const { resetKey } = useApiKey();
+  const { toast } = useToast();
   const [prompt, setPrompt] = useState("");
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -23,8 +33,17 @@ export default function VideoLab() {
   const [analyzing, setAnalyzing] = useState(false);
   const [aspectRatio, setAspectRatio] = useState("16:9");
   const [resolution, setResolution] = useState("1080p");
+  const [preset, setPreset] = useState("custom");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+
+  function applyPreset(value: string) {
+    const p = VIDEO_PRESETS.find((x) => x.value === value);
+    if (!p) return;
+    setPreset(value);
+    setAspectRatio(p.aspectRatio);
+    setResolution(p.resolution);
+  }
 
   const generateVideo = async () => {
     if (!prompt && !imageFile) return;
@@ -69,12 +88,16 @@ export default function VideoLab() {
 
       const data = await response.json();
       setJob(data);
+      toast("Video job started. It will process in the background.", "info");
     } catch (error: any) {
       console.error(error);
-      if (error?.message?.includes("PERMISSION_DENIED") || error?.message?.includes("Requested entity was not found")) {
+      if (
+        error?.message?.includes("PERMISSION_DENIED") ||
+        error?.message?.includes("Requested entity was not found")
+      ) {
         resetKey();
       } else {
-        alert(error.message || "Failed to generate video.");
+        toast(error.message || "Failed to generate video.", "error");
       }
     } finally {
       setLoading(false);
@@ -109,24 +132,23 @@ export default function VideoLab() {
 
           const data = await response.json();
           setAnalysisResult(data.text || "No analysis generated.");
+          toast("Video analysis complete.", "success");
         } catch (error: any) {
           console.error(error);
-          if (error?.message?.includes("PERMISSION_DENIED") || error?.message?.includes("Requested entity was not found")) {
+          if (
+            error?.message?.includes("PERMISSION_DENIED") ||
+            error?.message?.includes("Requested entity was not found")
+          ) {
             resetKey();
           } else {
-            alert(error.message || "Failed to analyze video.");
+            toast(error.message || "Failed to analyze video.", "error");
           }
         } finally {
           setAnalyzing(false);
         }
       };
     } catch (error: any) {
-      console.error(error);
-      if (error?.message?.includes("PERMISSION_DENIED") || error?.message?.includes("Requested entity was not found")) {
-        resetKey();
-      } else {
-        alert(error.message || "Failed to analyze video.");
-      }
+      toast(error.message || "Failed to analyze video.", "error");
       setAnalyzing(false);
     }
   };
@@ -143,6 +165,8 @@ export default function VideoLab() {
         setJob(updated);
         if (updated.status !== "pending") {
           clearInterval(interval);
+          if (updated.status === "completed") toast("Video generation complete!", "success");
+          else toast("Video generation failed.", "error");
         }
       } catch {
         // Silently retry on next interval
@@ -164,8 +188,23 @@ export default function VideoLab() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="space-y-6 bg-zinc-950 p-6 rounded-2xl border border-zinc-800">
+        {/* Generate */}
+        <div className="space-y-5 bg-zinc-950 p-6 rounded-2xl border border-zinc-800">
           <h2 className="text-xl font-semibold text-white">Generate Video</h2>
+
+          {/* Platform preset */}
+          <div>
+            <label className="block text-sm font-medium text-zinc-300 mb-2">Platform Preset</label>
+            <select
+              value={preset}
+              onChange={(e) => applyPreset(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              {VIDEO_PRESETS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+            </select>
+          </div>
 
           <div>
             <label className="block text-sm font-medium text-zinc-300 mb-2">Starting Image (Optional)</label>
@@ -204,7 +243,7 @@ export default function VideoLab() {
               <label className="block text-sm font-medium text-zinc-300 mb-2">Aspect Ratio</label>
               <select
                 value={aspectRatio}
-                onChange={(e) => setAspectRatio(e.target.value)}
+                onChange={(e) => { setAspectRatio(e.target.value); setPreset("custom"); }}
                 className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="16:9">16:9 (Landscape)</option>
@@ -215,7 +254,7 @@ export default function VideoLab() {
               <label className="block text-sm font-medium text-zinc-300 mb-2">Resolution</label>
               <select
                 value={resolution}
-                onChange={(e) => setResolution(e.target.value)}
+                onChange={(e) => { setResolution(e.target.value); setPreset("custom"); }}
                 className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="1080p">1080p</option>
@@ -227,10 +266,10 @@ export default function VideoLab() {
           <button
             onClick={generateVideo}
             disabled={loading || (!prompt && !imageFile)}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-medium py-3 rounded-lg flex items-center justify-center gap-2 transition-colors"
+            className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-medium py-3 rounded-xl flex items-center justify-center gap-2 transition-colors"
           >
             {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Video className="w-5 h-5" />}
-            {loading ? "Starting job..." : "Generate Video"}
+            {loading ? "Starting job…" : "Generate Video"}
           </button>
 
           {job && (
@@ -243,9 +282,13 @@ export default function VideoLab() {
                     Processing…
                   </span>
                 ) : job.status === "completed" ? (
-                  <span className="inline-flex items-center gap-1 text-emerald-300"><CheckCircle2 className="w-4 h-4" />Completed</span>
+                  <span className="inline-flex items-center gap-1 text-emerald-300">
+                    <CheckCircle2 className="w-4 h-4" />Completed
+                  </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1 text-red-300"><AlertCircle className="w-4 h-4" />Failed</span>
+                  <span className="inline-flex items-center gap-1 text-red-300">
+                    <AlertCircle className="w-4 h-4" />Failed
+                  </span>
                 )}
               </div>
 
@@ -254,7 +297,9 @@ export default function VideoLab() {
                   <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
                     <div className="h-full bg-amber-400/70 rounded-full animate-pulse" style={{ width: "60%" }} />
                   </div>
-                  <p className="text-zinc-400">Your video is being generated. This page auto-refreshes every 5 seconds.</p>
+                  <p className="text-zinc-400">
+                    Your video is being generated. This page auto-refreshes every 5 seconds.
+                  </p>
                 </div>
               )}
 
@@ -269,12 +314,15 @@ export default function VideoLab() {
                 </div>
               )}
 
-              {job.logs?.length ? <p className="text-xs text-zinc-500">{job.logs[job.logs.length - 1]}</p> : null}
+              {job.logs?.length ? (
+                <p className="text-xs text-zinc-500">{job.logs[job.logs.length - 1]}</p>
+              ) : null}
               {job.error ? <p className="text-xs text-red-300">{job.error}</p> : null}
             </div>
           )}
         </div>
 
+        {/* Analyze */}
         <div className="space-y-6 bg-zinc-950 p-6 rounded-2xl border border-zinc-800">
           <h2 className="text-xl font-semibold text-white">Video Understanding</h2>
           <p className="text-sm text-zinc-400">Upload a video to analyze its content using Gemini Pro.</p>
@@ -290,10 +338,10 @@ export default function VideoLab() {
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={analyzing}
-            className="w-full bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-white font-medium py-3 rounded-lg flex items-center justify-center gap-2 transition-colors border border-zinc-700"
+            className="w-full bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-white font-medium py-3 rounded-xl flex items-center justify-center gap-2 transition-colors border border-zinc-700"
           >
             {analyzing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Upload className="w-5 h-5" />}
-            {analyzing ? "Analyzing Video..." : "Upload Video to Analyze"}
+            {analyzing ? "Analyzing Video…" : "Upload Video to Analyze"}
           </button>
 
           {analysisResult && (
