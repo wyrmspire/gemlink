@@ -5,7 +5,7 @@ import fs from "fs/promises";
 import twilio from "twilio";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
-import { createBoardroomSession, listBoardroomSessions, readBoardroomSession } from "./boardroom";
+import { startBoardroomSessionAsync, listBoardroomSessions, readBoardroomSession } from "./boardroom.ts";
 
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 dotenv.config();
@@ -396,6 +396,19 @@ async function startServer() {
     }
   });
 
+  api.get("/media/job/:type/:id", async (req, res) => {
+    try {
+      const type = req.params.type as MediaType;
+      if (!jobTypeDirs[type]) {
+        return res.status(400).json({ error: `Invalid media type: ${type}` });
+      }
+      const manifest = await readManifest(type, req.params.id);
+      res.json(manifest);
+    } catch (error: any) {
+      res.status(404).json({ error: error.message || "Job not found" });
+    }
+  });
+
   api.get("/media/history", async (_req, res) => {
     try {
       res.json(await collectHistory());
@@ -414,33 +427,242 @@ async function startServer() {
     }
   });
 
+  // C1: Polling endpoint — no-cache headers so the client always gets fresh state.
   api.get("/boardroom/sessions/:id", async (req, res) => {
     try {
-      res.json(await readBoardroomSession(req.params.id));
+      const session = await readBoardroomSession(req.params.id);
+      res
+        .set("Cache-Control", "no-store")
+        .set("Pragma", "no-cache")
+        .json(session);
     } catch (error: any) {
       console.error("Boardroom Session Read Error:", error);
       res.status(404).json({ error: error.message || "Boardroom session not found" });
     }
   });
 
+  // C1: Async session creation — returns 202 immediately; client polls GET /boardroom/sessions/:id for progress.
   api.post("/boardroom/sessions", async (req, res) => {
     try {
-      const session = await createBoardroomSession(req.body || {});
-      res.status(201).json(session);
+      const session = await startBoardroomSessionAsync(req.body || {});
+      res.status(202).json(session);
     } catch (error: any) {
       console.error("Boardroom Session Error:", error);
-      res.status(500).json({ error: error.message || "Failed to create boardroom session" });
+      res.status(500).json({ error: error.message || "Failed to start boardroom session" });
     }
   });
 
+  // ── A1: Research endpoints (Lane 1 — move client-side Gemini to server) ──
+
+  api.post("/research/search", async (req, res) => {
+    try {
+      const { query, brandContext } = req.body;
+      if (!query) {
+        return res.status(400).json({ error: "query is required" });
+      }
+
+      const key = requireApiKey(req.body.apiKey);
+      const ai = new GoogleGenAI({ apiKey: key });
+
+      const context = brandContext
+        ? `Context: Our brand is ${brandContext.brandName}. ${brandContext.brandDescription}. Target audience: ${brandContext.targetAudience}. `
+        : "";
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: context + "Research query: " + query,
+        config: {
+          tools: [{ googleSearch: {} }],
+        },
+      });
+
+      const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+      const sources = chunks ? chunks.map((c: any) => c.web).filter(Boolean) : [];
+
+      res.json({
+        text: response.text || "No results found.",
+        sources,
+      });
+    } catch (error: any) {
+      console.error("Research Search Error:", error);
+      res.status(500).json({ error: error.message || "Research search failed" });
+    }
+  });
+
+  api.post("/research/think", async (req, res) => {
+    try {
+      const { query, brandContext } = req.body;
+      if (!query) {
+        return res.status(400).json({ error: "query is required" });
+      }
+
+      const key = requireApiKey(req.body.apiKey);
+      const ai = new GoogleGenAI({ apiKey: key });
+
+      const context = brandContext
+        ? `Context: Our brand is ${brandContext.brandName}. ${brandContext.brandDescription}. Target audience: ${brandContext.targetAudience}. `
+        : "";
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.1-pro-preview",
+        contents: context + "Deep analysis query: " + query,
+        config: {
+          thinkingConfig: { thinkingLevel: "HIGH" as any },
+        },
+      });
+
+      res.json({
+        text: response.text || "No analysis generated.",
+      });
+    } catch (error: any) {
+      console.error("Research Think Error:", error);
+      res.status(500).json({ error: error.message || "Research thinking failed" });
+    }
+  });
+
+  // ── A2: Video analysis endpoint (Lane 1 — move client-side Gemini to server) ──
+
+  api.post("/media/video/analyze", async (req, res) => {
+    try {
+      const { videoData, mimeType } = req.body;
+      if (!videoData || !mimeType) {
+        return res.status(400).json({ error: "videoData and mimeType are required" });
+      }
+
+      const key = requireApiKey(req.body.apiKey);
+      const ai = new GoogleGenAI({ apiKey: key });
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.1-pro-preview",
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                data: videoData,
+                mimeType,
+              },
+            },
+            { text: "Analyze this video for key information, brand alignment, and potential improvements." },
+          ],
+        },
+      });
+
+      res.json({
+        text: response.text || "No analysis generated.",
+      });
+    } catch (error: any) {
+      console.error("Video Analysis Error:", error);
+      res.status(500).json({ error: error.message || "Video analysis failed" });
+    }
+  });
+
+  // ── Lane 5: Twilio / Sales Agent ──
+
+  const twilioConfigPath = path.join(jobsDir, "twilio", "config.json");
+
+  interface TwilioAgentConfig {
+    brandName: string;
+    brandDescription: string;
+    targetAudience: string;
+    brandVoice: string;
+    projectId?: string;
+    projectName?: string;
+    mediaCount?: number;
+    updatedAt: string;
+  }
+
+  const DEFAULT_TWILIO_CONFIG: TwilioAgentConfig = {
+    brandName: "Our Brand",
+    brandDescription: "A forward-thinking agency.",
+    targetAudience: "Small to medium businesses.",
+    brandVoice: "Professional, innovative, and approachable.",
+    updatedAt: new Date().toISOString(),
+  };
+
+  async function readTwilioConfig(): Promise<TwilioAgentConfig> {
+    try {
+      const raw = await fs.readFile(twilioConfigPath, "utf8");
+      const parsed = JSON.parse(raw);
+      // Merge with defaults so missing fields don't crash the prompt
+      return { ...DEFAULT_TWILIO_CONFIG, ...parsed };
+    } catch {
+      return DEFAULT_TWILIO_CONFIG;
+    }
+  }
+
+  // GET /api/twilio/config — read current agent config
+  api.get("/twilio/config", async (_req, res) => {
+    try {
+      const config = await readTwilioConfig();
+      res.json(config);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to read Twilio config" });
+    }
+  });
+
+  // POST /api/twilio/config — save brand context for the SMS agent
+  api.post("/twilio/config", async (req, res) => {
+    try {
+      const { brandName, brandDescription, targetAudience, brandVoice, projectId, projectName, mediaCount } = req.body;
+
+      if (!brandName) {
+        return res.status(400).json({ error: "brandName is required" });
+      }
+
+      await fs.mkdir(path.join(jobsDir, "twilio"), { recursive: true });
+
+      const config: TwilioAgentConfig = {
+        brandName: String(brandName),
+        brandDescription: String(brandDescription || ""),
+        targetAudience: String(targetAudience || ""),
+        brandVoice: String(brandVoice || ""),
+        projectId: projectId ? String(projectId) : undefined,
+        projectName: projectName ? String(projectName) : undefined,
+        mediaCount: typeof mediaCount === "number" ? mediaCount : undefined,
+        updatedAt: new Date().toISOString(),
+      };
+
+      await fs.writeFile(twilioConfigPath, JSON.stringify(config, null, 2));
+      res.json({ ok: true, config });
+    } catch (error: any) {
+      console.error("Twilio Config Save Error:", error);
+      res.status(500).json({ error: error.message || "Failed to save Twilio config" });
+    }
+  });
+
+  // POST /api/twilio/sms — Twilio SMS webhook (brand-context-aware)
   app.post("/api/twilio/sms", async (req, res) => {
     try {
       const { Body } = req.body;
       const ai = new GoogleGenAI({ apiKey: requireApiKey() });
 
+      // Load persisted brand/project config for this agent
+      const cfg = await readTwilioConfig();
+
+      const mediaNote = cfg.mediaCount && cfg.mediaCount > 0
+        ? ` We have recently produced ${cfg.mediaCount} media asset${cfg.mediaCount !== 1 ? "s" : ""} for this brand.`
+        : "";
+
+      const projectNote = cfg.projectName
+        ? ` You are currently representing the project: "${cfg.projectName}".`
+        : "";
+
+      const systemPrompt = [
+        `You are an AI sales representative for ${cfg.brandName}.`,
+        `Brand description: ${cfg.brandDescription}`,
+        `Target audience: ${cfg.targetAudience}`,
+        `Brand voice / tone: ${cfg.brandVoice}`,
+        projectNote,
+        mediaNote,
+        `Keep your reply concise — it will be delivered via SMS (under 160 characters ideally).`,
+        `Respond naturally and helpfully to the customer.`,
+      ]
+        .filter(Boolean)
+        .join(" ");
+
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: `You are a helpful sales agent for our brand. The user says: "${Body}". Reply concisely via SMS.`,
+        contents: `${systemPrompt}\n\nCustomer message: "${Body}"\n\nYour SMS reply:`,
       });
 
       const twiml = new twilio.twiml.MessagingResponse();
@@ -450,7 +672,7 @@ async function startServer() {
     } catch (error) {
       console.error("Twilio SMS Error:", error);
       const twiml = new twilio.twiml.MessagingResponse();
-      twiml.message("System error.");
+      twiml.message("System error. Please try again later.");
       res.type("text/xml").send(twiml.toString());
     }
   });

@@ -1,6 +1,6 @@
 # Gemlink Execution Board
 
-> Last updated: 2026-03-13 (wrap-up pass)
+> Last updated: 2026-03-14 (Lane 5 — B2 complete + upgrade.md Sales items done)
 > Scope: prioritized improvement plan across UX, architecture, reliability, boardroom, local-first workflow, testing, deployment, and DX.
 
 ---
@@ -68,14 +68,15 @@
 - **Parallelizable with**: All other items
 - **Done**: Lane 3 — `ErrorBoundary.tsx` created (class component, retry button, styled error card). Wired into `Layout.tsx` wrapping the `<Outlet />`.
 
-### A5. Decide on better-sqlite3: use it or remove it ⏸️
+### A5. Decide on better-sqlite3: use it or remove it 🟡
 - **Priority**: P2 (code hygiene)
 - **Why**: `better-sqlite3` is in `package.json` dependencies but never imported anywhere. It adds native compilation overhead to `npm install`. Either use it for job/session metadata or remove it.
 - **Deliverables**: Either a migration plan to SQLite-backed persistence or removal from `package.json`.
 - **Files**: `package.json`, potentially `server.ts` + `boardroom.ts` if adopting
 - **Dependencies**: Decision needed — this affects Track B and Track C
 - **Parallelizable with**: A4
-- **Decision note**: [`docs/decisions/A5-better-sqlite3.md`](docs/decisions/A5-better-sqlite3.md) — recommends removal (Option A). Awaiting approval.
+- **Decision note**: [`docs/decisions/A5-better-sqlite3.md`](docs/decisions/A5-better-sqlite3.md) — original recommendation was Option A (remove). **Re-evaluated in light of `upgrade.md` bulk media sprint**: adopted Option B (use SQLite) — the batch queue (H2), AI scoring (I3), project-scoped library (G2), and collections (J1) all require structured queries that flat files cannot serve efficiently. Created `src/db.ts` with full schema. See updated decision doc.
+- **Lane 4 — started 2026-03-14**
 
 ---
 
@@ -94,7 +95,7 @@
 - **Parallelizable with**: Everything
 - **Done**: Lane 3 — reads from `localStorage` on init, writes on every setter call; graceful fallback on parse error.
 
-### B2. Wire BrandContext into Twilio SMS endpoint ⏸️
+### B2. Wire BrandContext into Twilio SMS endpoint 🟢
 - **Priority**: P2 (correctness)
 - **Why**: The `/api/twilio/sms` handler uses a hardcoded generic prompt (`"You are a helpful sales agent for our brand"`) instead of actual brand data. The `SalesAgent.tsx` UI displays brand context but the server never receives it.
 - **Deliverables**:
@@ -104,6 +105,7 @@
 - **Dependencies**: B1 (need to decide where brand data lives first)
 - **Parallelizable with**: A-track items
 - **Decision note**: [`docs/decisions/B2-brand-context-twilio.md`](docs/decisions/B2-brand-context-twilio.md) — recommends server-side JSON config file (Option A). Blocked on B1.
+- **Done**: Lane 5 (2026-03-14) — Implemented Option A (server-side JSON config). Added `POST /api/twilio/config` and `GET /api/twilio/config` endpoints in `server.ts` (Twilio section). Updated `/api/twilio/sms` to read brand context (brandName, brandDescription, targetAudience, brandVoice) plus mediaCount and optional projectName from `jobs/twilio/config.json`. Updated `SalesAgent.tsx` with a "Save to Agent" button that pushes brand context to the server config. Added project-aware badge in header (TODO comment to swap from BrandContext to ProjectContext once G1 lands). Added Sales Media Library section showing assets tagged sales/promo/campaign. Sync status indicator (green = synced, amber = not synced) in header. Pre-existing App.tsx lint errors from Lane 3 stub pages are NOT Lane 5 failures.
 
 ### B3. Add client-side polling for pending video jobs 🟢
 - **Priority**: P1 (UX)
@@ -167,7 +169,7 @@
 - **Parallelizable with**: Everything
 - **Done**: Lane 2 — 6-card pulsing skeleton grid that matches the real card layout (aspect-square media area + icon/text/timestamp rows).
 
-### D2. Add toast/notification system for errors and success 🔴
+### D2. Add toast/notification system for errors and success 🟡
 - **Priority**: P2 (UX)
 - **Why**: Most pages use `alert()` for errors, which blocks the UI and feels jarring. Success states are also not communicated well.
 - **Deliverables**:
@@ -177,6 +179,7 @@
 - **Files**: new components + all pages
 - **Dependencies**: None
 - **Parallelizable with**: Everything (but touches many files — coordinate)
+- **Lane 3 — started 2026-03-14**
 
 ### D3. Fill `metadata.json` 🟢
 - **Priority**: P3 (completeness)
@@ -205,7 +208,7 @@
 - **Dependencies**: None
 - **Parallelizable with**: E2
 
-### E2. Add frontend component smoke tests 🔴
+### E2. Add frontend component smoke tests 🟡
 - **Priority**: P2 (reliability)
 - **Why**: No component tests exist. At minimum, verify pages render without crashing.
 - **Deliverables**:
@@ -214,6 +217,7 @@
 - **Files**: `package.json`, `tests/` (new directory)
 - **Dependencies**: E1 (shared test infrastructure setup)
 - **Parallelizable with**: E1 (after shared setup)
+- **Lane 4 — started 2026-03-14**
 
 ---
 
@@ -291,9 +295,60 @@
 
 ---
 
+## Track G — Multi-Project / Brand Profiles (upgrade.md)
+
+### G1. Project Profiles System 🟡
+- **Priority**: P0
+- **Files**: `src/context/ProjectContext.tsx` (new), `src/pages/Setup.tsx`, `src/components/Layout.tsx`
+- **Lane 3 — started 2026-03-14**
+
+---
+
+## Track H — Bulk Media Generation Engine (upgrade.md)
+
+### H1. Media Plan Builder 🟡
+- **Priority**: P0
+- **Files**: `src/pages/MediaPlan.tsx` (new), `src/App.tsx`
+- **Lane 3 — started 2026-03-14**
+
+---
+
+## Track I — Research + Rating (upgrade.md)
+
+### I1. Research → Media Pipeline 🟡
+- **Priority**: P1
+- **Files**: `src/pages/Research.tsx`
+- **Lane 3 — started 2026-03-14**
+
+---
+
+## Track J — Presentation & Export (upgrade.md)
+
+### J1. Collections 🟡
+- **Priority**: P1
+- **Files**: `src/pages/Collections.tsx` (new), `src/App.tsx`
+- **Lane 3 — started 2026-03-14**
+
+### J2. Present mode 🟡
+- **Priority**: P2
+- **Files**: `src/pages/Present.tsx` (new), `src/App.tsx`
+- **Lane 3 — started 2026-03-14**
+
+---
+
+## Quick Wins (upgrade.md) 🟡
+- Count selector (1-4) on SocialMedia.tsx
+- Platform presets dropdown on SocialMedia.tsx and VideoLab.tsx
+- Text search/filter on Library.tsx
+- Regenerate + Copy Prompt buttons on Library cards
+- **Lane 3 — started 2026-03-14**
+
+---
+
 ## Current State Snapshot
 
 - **Working**: Image gen, video gen (with background polling + live UI refresh), voice TTS, boardroom sessions (5-phase async protocol with session replay), research (server-proxied), video analysis (server-proxied), live voice (client-side — known trade-off), Twilio SMS webhook, media library with skeletons + auto-refresh, mobile-responsive layout, error boundaries on all routes, brand context persisted across refreshes.
-- **Remaining / Not started**: A3 (VoiceLab WS proxy — accepted trade-off pending decision), B2 (brand→Twilio, blocked on A5 decision), D2 (toast system — `alert()` still used in several pages), E2 (frontend component smoke tests).
+- **In Progress (Lane 3)**: D2 (toast system), G1 (ProjectContext + project switcher), Quick Wins (Library search, count selector, presets, regen/copy), H1 (MediaPlan page), I1 (Research→Media modal), J1 (Collections), J2 (Present).
+- **Remaining / Not started**: A3 (VoiceLab WS proxy — accepted trade-off pending decision), E2 (frontend component smoke tests), H2/H3/H4 (batch queue, prompt expansion, variants — Lane 1 dependency), G2 (project-scoped media — Lane 1 dependency), I2 (Boardroom→Media — Lane 2 dependency), I3/I4 (AI scoring, tags — Lane 1 dependency), J3 (bulk export — Lane 1 dependency), D2 (toast system).
 - **Technical debt**: `better-sqlite3` unused — decision note at `docs/decisions/A5-better-sqlite3.md` recommends removal; awaiting explicit approval before touching `package.json`. `vite.config.ts` now allows `.trycloudflare.com` hosts (tunnelling convenience — review if not needed).
 - **Untracked files that should be committed**: `src/components/ErrorBoundary.tsx`, `tests/`, `vitest.config.ts`, `docs/`, `WORKSPACE-NOTES.md`.
