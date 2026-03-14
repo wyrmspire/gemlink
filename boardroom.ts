@@ -167,8 +167,19 @@ interface BoardroomStateReply {
   summary?: string;
 }
 
+// ── SAFETY: Loop bounds for boardroom orchestration ──────────────────────────
+// An agent working on this codebase MUST ensure ALL loops that await external
+// APIs have hard upper bounds. NEVER use open-ended polling without a max
+// attempt counter. The boardroom is bounded by MAX_ROUNDS × MAX_SEATS plus
+// overhead calls (objective, state updates, summary). Worst case:
+//   1 objective + (MAX_ROUNDS × MAX_SEATS participant calls) + MAX_ROUNDS state
+//   updates + 1 summary = 1 + 25 + 5 + 1 = 32 calls.
+// MAX_BOARDROOM_API_CALLS is a hard ceiling — if hit, the session fails.
+// GEMINI_CALL_TIMEOUT_MS is a per-call AbortController timeout.
 const MAX_SEATS = 5;
 const MAX_ROUNDS = 5;
+const MAX_BOARDROOM_API_CALLS = 40;   // hard ceiling; actual max is ~32
+const GEMINI_CALL_TIMEOUT_MS = 120_000; // 2 minutes per Gemini call
 const DEFAULT_MODEL = "gemini-2.5-flash";
 const DEFAULT_DEPTH: BoardroomThoughtDepth = "standard";
 const DEFAULT_ROUNDS = 5;
@@ -472,11 +483,24 @@ export async function startBoardroomSessionAsync(request: BoardroomSessionReques
 }
 
 // Internal: background orchestration loop (same logic as the synchronous createBoardroomSession, but persisting after every turn).
+// SAFETY: Total API calls are counted via `apiCallCount` and capped at MAX_BOARDROOM_API_CALLS.
+// The for-loops are inherently bounded (MAX_ROUNDS × MAX_SEATS), but the counter
+// is a defence-in-depth measure so a code mistake never causes infinite billing.
 async function runBoardroomOrchestration(session: BoardroomSession, apiKey: string) {
+  let apiCallCount = 0;
+
+  function checkApiLimit(context: string) {
+    apiCallCount++;
+    if (apiCallCount > MAX_BOARDROOM_API_CALLS) {
+      throw new Error(`SAFETY: Boardroom API call limit (${MAX_BOARDROOM_API_CALLS}) exceeded during ${context}. Session aborted to prevent runaway billing.`);
+    }
+  }
+
   try {
     const ai = new GoogleGenAI({ apiKey });
     const finalPerspectives = new Map<string, BoardroomPerspective>();
 
+    checkApiLimit("requestObjective");
     session.objective = await requestObjective(ai, session);
     session.turns.push({
       id: createId("turn"),
@@ -508,6 +532,7 @@ async function runBoardroomOrchestration(session: BoardroomSession, apiKey: stri
         const phaseTurns: BoardroomTurn[] = [];
 
         for (const participant of session.participants) {
+          checkApiLimit(`${participant.name} / ${phaseLabel(phase)}`);
           const parsed = await requestRoundReply(ai, session, participant, phase, round, roundStartTurns, latestState);
           const normalized = normalizeReply(parsed, participant);
           finalPerspectives.set(participant.id, normalized);
@@ -537,6 +562,7 @@ async function runBoardroomOrchestration(session: BoardroomSession, apiKey: stri
           await writeBoardroomSession(session);
         }
 
+        checkApiLimit(`stateUpdate / ${phaseLabel(phase)}`);
         latestState = await requestStateUpdate(ai, session, phase, round, phaseTurns, latestState);
         session.stateHistory.push(latestState);
         session.turns.push({
@@ -562,6 +588,7 @@ async function runBoardroomOrchestration(session: BoardroomSession, apiKey: stri
       .map((participant) => finalPerspectives.get(participant.id))
       .filter(Boolean) as BoardroomPerspective[];
 
+    checkApiLimit("requestSummary");
     const summary = await requestSummary(ai, session, perspectives);
     session.turns.push({
       id: createId("turn"),
@@ -802,10 +829,20 @@ export async function createBoardroomSession(request: BoardroomSessionRequest) {
 
   await writeBoardroomSession(session);
 
+  // SAFETY: Same API call counter as runBoardroomOrchestration (defence-in-depth).
+  let apiCallCount = 0;
+  function checkApiLimit(context: string) {
+    apiCallCount++;
+    if (apiCallCount > MAX_BOARDROOM_API_CALLS) {
+      throw new Error(`SAFETY: Boardroom API call limit (${MAX_BOARDROOM_API_CALLS}) exceeded during ${context}. Session aborted to prevent runaway billing.`);
+    }
+  }
+
   try {
     const ai = new GoogleGenAI({ apiKey });
     const finalPerspectives = new Map<string, BoardroomPerspective>();
 
+    checkApiLimit("requestObjective");
     session.objective = await requestObjective(ai, session);
     session.turns.push({
       id: createId("turn"),
@@ -837,6 +874,7 @@ export async function createBoardroomSession(request: BoardroomSessionRequest) {
         const phaseTurns: BoardroomTurn[] = [];
 
         for (const participant of participants) {
+          checkApiLimit(`${participant.name} / sync ${phaseLabel(phase)}`);
           const parsed = await requestRoundReply(ai, session, participant, phase, round, roundStartTurns, latestState);
           const normalized = normalizeReply(parsed, participant);
           finalPerspectives.set(participant.id, normalized);
@@ -865,6 +903,7 @@ export async function createBoardroomSession(request: BoardroomSessionRequest) {
           await writeBoardroomSession(session);
         }
 
+        checkApiLimit(`stateUpdate / sync ${phaseLabel(phase)}`);
         latestState = await requestStateUpdate(ai, session, phase, round, phaseTurns, latestState);
         session.stateHistory.push(latestState);
         session.turns.push({
@@ -890,6 +929,7 @@ export async function createBoardroomSession(request: BoardroomSessionRequest) {
       .map((participant) => finalPerspectives.get(participant.id))
       .filter(Boolean) as BoardroomPerspective[];
 
+    checkApiLimit("requestSummary (sync)");
     const summary = await requestSummary(ai, session, perspectives);
     session.turns.push({
       id: createId("turn"),

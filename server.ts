@@ -49,6 +49,17 @@ interface JobManifest {
 
 const PORT = Number(process.env.PORT || 3000);
 const jobsDir = path.join(process.cwd(), "jobs");
+
+// ── SAFETY: Maximum iterations for any polling/retry loop. ──────────────────
+// An agent working on this codebase MUST ensure ALL loops that await external
+// APIs (video polling, batch retries, operation polling) have a hard upper
+// bound. NEVER use an open-ended `while (true)` or `while (!condition)` loop
+// without a maximum attempt counter. If you add a new loop, add a MAX guard.
+// Current limits:
+//   • Video polling: MAX_VIDEO_POLL_ATTEMPTS (360 × 10 s = ~60 min)
+//   • Batch retry on 429: max 3 retries with exponential backoff (see GenerationQueue)
+//   • Boardroom: bounded by MAX_ROUNDS (5) × MAX_SEATS (5), see boardroom.ts
+const MAX_VIDEO_POLL_ATTEMPTS = 360; // 360 × 10 s = ~60 minutes max wait
 const jobTypeDirs: Record<MediaType, string> = {
   image: "images",
   video: "videos",
@@ -283,11 +294,22 @@ async function startServer() {
           let currentOp = operation;
           let attempts = 0;
 
+          // SAFETY: Hard upper bound to prevent infinite polling if the provider
+          // never reports done. Fails the job after MAX_VIDEO_POLL_ATTEMPTS.
           while (!currentOp.done) {
             attempts += 1;
+            if (attempts > MAX_VIDEO_POLL_ATTEMPTS) {
+              await patchManifest("video", jobId, (current) => ({
+                ...current,
+                status: "failed",
+                error: `Video polling timed out after ${attempts} attempts (~${Math.round(attempts * 10 / 60)} minutes). The provider never reported completion.`,
+                logs: appendLog(current, `SAFETY: Polling aborted after ${attempts} attempts. Possible stuck operation.`),
+              }));
+              return;
+            }
             await patchManifest("video", jobId, (current) => ({
               ...current,
-              logs: appendLog(current, `Polling provider status (attempt ${attempts})...`),
+              logs: appendLog(current, `Polling provider status (attempt ${attempts}/${MAX_VIDEO_POLL_ATTEMPTS})...`),
             }));
             await new Promise((resolve) => setTimeout(resolve, 10000));
             currentOp = await ai.operations.getVideosOperation({ operation: currentOp });
@@ -789,12 +811,18 @@ async function startServer() {
           logs: [`[${new Date().toISOString()}] Batch video job queued. Operation: ${operationName}`],
         };
         await writeManifest(manifest);
-        void (async () => {
+         void (async () => {
           try {
             let op = operation; let a = 0;
+            // SAFETY: Hard upper bound — same MAX_VIDEO_POLL_ATTEMPTS guard as the
+            // single-video endpoint. Never loop forever waiting for provider.
             while (!op.done) {
               a++;
-              await patchManifest("video", jobId, (c) => ({ ...c, logs: appendLog(c, `Polling attempt ${a}...`) }));
+              if (a > MAX_VIDEO_POLL_ATTEMPTS) {
+                await patchManifest("video", jobId, (c) => ({ ...c, status: "failed", error: `Batch video polling timed out after ${a} attempts.`, logs: appendLog(c, `SAFETY: Polling aborted after ${a} attempts.`) }));
+                return;
+              }
+              await patchManifest("video", jobId, (c) => ({ ...c, logs: appendLog(c, `Polling attempt ${a}/${MAX_VIDEO_POLL_ATTEMPTS}...`) }));
               await new Promise((r) => setTimeout(r, 10000));
               op = await ai.operations.getVideosOperation({ operation: op });
             }
