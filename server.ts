@@ -6,6 +6,7 @@ import twilio from "twilio";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { startBoardroomSessionAsync, listBoardroomSessions, readBoardroomSession, extractMediaBriefs } from "./boardroom.ts";
+import { mediaJobQueries, collectionQueries, collectionItemQueries, type MediaJobRow } from "./src/db.ts";
 
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 dotenv.config();
@@ -97,9 +98,34 @@ async function readManifest(type: MediaType, id: string): Promise<JobManifest> {
   return JSON.parse(raw) as JobManifest;
 }
 
+/** Map a JobManifest to the SQLite MediaJobRow shape (W1) */
+function manifestToRow(manifest: JobManifest): MediaJobRow {
+  return {
+    id: manifest.id,
+    projectId: manifest.projectId ?? null,
+    type: manifest.type,
+    status: manifest.status,
+    prompt: manifest.prompt ?? null,
+    model: manifest.model ?? null,
+    size: manifest.size ?? null,
+    aspectRatio: manifest.aspectRatio ?? null,
+    resolution: manifest.resolution ?? null,
+    voice: manifest.voice ?? null,
+    outputs: JSON.stringify(manifest.outputs ?? []),
+    tags: JSON.stringify(manifest.tags ?? []),
+    scores: manifest.score ? JSON.stringify(manifest.score) : null,
+    rating: null,
+    planItemId: null,
+    createdAt: manifest.createdAt,
+    updatedAt: manifest.updatedAt,
+  };
+}
+
 async function writeManifest(manifest: JobManifest) {
   await fs.mkdir(getJobDir(manifest.type, manifest.id), { recursive: true });
   await fs.writeFile(getManifestPath(manifest.type, manifest.id), JSON.stringify(manifest, null, 2));
+  // W1: also index in SQLite
+  try { mediaJobQueries.upsert(manifestToRow(manifest)); } catch (dbErr) { console.error("[db] writeManifest upsert failed:", dbErr); }
 }
 
 async function patchManifest(
@@ -110,7 +136,7 @@ async function patchManifest(
   const current = await readManifest(type, id);
   const next = typeof update === "function" ? update(current) : { ...current, ...update };
   next.updatedAt = new Date().toISOString();
-  await writeManifest(next);
+  await writeManifest(next); // writeManifest already calls mediaJobQueries.upsert
   return next;
 }
 
@@ -141,8 +167,36 @@ function pcm16ToWav(buffer: Buffer, sampleRate = 24000, channels = 1) {
 }
 
 async function collectHistory(projectId?: string) {
-  const history: JobManifest[] = [];
+  // W1: Use SQLite index for project-scoped queries (O(1) vs O(N) flat-file scan)
+  if (projectId) {
+    try {
+      const rows = mediaJobQueries.listByProject(projectId);
+      // Map DB rows back to JobManifest shape so callers get the same shape
+      return rows.map((row) => ({
+        id: row.id,
+        type: row.type as MediaType,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        status: row.status as JobManifest["status"],
+        prompt: row.prompt ?? undefined,
+        model: row.model ?? undefined,
+        size: row.size ?? undefined,
+        resolution: row.resolution ?? undefined,
+        aspectRatio: row.aspectRatio ?? undefined,
+        voice: row.voice ?? undefined,
+        projectId: row.projectId ?? undefined,
+        outputs: JSON.parse(row.outputs) as string[],
+        tags: JSON.parse(row.tags) as string[],
+        score: row.scores ? JSON.parse(row.scores) : undefined,
+      } as JobManifest));
+    } catch (dbErr) {
+      console.error("[db] collectHistory fallback to flat-file due to:", dbErr);
+      // fall through to flat-file scan below
+    }
+  }
 
+  // No projectId filter — full flat-file scan (unchanged behaviour)
+  const history: JobManifest[] = [];
   for (const type of Object.keys(jobTypeDirs) as MediaType[]) {
     const typeDir = path.join(jobsDir, jobTypeDirs[type]);
     try {
@@ -150,7 +204,6 @@ async function collectHistory(projectId?: string) {
       for (const jobId of jobIds) {
         try {
           const manifest = await readManifest(type, jobId);
-          if (projectId && manifest.projectId !== projectId) continue;
           history.push(manifest);
         } catch {
           // Ignore broken/missing manifests so one bad job does not poison the library.
@@ -160,9 +213,67 @@ async function collectHistory(projectId?: string) {
       // Ignore missing directories.
     }
   }
-
   history.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   return history;
+}
+
+// ── H2: GenerationQueue types (hoisted so W3 helpers can reference them) ──────
+
+interface BatchJobItem {
+  type: MediaType;
+  body: Record<string, unknown>;
+}
+
+interface BatchState {
+  id: string;
+  createdAt: string;
+  total: number;
+  jobIds: Array<string | null>;
+  statuses: Array<"queued" | "generating" | "completed" | "failed">;
+  errors: Array<string | null>;
+}
+
+// ── W3: Batch state persistence helpers ─────────────────────────────────────
+
+const batchesDir = path.join(process.cwd(), "jobs", "batches");
+
+async function saveBatchState(state: BatchState): Promise<void> {
+  try {
+    const dir = path.join(batchesDir, state.id);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "state.json"), JSON.stringify(state, null, 2));
+  } catch (err) {
+    console.error(`[batch] Failed to persist state for ${state.id}:`, err);
+  }
+}
+
+async function loadBatchStates(): Promise<Map<string, BatchState>> {
+  const map = new Map<string, BatchState>();
+  try {
+    await fs.mkdir(batchesDir, { recursive: true });
+    const entries = await fs.readdir(batchesDir);
+    for (const entry of entries) {
+      try {
+        const raw = await fs.readFile(path.join(batchesDir, entry, "state.json"), "utf8");
+        const state = JSON.parse(raw) as BatchState;
+        // W3: Mark any mid-generation jobs as failed on restart (they will never complete)
+        state.statuses = state.statuses.map((s) =>
+          s === "generating" || s === "queued" ? "failed" : s
+        );
+        state.errors = state.statuses.map((s, i) =>
+          s === "failed" && !state.errors[i] ? "Server restarted while job was in progress" : state.errors[i]
+        );
+        map.set(state.id, state);
+        // Persist the recovered state back to disk
+        await saveBatchState(state);
+      } catch {
+        // Ignore unreadable state files
+      }
+    }
+  } catch {
+    // Ignore if directory doesn't exist yet
+  }
+  return map;
 }
 
 async function startServer() {
@@ -637,7 +748,7 @@ async function startServer() {
       if (type === "image" && filePath) {
         const imgData = await fs.readFile(filePath);
         const resp = await ai.models.generateContent({
-          model: "gemini-2.5-flash-preview",
+          model: "gemini-2.5-flash-preview-04-17",
           contents: {
             parts: [
               { inlineData: { data: imgData.toString("base64"), mimeType: "image/png" } },
@@ -665,21 +776,9 @@ async function startServer() {
 
   // ── H2: GenerationQueue (semaphore + exponential backoff) ───────────────────
 
-  interface BatchJobItem {
-    type: MediaType;
-    body: Record<string, unknown>;
-  }
-
-  interface BatchState {
-    id: string;
-    createdAt: string;
-    total: number;
-    jobIds: Array<string | null>;
-    statuses: Array<"queued" | "generating" | "completed" | "failed">;
-    errors: Array<string | null>;
-  }
-
-  const batchStore = new Map<string, BatchState>();
+  // W3: Pre-load any persisted batch state from disk (marks stale in-flight jobs as failed)
+  const batchStore = await loadBatchStates();
+  console.log(`[batch] Rehydrated ${batchStore.size} batch state(s) from disk.`);
 
   class GenerationQueue {
     private slots: Record<MediaType, number> = { image: 0, video: 0, voice: 0 };
@@ -702,14 +801,23 @@ async function startServer() {
     async enqueueOne(batchId: string, idx: number, item: BatchJobItem, apiKey: string): Promise<void> {
       const state = batchStore.get(batchId);
       await this.waitForSlot(item.type);
-      if (state) state.statuses[idx] = "generating";
+      if (state) {
+        state.statuses[idx] = "generating";
+        void saveBatchState(state); // W3: persist state change
+      }
       let attempts = 0;
       let lastErr: unknown;
       while (attempts < 4) {
         try {
           const jobId = await this.runJob(item, apiKey);
-          if (state) { state.jobIds[idx] = jobId; state.statuses[idx] = "completed"; }
+          if (state) {
+            state.jobIds[idx] = jobId;
+            state.statuses[idx] = "completed";
+            void saveBatchState(state); // W3: persist on completion
+          }
           this.release(item.type);
+          // W4: If all items in this batch are done, trigger auto-scoring
+          if (state) void autoScoreCompletedBatch(state, apiKey);
           return;
         } catch (err: any) {
           lastErr = err;
@@ -719,7 +827,11 @@ async function startServer() {
           else break;
         }
       }
-      if (state) { state.statuses[idx] = "failed"; state.errors[idx] = (lastErr as any)?.message ?? "Unknown error"; }
+      if (state) {
+        state.statuses[idx] = "failed";
+        state.errors[idx] = (lastErr as any)?.message ?? "Unknown error";
+        void saveBatchState(state); // W3: persist failure
+      }
       this.release(item.type);
     }
 
@@ -844,6 +956,59 @@ async function startServer() {
     }
   }
 
+  // ── W4: Auto-scoring helper called after each batch item completes ───────────
+
+  async function autoScoreCompletedBatch(state: BatchState, apiKey: string): Promise<void> {
+    // Only run once all items are terminal (done or failed)
+    const allDone = state.statuses.every((s) => s === "completed" || s === "failed");
+    if (!allDone) return;
+    const ai = new GoogleGenAI({ apiKey });
+    for (let i = 0; i < state.total; i++) {
+      if (state.statuses[i] !== "completed" || !state.jobIds[i]) continue;
+      const jobId = state.jobIds[i]!;
+      // Detect type from the batchStore items array — we stored type on the state
+      // We need to know the type; read the manifest to get it.
+      try {
+        // Try image first, then voice, then video (most common order)
+        let manifest: JobManifest | null = null;
+        let jobType: MediaType | null = null;
+        for (const t of ["image", "voice", "video"] as MediaType[]) {
+          try { manifest = await readManifest(t, jobId); jobType = t; break; } catch { /* not this type */ }
+        }
+        if (!manifest || !jobType || manifest.status !== "completed" || manifest.outputs.length === 0) continue;
+        if (manifest.score) continue; // already scored
+
+        const brandCtx = manifest.brandContext
+          ? `Brand: ${(manifest.brandContext as any).brandName ?? ""}. Audience: ${(manifest.brandContext as any).targetAudience ?? ""}. Voice: ${(manifest.brandContext as any).brandVoice ?? ""}.`
+          : "No brand context.";
+        const purposeCtx = (manifest.prompt ?? manifest.text ?? "general media").slice(0, 400);
+        const scoreSchema = `{ "scores": { "brandAlignment": <1-5>, "purposeFit": <1-5>, "technicalQuality": <1-5>, "audienceMatch": <1-5>, "uniqueness": <1-5> }, "overall": <float 1-5>, "reasoning": "...", "suggestions": ["..."] }`;
+
+        let contents: any;
+        if (jobType === "image") {
+          const relPath = manifest.outputs[0].replace(/^\/jobs\//, "jobs/");
+          const absPath = path.join(process.cwd(), relPath);
+          const parts: any[] = [{ text: `Score this image across 5 criteria. ${brandCtx} Purpose: "${purposeCtx}".\nReturn ONLY valid JSON matching: ${scoreSchema}` }];
+          try { const imgData = await fs.readFile(absPath); parts.unshift({ inlineData: { data: imgData.toString("base64"), mimeType: "image/png" } }); } catch { /* score text-only */ }
+          contents = { parts };
+        } else {
+          contents = `Score this ${jobType}. Prompt/Text: "${purposeCtx}". ${brandCtx}\nReturn ONLY valid JSON matching: ${scoreSchema}`;
+        }
+
+        const response = await ai.models.generateContent({ model: "gemini-2.5-flash-preview-04-17", contents });
+        const txt = response.text?.trim() ?? "{}";
+        const m = txt.match(/\{[\s\S]*\}/);
+        const scoreData = m ? JSON.parse(m[0]) as MediaScore : null;
+        if (scoreData) {
+          await patchManifest(jobType, jobId, { score: scoreData });
+          console.log(`[W4] Auto-scored ${jobType}/${jobId}: ${scoreData.overall}`);
+        }
+      } catch (err) {
+        console.error(`[W4] Auto-score failed for ${jobId}:`, err);
+      }
+    }
+  }
+
   const generationQueue = new GenerationQueue();
 
   api.post("/media/batch", async (req, res) => {
@@ -865,6 +1030,7 @@ async function startServer() {
         errors: new Array(items.length).fill(null),
       };
       batchStore.set(batchId, state);
+      void saveBatchState(state); // W3: persist initial state immediately
       void Promise.all(items.map((item, i) => generationQueue.enqueueOne(batchId, i, item, key)));
       res.status(202).json({ batchId, total: items.length, jobIds: state.jobIds, statuses: state.statuses });
     } catch (err: any) {
@@ -886,6 +1052,77 @@ async function startServer() {
       },
       complete: done === state.total,
     });
+  });
+
+  // ── W2: Media Plan Suggest ───────────────────────────────────────────────────
+
+  api.post("/media/plan/suggest", async (req, res) => {
+    try {
+      const { description, projectContext, apiKey } = req.body;
+      if (!description) return res.status(400).json({ error: "description is required" });
+      const key = requireApiKey(apiKey);
+      const ai = new GoogleGenAI({ apiKey: key });
+
+      const brandCtx = projectContext
+        ? `Brand: ${projectContext.brandName ?? ""}. Description: ${projectContext.brandDescription ?? ""}. Audience: ${projectContext.targetAudience ?? ""}. Voice: ${projectContext.brandVoice ?? ""}.`
+        : "";
+
+      const itemSchema = `{ "id": "item_<random8chars>", "type": "image"|"video"|"voice", "label": "short asset name", "purpose": "platform or use case", "promptTemplate": "detailed generation prompt", "model": null, "size": null, "aspectRatio": null, "status": "draft", "tags": ["..."] }`;
+
+      const systemPrompt = [
+        "You are a strategic media planner and creative director.",
+        "Based on the user's project description and brand context, suggest a media plan.",
+        "A media plan is a structured list of assets the project needs.",
+        brandCtx,
+        "Rules:",
+        "- Include a mix of asset types: image, video, voice (vary based on the description).",
+        "- Each promptTemplate should be a detailed, ready-to-use generation prompt.",
+        "- Suggest 4-8 items total. Match the scope to the project description.",
+        "- For promptTemplate: be specific about style, composition, lighting, platform specs.",
+        `- Return ONLY a valid JSON object: { "items": [ ${itemSchema} ] }`,
+        "- Do NOT include any explanation or markdown fences.",
+      ].filter(Boolean).join(" ");
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-04-17",
+        contents: `${systemPrompt}\n\nProject description: "${description}"`,
+        config: {
+          responseMimeType: "application/json",
+        } as any,
+      });
+
+      const txt = response.text?.trim() ?? "{}";
+      let parsed: { items?: unknown[] } = {};
+      try {
+        // Try strict JSON first (works when responseMimeType is honoured)
+        parsed = JSON.parse(txt);
+      } catch {
+        // Fallback: extract JSON block from text if the model wrapped in markdown
+        const m = txt.match(/\{[\s\S]*\}/);
+        if (m) { try { parsed = JSON.parse(m[0]); } catch { /* give up */ } }
+      }
+
+      const items = Array.isArray(parsed.items) ? parsed.items : [];
+      // Ensure each item has required fields + a fresh random id
+      const sanitised = items.map((x: any) => ({
+        id: `item_${Math.random().toString(36).slice(2, 10)}`,
+        type: ["image", "video", "voice"].includes(x.type) ? x.type : "image",
+        label: x.label ?? "Untitled",
+        purpose: x.purpose ?? "",
+        promptTemplate: x.promptTemplate ?? "",
+        model: x.model ?? null,
+        size: x.size ?? null,
+        aspectRatio: x.aspectRatio ?? null,
+        status: "draft",
+        tags: Array.isArray(x.tags) ? x.tags : [],
+        generatedJobIds: [],
+      }));
+
+      res.json({ items: sanitised, count: sanitised.length });
+    } catch (err: any) {
+      console.error("Plan Suggest Error:", err);
+      res.status(500).json({ error: err.message ?? "Plan suggestion failed" });
+    }
   });
 
   // ── H3: Prompt Expansion (3-step chain) ─────────────────────────────────────
@@ -988,7 +1225,7 @@ async function startServer() {
         contents = `Score this ${jobType}. Prompt/Text: "${promptText}". ${brandCtx} Purpose: "${purposeCtx}".\nReturn ONLY valid JSON matching: ${scoreSchema}`;
       }
 
-      const response = await ai.models.generateContent({ model: "gemini-2.5-flash-preview", contents });
+      const response = await ai.models.generateContent({ model: "gemini-2.5-flash-preview-04-17", contents });
       const txt = response.text?.trim() ?? "{}";
       const m = txt.match(/\{[\s\S]*\}/);
       const scoreData = m ? JSON.parse(m[0]) as MediaScore : null;
@@ -997,6 +1234,118 @@ async function startServer() {
     } catch (err: any) {
       console.error("Media Score Error:", err);
       res.status(500).json({ error: err.message ?? "Media scoring failed" });
+    }
+  });
+
+  // ── W5: Collections CRUD (server-side) ──────────────────────────────────────
+  // Uses collectionQueries + collectionItemQueries from src/db.ts
+  // Frontend (Lane 3) currently uses localStorage; these endpoints provide the
+  // server-side source of truth for when SQLite is the primary store.
+
+  function genCollectionId() {
+    return `col_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  }
+
+  /** POST /api/collections — create a new collection */
+  api.post("/collections", (req, res) => {
+    try {
+      const { name, projectId } = req.body;
+      if (!name) return res.status(400).json({ error: "name is required" });
+      const id = genCollectionId();
+      const row = { id, projectId: projectId ?? null, name: String(name), createdAt: new Date().toISOString() };
+      collectionQueries.insert(row);
+      res.status(201).json(row);
+    } catch (err: any) {
+      console.error("Collections POST error:", err);
+      res.status(500).json({ error: err.message ?? "Failed to create collection" });
+    }
+  });
+
+  /** GET /api/collections?projectId= — list collections for a project */
+  api.get("/collections", (req, res) => {
+    try {
+      const { projectId } = req.query;
+      if (!projectId || typeof projectId !== "string") {
+        return res.status(400).json({ error: "projectId query param is required" });
+      }
+      const cols = collectionQueries.list(projectId);
+      res.json(cols);
+    } catch (err: any) {
+      console.error("Collections GET error:", err);
+      res.status(500).json({ error: err.message ?? "Failed to list collections" });
+    }
+  });
+
+  /** GET /api/collections/:id — get a collection with its items */
+  api.get("/collections/:id", (req, res) => {
+    try {
+      const col = collectionQueries.get(req.params.id);
+      if (!col) return res.status(404).json({ error: "Collection not found" });
+      const items = collectionItemQueries.listWithJobs(req.params.id);
+      res.json({ ...col, items });
+    } catch (err: any) {
+      console.error("Collection GET error:", err);
+      res.status(500).json({ error: err.message ?? "Failed to get collection" });
+    }
+  });
+
+  /** DELETE /api/collections/:id — delete a collection (cascade deletes items) */
+  api.delete("/collections/:id", (req, res) => {
+    try {
+      const col = collectionQueries.get(req.params.id);
+      if (!col) return res.status(404).json({ error: "Collection not found" });
+      collectionQueries.delete(req.params.id);
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error("Collection DELETE error:", err);
+      res.status(500).json({ error: err.message ?? "Failed to delete collection" });
+    }
+  });
+
+  /** POST /api/collections/:id/items — add a media job to a collection */
+  api.post("/collections/:id/items", (req, res) => {
+    try {
+      const col = collectionQueries.get(req.params.id);
+      if (!col) return res.status(404).json({ error: "Collection not found" });
+      const { jobId, sortOrder } = req.body;
+      if (!jobId) return res.status(400).json({ error: "jobId is required" });
+      collectionItemQueries.insert({
+        collectionId: req.params.id,
+        jobId: String(jobId),
+        sortOrder: typeof sortOrder === "number" ? sortOrder : 0,
+      });
+      res.status(201).json({ ok: true });
+    } catch (err: any) {
+      console.error("Collection item POST error:", err);
+      res.status(500).json({ error: err.message ?? "Failed to add item" });
+    }
+  });
+
+  /** DELETE /api/collections/:id/items/:jobId — remove an item from a collection */
+  api.delete("/collections/:id/items/:jobId", (req, res) => {
+    try {
+      collectionItemQueries.remove(req.params.id, req.params.jobId);
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error("Collection item DELETE error:", err);
+      res.status(500).json({ error: err.message ?? "Failed to remove item" });
+    }
+  });
+
+  /** PUT /api/collections/:id/items/reorder — update sort orders for items */
+  api.put("/collections/:id/items/reorder", (req, res) => {
+    try {
+      const col = collectionQueries.get(req.params.id);
+      if (!col) return res.status(404).json({ error: "Collection not found" });
+      const { order } = req.body as { order: Array<{ jobId: string; sortOrder: number }> };
+      if (!Array.isArray(order)) return res.status(400).json({ error: "order must be an array of { jobId, sortOrder }" });
+      for (const { jobId, sortOrder } of order) {
+        collectionItemQueries.insert({ collectionId: req.params.id, jobId, sortOrder });
+      }
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error("Collection reorder error:", err);
+      res.status(500).json({ error: err.message ?? "Failed to reorder items" });
     }
   });
 
