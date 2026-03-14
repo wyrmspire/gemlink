@@ -1,6 +1,6 @@
 # Gemlink Execution Board
 
-> Last updated: 2026-03-14 (Lane 5 — B2 complete + upgrade.md Sales items done)
+> Last updated: 2026-03-14 (Lane 4 — Sprint 2 complete: 78 tests passing, build clean, SQLite integration validated)
 > Scope: prioritized improvement plan across UX, architecture, reliability, boardroom, local-first workflow, testing, deployment, and DX.
 
 ---
@@ -456,3 +456,66 @@
   ```
 - **Conclusion**: `extractMediaBriefs()` in `boardroom.ts` works correctly end-to-end. The Gemini call succeeds, JSON array parsed cleanly, IDs generated, all items have `status: "draft"` and `generatedJobIds: []` as expected.
 
+---
+
+## Sprint 2 — Lane 4 (Infrastructure / Config / DX)
+
+> Last updated: 2026-03-14 (Lane 4 — Sprint 2 complete)
+> Owner: Lane 4 — vite.config.ts, tsconfig.json, package.json, test infrastructure
+
+### W1. Integration tests for Sprint 1 endpoints 🟢
+- **Priority**: P0
+- **Status**: Done
+- **Files**: `tests/api/sprint2_endpoints.test.ts` (new, 29 tests), `tests/helpers/createTestApp.ts` (extended)
+- **What was done**:
+  - Extended `createTestApp.ts` with all Sprint 1 new routes: `POST/GET /api/media/batch`, `POST /api/media/prompt/expand`, `POST /api/media/prompt/variants`, `POST /api/media/score`, `GET /api/media/history?projectId=`, `POST/GET/DELETE /api/collections`.
+  - Gemini-dependent flows are stubbed in the test app (returns synthetic responses) — no live API key needed.
+  - Input validation: all endpoints tested with missing/invalid required fields → 400 responses confirmed.
+  - Batch: verified `batchId` returned, `statuses` array is `["queued",...]`, no-cache headers on batch status.
+  - Prompt expand: verified 4-field shape (`basePrompt`, `expanded`, `refined`, `final`) + 3-element `chain` array.
+  - Prompt variants: verified `variants[]` with `{ style, prompt }` per item, `count` param respected.
+  - Score: validated 400 for missing fields, invalid jobType, and non-existent job.
+  - History project filter: verified empty result for unknown projectId, per-item `projectId` matches filter.
+  - Collections CRUD: create → list → delete round-trip; 404 on unknown id.
+
+### W2. SQLite integration test 🟢
+- **Priority**: P1
+- **Status**: Done
+- **Files**: `tests/db.test.ts` (new, 18 tests)
+- **What was done**:
+  - Spins up an in-memory (`:memory:`) `better-sqlite3` database with the **same schema** as `src/db.ts`.
+  - Tests: project insert + read-back; media_job insert + listByProject; collection CRUD + JOIN with media_jobs; collection_item remove; `CHECK` constraint enforcement (invalid type/status → throws); `CASCADE DELETE` on collections when project deleted; `SET NULL` on `media_jobs.projectId` when project deleted; media_plans insert + update.
+  - All 18 tests pass in 376ms.
+
+### W3. Production build validation 🟢
+- **Priority**: P0
+- **Status**: Done
+- **Result**: `npm run build` completes in 3.93s, zero errors.
+  - `dist/assets/index-Dn_X8Rwb.js`: 821KB (216KB gzip) — **one build warning**: chunk > 500KB. Not an error; acceptable for current monolithic SPA bundle. Recommend code-splitting at route level in a future sprint.
+  - MediaPlan, Collections, Present pages, ProjectContext, ToastContext all bundle successfully.
+- `npm run lint` (`tsc --noEmit`): exit 0, zero errors.
+
+### W4. Test helpers verified + all existing tests passing 🟢
+- **Priority**: P1
+- **Status**: Done
+- **Files**: `tests/helpers/renderWithProviders.tsx` (verified, no changes needed)
+- **What was done**: Confirmed `AllProviders` wraps `MockApiKeyProvider > BrandProvider > ProjectProvider > ToastProvider > MemoryRouter` — all providers are present and in correct order. All 14 existing component tests still pass. No new providers were added in Sprint 1 that would require helper updates.
+
+### W5. archiver package verified 🟢
+- **Priority**: P2
+- **Status**: Done
+- **Result**: `archiver@7.0.1` is in `package.json` dependencies (confirmed Sprint 1 installed it). Dynamic `import('archiver')` resolves to `function` — J3 export endpoint (`POST /api/collections/:id/export`) will not return 503. No additional npm install required.
+
+---
+
+## Sprint 2 Final Test Summary
+
+| Test file | Tests | Status |
+|-----------|-------|--------|
+| `tests/api/server.test.ts` (Sprint 1 API) | 17 | ✅ |
+| `tests/api/sprint2_endpoints.test.ts` (Sprint 2 API) | 29 | ✅ |
+| `tests/db.test.ts` (SQLite integration) | 18 | ✅ |
+| `tests/components/pages.test.tsx` (component smoke) | 14 | ✅ |
+| **Total** | **78** | **✅ all passing** |
+
+Build: ✅ zero errors (`vite build` + `tsc --noEmit`)
