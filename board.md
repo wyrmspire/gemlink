@@ -303,6 +303,12 @@
 - **Files**: `src/context/ProjectContext.tsx` (new), `src/pages/Setup.tsx`, `src/components/Layout.tsx`
 - **Done**: Lane 3 — 2026-03-14. `ProjectContext.tsx` with full CRUD + localStorage. ProjectSwitcher dropdown in sidebar (desktop + mobile). Setup.tsx rewritten as per-project editor. Not browser-tested (localStorage persistence, project switching flow).
 
+### G2. Project-Scoped Media 🟡
+- **Priority**: P1
+- **Files**: `server.ts` (manifest shape, history endpoint)
+- **Lane 1 — started 2026-03-14**
+- Added `projectId` to `JobManifest` interface. Updated `POST /api/media/image|video|voice` to accept + persist `projectId`. Updated `GET /api/media/history` to accept `?projectId=` filter.
+
 ---
 
 ## Track H — Bulk Media Generation Engine (upgrade.md)
@@ -312,9 +318,39 @@
 - **Files**: `src/pages/MediaPlan.tsx` (new), `src/App.tsx`
 - **Done**: Lane 3 — 2026-03-14. Full MediaPlan page at `/plan`: natural language describe→suggest (AI or contextual mock fallback), drag-to-reorder via Reorder.Group, expandable per-item editor, Generate All button (calls `/api/media/batch` with graceful fallback), per-project localStorage. sessionStorage import from Research. Not browser-tested.
 
+### H2. Batch Generation Queue 🟡
+- **Priority**: P0
+- **Files**: `server.ts` (batch endpoint + GenerationQueue class)
+- **Lane 1 — started 2026-03-14**
+- `POST /api/media/batch`, `GET /api/media/batch/:batchId`. `GenerationQueue` class with semaphore concurrency (3 image, 1 video, 2 voice) + exponential backoff on 429.
+
+### H3. AI-Powered Prompt Expansion 🟡
+- **Priority**: P1
+- **Files**: `server.ts` (new prompt endpoint)
+- **Lane 1 — started 2026-03-14**
+- `POST /api/media/prompt/expand` — 3-step chain (expand→refine→generate-ready) via Gemini.
+
+### H4. Prompt Variant Generation 🟡
+- **Priority**: P2
+- **Files**: `server.ts` (new prompt endpoint)
+- **Lane 1 — started 2026-03-14**
+- `POST /api/media/prompt/variants` — returns 3-5 stylistic prompt variants.
+
 ---
 
 ## Track I — Research + Rating (upgrade.md)
+
+### I3. AI Media Scoring 🟡
+- **Priority**: P1
+- **Files**: `server.ts` (scoring endpoint)
+- **Lane 1 — started 2026-03-14**
+- `POST /api/media/score` — loads image via Gemini vision, scores on 5 dimensions (brandAlignment, purposeFit, technicalQuality, audienceMatch, uniqueness). Returns structured JSON + reasoning + suggestions.
+
+### I4. Auto-Tagging 🟡
+- **Priority**: P2
+- **Files**: `server.ts` (auto-tag on job completion, persisted in manifest)
+- **Lane 1 — started 2026-03-14**
+- After image/voice generation completes, calls Gemini vision to produce content-type, style, platform tags. Tags stored in `manifest.tags`.
 
 ### I1. Research → Media Pipeline 🟢
 - **Priority**: P1
@@ -345,6 +381,13 @@
 - **Files**: `src/pages/Present.tsx` (new), `src/App.tsx`
 - **Done**: Lane 3 — 2026-03-14. Full-screen slideshow at `/present/:collectionId`. ← → keyboard nav, AnimatePresence slide transitions, dot nav strip, caption, exit button. Not browser-tested.
 
+### J3. Bulk Export 🟡
+- **Priority**: P2
+- **Files**: `server.ts` (export endpoint)
+- **Lane 1 — started 2026-03-14**
+- `POST /api/collections/:id/export` — reads collection JSON from `jobs/collections/`, zips all referenced media files + `media_manifest.json` using `archiver`. Requires `archiver` npm package (requested from Lane 4 — document in board.md).
+- **Dependency note**: Requires `archiver` npm package. Lane 4 must run `npm install archiver @types/archiver`. Until installed, endpoint returns 503 with a clear message.
+
 ---
 
 ## Quick Wins (upgrade.md) 🟢
@@ -359,7 +402,8 @@
 ## Current State Snapshot
 
 - **Working**: Image gen, video gen (with background polling + live UI refresh), voice TTS, boardroom sessions (5-phase async protocol with session replay + media brief extraction), research (server-proxied), video analysis (server-proxied), live voice (client-side — known trade-off), Twilio SMS webhook, media library (search/filter, regen/copy, skeletons), mobile-responsive layout, error boundaries, brand context persisted, **ProjectContext** (multi-project switcher, per-project Setup), **MediaPlan** page, **Collections**, **Present** slideshow, toast notification system.
-- **In Progress**: none from Lane 3.
-- **Remaining / Not started**: A3 (VoiceLab WS proxy — accepted trade-off pending decision), E2 (frontend component smoke tests), H2/H3/H4 (batch queue, prompt expansion, variants — Lane 1 dependency), G2 (project-scoped media — Lane 1 dependency), I3/I4 (AI scoring, tags — Lane 1 dependency), J3 (bulk export — Lane 1 dependency), D2 (toast system).
+- **In Progress (Lane 1)**: G2, H2, H3, H4, I3, I4, J3 — all being implemented in server.ts.
+- **Remaining / Not started**: A3 (VoiceLab WS proxy — accepted trade-off pending decision), E2 (frontend component smoke tests), D2 (toast system).
+- **Lane 4 dependency**: `archiver` + `@types/archiver` must be added to package.json for J3 (bulk export). Lane 4 please run: `npm install archiver @types/archiver`.
 - **Technical debt**: `better-sqlite3` unused — decision note at `docs/decisions/A5-better-sqlite3.md` recommends removal; awaiting explicit approval before touching `package.json`. `vite.config.ts` now allows `.trycloudflare.com` hosts (tunnelling convenience — review if not needed).
 - **Untracked files that should be committed**: `src/components/ErrorBoundary.tsx`, `tests/`, `vitest.config.ts`, `docs/`, `WORKSPACE-NOTES.md`.
