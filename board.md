@@ -16,6 +16,13 @@
 
 ---
 
+## Parallelization guidance
+- Lanes **1–5** can start immediately on items marked 🟢/🟡 or unblocked 🔴.
+- Items marked ⏸️ require a decision before work begins.
+- If blocked, switch to Side‑work lane tasks that don’t overlap active files.
+
+---
+
 ## Track A — Architecture & Reliability
 
 > **Goal**: Eliminate API key leakage, establish consistent client→server pattern, add resilience.
