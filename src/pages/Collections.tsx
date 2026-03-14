@@ -13,10 +13,13 @@ import {
   X,
   RefreshCw,
   Check,
+  Server,
 } from "lucide-react";
 import { useToast } from "../context/ToastContext";
 import { useProject } from "../context/ProjectContext";
 
+// ─── localStorage fallback (W1) ─────────────────────────────────────────────
+// TODO: Remove once Lane 1 W5 (POST /api/collections CRUD) is confirmed stable.
 const COLLECTIONS_KEY = "gemlink-collections";
 
 export interface CollectionItem {
@@ -40,15 +43,65 @@ function genId() {
   return `col_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function loadCollections(): Collection[] {
+// ─── localStorage helpers ────────────────────────────────────────────────────
+function loadCollectionsLS(): Collection[] {
   try {
     const raw = localStorage.getItem(COLLECTIONS_KEY);
     return raw ? JSON.parse(raw) : [];
   } catch { return []; }
 }
 
-function saveCollections(cols: Collection[]) {
+function saveCollectionsLS(cols: Collection[]) {
   try { localStorage.setItem(COLLECTIONS_KEY, JSON.stringify(cols)); } catch { /* ignore */ }
+}
+
+// ─── Server API helpers (W1) ─────────────────────────────────────────────────
+async function apiGetCollections(projectId: string): Promise<Collection[]> {
+  const res = await fetch(`/api/collections?projectId=${encodeURIComponent(projectId)}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error("GET /api/collections failed");
+  return res.json();
+}
+
+async function apiCreateCollection(name: string, projectId: string): Promise<Collection> {
+  const res = await fetch("/api/collections", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, projectId }),
+  });
+  if (!res.ok) throw new Error("POST /api/collections failed");
+  return res.json();
+}
+
+async function apiDeleteCollection(id: string): Promise<void> {
+  const res = await fetch(`/api/collections/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`DELETE /api/collections/${id} failed`);
+}
+
+async function apiAddItem(collectionId: string, item: CollectionItem): Promise<void> {
+  const res = await fetch(`/api/collections/${collectionId}/items`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(item),
+  });
+  if (!res.ok) throw new Error(`POST /api/collections/${collectionId}/items failed`);
+}
+
+async function apiRemoveItem(collectionId: string, jobId: string): Promise<void> {
+  const res = await fetch(`/api/collections/${collectionId}/items/${jobId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(`DELETE /api/collections/${collectionId}/items/${jobId} failed`);
+}
+
+async function apiReorderItems(collectionId: string, items: CollectionItem[]): Promise<void> {
+  const res = await fetch(`/api/collections/${collectionId}/items/reorder`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
+  if (!res.ok) throw new Error(`PUT /api/collections/${collectionId}/items/reorder failed`);
 }
 
 interface LibraryJob {
@@ -63,7 +116,12 @@ interface LibraryJob {
 export default function Collections() {
   const { toast } = useToast();
   const { activeProject } = useProject();
-  const [collections, setCollections] = useState<Collection[]>(loadCollections);
+  const projectId = activeProject?.id ?? "default";
+
+  // W1: track whether we're using the server API or localStorage fallback
+  const [useServerApi, setUseServerApi] = useState(false);
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [loadingCols, setLoadingCols] = useState(true);
   const [activeColId, setActiveColId] = useState<string | null>(null);
   const [showNewCol, setShowNewCol] = useState(false);
   const [newColName, setNewColName] = useState("");
@@ -71,21 +129,60 @@ export default function Collections() {
   const [libLoading, setLibLoading] = useState(false);
   const [showLibPicker, setShowLibPicker] = useState(false);
 
-  const projectId = activeProject?.id ?? "default";
   const projectCols = collections.filter((c) => c.projectId === projectId);
   const activeCol = collections.find((c) => c.id === activeColId) ?? projectCols[0] ?? null;
 
-  useEffect(() => {
-    if (!activeColId && projectCols.length > 0) setActiveColId(projectCols[0].id);
+  // ── W1: Load collections — try server first, fall back to localStorage ──
+  const loadCollections = useCallback(async () => {
+    setLoadingCols(true);
+    try {
+      const serverCols = await apiGetCollections(projectId);
+      setCollections(serverCols);
+      setUseServerApi(true);
+    } catch {
+      // Server endpoint not yet live — use localStorage fallback
+      setCollections(loadCollectionsLS());
+      setUseServerApi(false);
+    } finally {
+      setLoadingCols(false);
+    }
   }, [projectId]);
 
-  function persist(next: Collection[]) {
+  useEffect(() => {
+    loadCollections();
+  }, [loadCollections]);
+
+  useEffect(() => {
+    if (!activeColId && projectCols.length > 0) setActiveColId(projectCols[0].id);
+  }, [projectId, projectCols.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── localStorage-only persist helper (used when server not available) ──
+  function persistLS(next: Collection[]) {
     setCollections(next);
-    saveCollections(next);
+    saveCollectionsLS(next);
   }
 
-  function createCollection() {
+  // ─── Create collection ─────────────────────────────────────────────────────
+  async function createCollection() {
     if (!newColName.trim()) return;
+    if (useServerApi) {
+      try {
+        const col = await apiCreateCollection(newColName.trim(), projectId);
+        setCollections((prev) => [...prev, col]);
+        setActiveColId(col.id);
+        toast(`Created collection "${col.name}".`, "success");
+      } catch {
+        toast("Failed to create collection on server — saved locally.", "warning");
+        fallbackCreateCollection();
+      }
+    } else {
+      fallbackCreateCollection();
+    }
+    setNewColName("");
+    setShowNewCol(false);
+  }
+
+  function fallbackCreateCollection() {
     const col: Collection = {
       id: genId(),
       name: newColName.trim(),
@@ -94,15 +191,24 @@ export default function Collections() {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    persist([...collections, col]);
+    persistLS([...collections, col]);
     setActiveColId(col.id);
-    setNewColName("");
-    setShowNewCol(false);
     toast(`Created collection "${col.name}".`, "success");
   }
 
-  function deleteCollection(id: string) {
-    persist(collections.filter((c) => c.id !== id));
+  // ─── Delete collection ─────────────────────────────────────────────────────
+  async function deleteCollection(id: string) {
+    if (useServerApi) {
+      try {
+        await apiDeleteCollection(id);
+        setCollections((prev) => prev.filter((c) => c.id !== id));
+      } catch {
+        toast("Failed to delete on server — removed locally.", "warning");
+        persistLS(collections.filter((c) => c.id !== id));
+      }
+    } else {
+      persistLS(collections.filter((c) => c.id !== id));
+    }
     if (activeColId === id) {
       const remaining = projectCols.filter((c) => c.id !== id);
       setActiveColId(remaining[0]?.id ?? null);
@@ -110,20 +216,46 @@ export default function Collections() {
     toast("Collection deleted.", "info");
   }
 
-  function reorderItems(newItems: CollectionItem[]) {
+  // ─── Reorder items ─────────────────────────────────────────────────────────
+  async function reorderItems(newItems: CollectionItem[]) {
     if (!activeCol) return;
-    persist(collections.map((c) => c.id === activeCol.id ? { ...c, items: newItems, updatedAt: new Date().toISOString() } : c));
+    const updated = collections.map((c) =>
+      c.id === activeCol.id ? { ...c, items: newItems, updatedAt: new Date().toISOString() } : c
+    );
+    setCollections(updated);
+    if (!useServerApi) saveCollectionsLS(updated);
+
+    if (useServerApi) {
+      try {
+        await apiReorderItems(activeCol.id, newItems);
+      } catch {
+        // Non-critical: reorder already applied locally
+        saveCollectionsLS(updated);
+      }
+    }
   }
 
-  function removeFromCollection(jobId: string) {
+  // ─── Remove item from collection ──────────────────────────────────────────
+  async function removeFromCollection(jobId: string) {
     if (!activeCol) return;
-    persist(collections.map((c) =>
+    const updated = collections.map((c) =>
       c.id === activeCol.id
         ? { ...c, items: c.items.filter((i) => i.jobId !== jobId), updatedAt: new Date().toISOString() }
         : c
-    ));
+    );
+    setCollections(updated);
+    if (!useServerApi) saveCollectionsLS(updated);
+
+    if (useServerApi) {
+      try {
+        await apiRemoveItem(activeCol.id, jobId);
+      } catch {
+        saveCollectionsLS(updated);
+      }
+    }
   }
 
+  // ─── Fetch library for picker ──────────────────────────────────────────────
   async function fetchLibrary() {
     setLibLoading(true);
     try {
@@ -143,7 +275,8 @@ export default function Collections() {
     fetchLibrary();
   }
 
-  function addFromLibrary(job: LibraryJob) {
+  // ─── Add from library ──────────────────────────────────────────────────────
+  async function addFromLibrary(job: LibraryJob) {
     if (!activeCol) return;
     if (activeCol.items.some((i) => i.jobId === job.id)) {
       toast("Already in this collection.", "warning");
@@ -156,11 +289,22 @@ export default function Collections() {
       prompt: job.prompt ?? job.text ?? "",
       addedAt: new Date().toISOString(),
     };
-    persist(collections.map((c) =>
+
+    const updated = collections.map((c) =>
       c.id === activeCol.id
         ? { ...c, items: [...c.items, item], updatedAt: new Date().toISOString() }
         : c
-    ));
+    );
+    setCollections(updated);
+    if (!useServerApi) saveCollectionsLS(updated);
+
+    if (useServerApi) {
+      try {
+        await apiAddItem(activeCol.id, item);
+      } catch {
+        saveCollectionsLS(updated);
+      }
+    }
     toast("Added to collection.", "success");
   }
 
@@ -180,6 +324,13 @@ export default function Collections() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-white mb-2">Collections</h1>
           <p className="text-zinc-400">Curate approved media into named collections. Drag to reorder.</p>
+          {/* W1: API mode indicator */}
+          {!loadingCols && (
+            <span className={`inline-flex items-center gap-1.5 mt-1 text-xs ${useServerApi ? "text-emerald-400" : "text-amber-400"}`}>
+              <Server className="w-3 h-3" />
+              {useServerApi ? "Syncing with server" : "Local mode (server API pending)"}
+            </span>
+          )}
         </div>
         <button
           onClick={() => setShowNewCol(true)}
@@ -193,7 +344,13 @@ export default function Collections() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         {/* Sidebar */}
         <div className="md:col-span-1 space-y-2">
-          {projectCols.length === 0 ? (
+          {loadingCols ? (
+            <div className="space-y-2 animate-pulse">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="h-12 rounded-xl bg-zinc-800/60" />
+              ))}
+            </div>
+          ) : projectCols.length === 0 ? (
             <div className="text-zinc-500 text-sm text-center py-8 border border-zinc-800 rounded-xl">No collections yet</div>
           ) : (
             projectCols.map((col) => (

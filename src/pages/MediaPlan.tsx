@@ -136,26 +136,30 @@ export default function MediaPlan() {
     if (!naturalInput.trim()) return;
     setSuggestLoading(true);
     try {
+      // W2: request body matches Lane 1 W2 spec — `projectContext` (not brandContext)
       const res = await fetch("/api/media/plan/suggest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           description: naturalInput,
-          brandContext: {
+          projectContext: {
             brandName: activeProject?.brandName,
             brandDescription: activeProject?.brandDescription,
             targetAudience: activeProject?.targetAudience,
             brandVoice: activeProject?.brandVoice,
+            styleKeywords: activeProject?.styleKeywords,
           },
+          // apiKey is handled server-side via GOOGLE_API_KEY env
         }),
       });
       if (!res.ok) throw new Error("unavailable");
       const data = await res.json();
       const suggested: MediaPlanItem[] = (data.items ?? []).map((x: any) => newItem(x));
       save([...items, ...suggested]);
-      toast(`Added ${suggested.length} suggested items.`, "success");
+      toast(`Added ${suggested.length} AI-suggested items.`, "success");
     } catch {
-      // Graceful mock fallback
+      // Graceful mock fallback — used when endpoint isn't yet live
+      // TODO: remove fallback once Lane 1 W2 (POST /api/media/plan/suggest) ships
       const opts = naturalInput.toLowerCase();
       const mock: MediaPlanItem[] = [
         newItem({ type: "image", label: "Hero Banner", purpose: "Website hero", promptTemplate: `${opts} — hero banner, wide format, no text` }),
@@ -165,7 +169,7 @@ export default function MediaPlan() {
         newItem({ type: "voice", label: "Voiceover", purpose: "Ad spot", promptTemplate: `30-second voiceover for: ${opts}` }),
       ];
       save([...items, ...mock]);
-      toast("Plan generated using contextual suggestions (Lane 1 endpoint coming soon).", "info");
+      toast("Plan generated with contextual suggestions (AI endpoint pending).", "info");
     } finally {
       setSuggestLoading(false);
       setNaturalInput("");
@@ -276,6 +280,25 @@ export default function MediaPlan() {
             Suggest Plan
           </button>
         </div>
+        {/* W2: loading skeleton shown while AI is planning */}
+        {suggestLoading && (
+          <div className="mt-4 space-y-2 animate-pulse">
+            <p className="text-xs text-indigo-400 mb-2 flex items-center gap-1.5">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              AI is planning your media…
+            </p>
+            {[90, 75, 82, 68, 55].map((w, i) => (
+              <div key={i} className="flex items-center gap-3 bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+                <div className="w-4 h-4 rounded bg-zinc-800" />
+                <div className="flex-1 space-y-1.5">
+                  <div className={`h-3 rounded bg-zinc-800`} style={{ width: `${w}%` }} />
+                  <div className="h-2 w-1/3 rounded bg-zinc-800/60" />
+                </div>
+                <div className="h-5 w-16 rounded-full bg-zinc-800" />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Plan items */}

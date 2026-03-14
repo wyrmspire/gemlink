@@ -12,8 +12,21 @@ import {
   Copy,
   RotateCcw,
   Check,
+  Star,
+  SortAsc,
 } from "lucide-react";
 import { useToast } from "../context/ToastContext";
+
+interface MediaScore {
+  brandAlignment: number;
+  purposeFit: number;
+  technicalQuality: number;
+  audienceMatch: number;
+  uniqueness: number;
+  overall: number;
+  reasoning?: string;
+  suggestions?: string[];
+}
 
 interface Job {
   id: string;
@@ -26,7 +39,11 @@ interface Job {
   outputs: string[];
   error?: string;
   logs?: string[];
+  tags?: string[];
+  score?: MediaScore;
 }
+
+type SortMode = "newest" | "highest";
 
 export default function Library() {
   const { toast } = useToast();
@@ -35,6 +52,7 @@ export default function Library() {
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [sortMode, setSortMode] = useState<SortMode>("newest");
 
   const fetchHistory = useCallback(async (silent = false) => {
     if (silent) {
@@ -66,14 +84,30 @@ export default function Library() {
     return () => window.clearInterval(interval);
   }, [jobs, fetchHistory]);
 
-  // Client-side prompt search filter
+  // Client-side search filter + sort
   const filtered = useMemo(() => {
-    if (!search.trim()) return jobs;
-    const q = search.toLowerCase();
-    return jobs.filter((j) =>
-      (j.prompt ?? j.text ?? "").toLowerCase().includes(q)
-    );
-  }, [jobs, search]);
+    let result = jobs;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      result = result.filter((j) =>
+        (j.prompt ?? j.text ?? "").toLowerCase().includes(q) ||
+        (j.tags ?? []).some((t) => t.toLowerCase().includes(q))
+      );
+    }
+    if (sortMode === "highest") {
+      result = [...result].sort((a, b) => {
+        const sa = a.score?.overall ?? 0;
+        const sb = b.score?.overall ?? 0;
+        return sb - sa;
+      });
+    } else {
+      // newest first (default server order, but ensure it)
+      result = [...result].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+    }
+    return result;
+  }, [jobs, search, sortMode]);
 
   const getIcon = (type: string) => {
     switch (type) {
@@ -144,6 +178,36 @@ export default function Library() {
 
   const lastLog = (job: Job) => job.logs?.[job.logs.length - 1];
 
+  /** Render a star-rating badge for the overall score */
+  const scoreBadge = (score: MediaScore) => {
+    const val = score.overall.toFixed(1);
+    const pct = (score.overall / 5) * 100;
+    return (
+      <span
+        title={`Score: ${val}/5\n${score.reasoning ?? ""}`}
+        className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-300 border border-amber-500/20"
+      >
+        <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+        {val}
+        <span className="sr-only">out of 5, {pct.toFixed(0)}%</span>
+      </span>
+    );
+  };
+
+  /** Render AI-generated tag pills */
+  const tagPills = (tags: string[]) => (
+    <div className="flex flex-wrap gap-1 mt-1.5">
+      {tags.slice(0, 5).map((tag) => (
+        <span
+          key={tag}
+          className="px-1.5 py-0.5 rounded-md bg-zinc-800 border border-zinc-700 text-zinc-400 text-xs"
+        >
+          {tag}
+        </span>
+      ))}
+    </div>
+  );
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -166,17 +230,46 @@ export default function Library() {
         </button>
       </div>
 
-      {/* Search */}
-      <div className="relative mb-6">
-        <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-        <input
-          id="library-search"
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search prompts…"
-          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-11 pr-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-        />
+      {/* Search + Sort toolbar */}
+      <div className="flex gap-3 mb-6 flex-wrap">
+        <div className="relative flex-1 min-w-0">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+          <input
+            id="library-search"
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search prompts or tags…"
+            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-11 pr-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+        </div>
+        {/* Sort toggle */}
+        <div className="flex items-center gap-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2">
+          <SortAsc className="w-4 h-4 text-zinc-500 shrink-0" />
+          <span className="text-xs text-zinc-500 mr-1 hidden sm:block">Sort:</span>
+          <button
+            id="sort-newest"
+            onClick={() => setSortMode("newest")}
+            className={`text-xs px-2 py-1 rounded-lg transition-colors ${
+              sortMode === "newest"
+                ? "bg-indigo-600 text-white"
+                : "text-zinc-400 hover:text-white"
+            }`}
+          >
+            Newest
+          </button>
+          <button
+            id="sort-highest"
+            onClick={() => setSortMode("highest")}
+            className={`text-xs px-2 py-1 rounded-lg transition-colors ${
+              sortMode === "highest"
+                ? "bg-amber-600 text-white"
+                : "text-zinc-400 hover:text-white"
+            }`}
+          >
+            ★ Highest Rated
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -197,6 +290,12 @@ export default function Library() {
                 <div className="space-y-1.5">
                   <div className="h-3 w-full rounded bg-zinc-800/80" />
                   <div className="h-3 w-4/5 rounded bg-zinc-800/80" />
+                </div>
+                {/* tag pill skeletons */}
+                <div className="flex gap-1">
+                  <div className="h-4 w-12 rounded-md bg-zinc-800/80" />
+                  <div className="h-4 w-14 rounded-md bg-zinc-800/80" />
+                  <div className="h-4 w-10 rounded-md bg-zinc-800/80" />
                 </div>
               </div>
             </div>
@@ -244,10 +343,17 @@ export default function Library() {
                       {lastLog(job) && <p className="mt-2 text-xs text-zinc-500">{lastLog(job)}</p>}
                     </div>
                   )}
+
+                  {/* Score overlay badge (top-right corner) */}
+                  {job.score && (
+                    <div className="absolute top-2 right-2">
+                      {scoreBadge(job.score)}
+                    </div>
+                  )}
                 </div>
 
                 {/* Info */}
-                <div className="p-4 flex-1 flex flex-col gap-3">
+                <div className="p-4 flex-1 flex flex-col gap-2">
                   <div className="flex items-center gap-2">
                     {getIcon(job.type)}
                     <span className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
@@ -260,7 +366,10 @@ export default function Library() {
                     {job.prompt || job.text || "No description available"}
                   </p>
 
-                  <div className="text-xs text-zinc-500 space-y-1 mt-auto">
+                  {/* Tags */}
+                  {job.tags && job.tags.length > 0 && tagPills(job.tags)}
+
+                  <div className="text-xs text-zinc-500 space-y-1 mt-auto pt-1">
                     <p>Created {new Date(job.createdAt).toLocaleString()}</p>
                     {job.updatedAt && <p>Updated {new Date(job.updatedAt).toLocaleString()}</p>}
                     {job.error && <p className="text-red-300">{job.error}</p>}
