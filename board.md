@@ -170,7 +170,7 @@
 - **Parallelizable with**: Everything
 - **Done**: Lane 2 — 6-card pulsing skeleton grid that matches the real card layout (aspect-square media area + icon/text/timestamp rows).
 
-### D2. Add toast/notification system for errors and success 🟡
+### D2. Add toast/notification system for errors and success 🟢
 - **Priority**: P2 (UX)
 - **Why**: Most pages use `alert()` for errors, which blocks the UI and feels jarring. Success states are also not communicated well.
 - **Deliverables**:
@@ -180,7 +180,7 @@
 - **Files**: new components + all pages
 - **Dependencies**: None
 - **Parallelizable with**: Everything (but touches many files — coordinate)
-- **Lane 3 — started 2026-03-14**
+- **Done**: Lane 3 — 2026-03-14. `ToastContext.tsx` + `Toast.tsx` created. `alert()` replaced in SocialMedia, VideoLab, Research, Library. VoiceLab not modified (no alert() found). Not browser-tested.
 
 ### D3. Fill `metadata.json` 🟢
 - **Priority**: P3 (completeness)
@@ -298,28 +298,28 @@
 
 ## Track G — Multi-Project / Brand Profiles (upgrade.md)
 
-### G1. Project Profiles System 🟡
+### G1. Project Profiles System 🟢
 - **Priority**: P0
 - **Files**: `src/context/ProjectContext.tsx` (new), `src/pages/Setup.tsx`, `src/components/Layout.tsx`
-- **Lane 3 — started 2026-03-14**
+- **Done**: Lane 3 — 2026-03-14. `ProjectContext.tsx` with full CRUD + localStorage. ProjectSwitcher dropdown in sidebar (desktop + mobile). Setup.tsx rewritten as per-project editor. Not browser-tested (localStorage persistence, project switching flow).
 
 ---
 
 ## Track H — Bulk Media Generation Engine (upgrade.md)
 
-### H1. Media Plan Builder 🟡
+### H1. Media Plan Builder 🟢
 - **Priority**: P0
 - **Files**: `src/pages/MediaPlan.tsx` (new), `src/App.tsx`
-- **Lane 3 — started 2026-03-14**
+- **Done**: Lane 3 — 2026-03-14. Full MediaPlan page at `/plan`: natural language describe→suggest (AI or contextual mock fallback), drag-to-reorder via Reorder.Group, expandable per-item editor, Generate All button (calls `/api/media/batch` with graceful fallback), per-project localStorage. sessionStorage import from Research. Not browser-tested.
 
 ---
 
 ## Track I — Research + Rating (upgrade.md)
 
-### I1. Research → Media Pipeline 🟡
+### I1. Research → Media Pipeline 🟢
 - **Priority**: P1
 - **Files**: `src/pages/Research.tsx`
-- **Lane 3 — started 2026-03-14**
+- **Done**: Lane 3 — 2026-03-14. "Create media from this" button added to Research results. Opens modal with AI-suggested (or contextual mock) media plan items. Selected items stored in sessionStorage and user is navigated to /plan. Not browser-tested.
 
 ### I2. Boardroom → Media Brief Pipeline 🟢
 - **Priority**: P2
@@ -335,31 +335,31 @@
 
 ## Track J — Presentation & Export (upgrade.md)
 
-### J1. Collections 🟡
+### J1. Collections 🟢
 - **Priority**: P1
 - **Files**: `src/pages/Collections.tsx` (new), `src/App.tsx`
-- **Lane 3 — started 2026-03-14**
+- **Done**: Lane 3 — 2026-03-14. Collections page at `/collections`: per-project sidebar list, drag-to-reorder (Reorder.Group), library picker modal (fetches /api/media/history), delete collection, Present link. Not browser-tested (drag and library fetch).
 
-### J2. Present mode 🟡
+### J2. Present mode 🟢
 - **Priority**: P2
 - **Files**: `src/pages/Present.tsx` (new), `src/App.tsx`
-- **Lane 3 — started 2026-03-14**
+- **Done**: Lane 3 — 2026-03-14. Full-screen slideshow at `/present/:collectionId`. ← → keyboard nav, AnimatePresence slide transitions, dot nav strip, caption, exit button. Not browser-tested.
 
 ---
 
-## Quick Wins (upgrade.md) 🟡
+## Quick Wins (upgrade.md) 🟢
 - Count selector (1-4) on SocialMedia.tsx
 - Platform presets dropdown on SocialMedia.tsx and VideoLab.tsx
 - Text search/filter on Library.tsx
 - Regenerate + Copy Prompt buttons on Library cards
-- **Lane 3 — started 2026-03-14**
+- **Done**: Lane 3 — 2026-03-14. All 4 quick wins implemented. Not browser-tested.
 
 ---
 
 ## Current State Snapshot
 
-- **Working**: Image gen, video gen (with background polling + live UI refresh), voice TTS, boardroom sessions (5-phase async protocol with session replay + **media brief extraction**), research (server-proxied), video analysis (server-proxied), live voice (client-side — known trade-off), Twilio SMS webhook, media library with skeletons + auto-refresh, mobile-responsive layout, error boundaries on all routes, brand context persisted across refreshes, **Media Strategy session template**.
-- **In Progress (Lane 3)**: D2 (toast system), G1 (ProjectContext + project switcher), Quick Wins (Library search, count selector, presets, regen/copy), H1 (MediaPlan page), I1 (Research→Media modal), J1 (Collections), J2 (Present).
+- **Working**: Image gen, video gen (with background polling + live UI refresh), voice TTS, boardroom sessions (5-phase async protocol with session replay + media brief extraction), research (server-proxied), video analysis (server-proxied), live voice (client-side — known trade-off), Twilio SMS webhook, media library (search/filter, regen/copy, skeletons), mobile-responsive layout, error boundaries, brand context persisted, **ProjectContext** (multi-project switcher, per-project Setup), **MediaPlan** page, **Collections**, **Present** slideshow, toast notification system.
+- **In Progress**: none from Lane 3.
 - **Remaining / Not started**: A3 (VoiceLab WS proxy — accepted trade-off pending decision), E2 (frontend component smoke tests), H2/H3/H4 (batch queue, prompt expansion, variants — Lane 1 dependency), G2 (project-scoped media — Lane 1 dependency), I3/I4 (AI scoring, tags — Lane 1 dependency), J3 (bulk export — Lane 1 dependency), D2 (toast system).
 - **Technical debt**: `better-sqlite3` unused — decision note at `docs/decisions/A5-better-sqlite3.md` recommends removal; awaiting explicit approval before touching `package.json`. `vite.config.ts` now allows `.trycloudflare.com` hosts (tunnelling convenience — review if not needed).
 - **Untracked files that should be committed**: `src/components/ErrorBoundary.tsx`, `tests/`, `vitest.config.ts`, `docs/`, `WORKSPACE-NOTES.md`.
