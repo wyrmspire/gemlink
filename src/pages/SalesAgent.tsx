@@ -1,3 +1,4 @@
+import { useProject } from "../context/ProjectContext";
 import { useBrand } from "../context/BrandContext";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -72,7 +73,17 @@ function timeAgo(iso: string): string {
 // ---------------------------------------------------------------------------
 
 export default function SalesAgent() {
+  // Primary: ProjectContext (G1); fallback: BrandContext for legacy data.
+  const { activeProject } = useProject();
   const brand = useBrand();
+
+  // Resolve brand fields: activeProject wins, BrandContext is the fallback.
+  const brandName       = activeProject?.brandName       ?? brand.brandName;
+  const brandDescription= activeProject?.brandDescription?? brand.brandDescription;
+  const targetAudience  = activeProject?.targetAudience  ?? brand.targetAudience;
+  const brandVoice      = activeProject?.brandVoice      ?? brand.brandVoice;
+  const projectId       = activeProject?.id;
+  const projectName     = activeProject?.name;
 
   // Webhook URL
   const webhookUrl = `${import.meta.env.VITE_APP_URL || window.location.origin}/api/twilio/sms`;
@@ -105,13 +116,16 @@ export default function SalesAgent() {
   }, []);
 
   // ---------------------------------------------------------------------------
-  // Load media library
+  // Load media library — filter by active project if one is selected
   // ---------------------------------------------------------------------------
 
   const loadMedia = useCallback(() => {
     setMediaLoading(true);
     setMediaError(null);
-    fetch("/api/media/history")
+    const url = projectId
+      ? `/api/media/history?projectId=${encodeURIComponent(projectId)}`
+      : "/api/media/history";
+    fetch(url)
       .then((r) => {
         if (!r.ok) throw new Error("Failed to fetch media");
         return r.json();
@@ -119,7 +133,7 @@ export default function SalesAgent() {
       .then((jobs: MediaJob[]) => setMediaJobs(jobs))
       .catch((e: Error) => setMediaError(e.message))
       .finally(() => setMediaLoading(false));
-  }, []);
+  }, [projectId]);
 
   useEffect(() => {
     loadMedia();
@@ -147,14 +161,13 @@ export default function SalesAgent() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          brandName: brand.brandName,
-          brandDescription: brand.brandDescription,
-          targetAudience: brand.targetAudience,
-          brandVoice: brand.brandVoice,
-          // G1 (ProjectContext) not yet available — will swap projectId/projectName
-          // from ProjectContext once Lane 3 delivers G1.
-          projectId: undefined,
-          projectName: undefined,
+          brandName,
+          brandDescription,
+          targetAudience,
+          brandVoice,
+          // Send active project context (G1 — ProjectContext)
+          projectId,
+          projectName,
           mediaCount: completedCount,
         }),
       });
@@ -187,10 +200,10 @@ export default function SalesAgent() {
 
   const configInSync =
     savedConfig &&
-    savedConfig.brandName === brand.brandName &&
-    savedConfig.brandDescription === brand.brandDescription &&
-    savedConfig.targetAudience === brand.targetAudience &&
-    savedConfig.brandVoice === brand.brandVoice;
+    savedConfig.brandName === brandName &&
+    savedConfig.brandDescription === brandDescription &&
+    savedConfig.targetAudience === targetAudience &&
+    savedConfig.brandVoice === brandVoice;
 
   // ---------------------------------------------------------------------------
   // Render
@@ -210,15 +223,16 @@ export default function SalesAgent() {
             <p className="text-zinc-400">Deploy an AI sales agent via SMS using Twilio.</p>
           </div>
 
-          {/* Project badge — ready to be fed from ProjectContext (G1) */}
+          {/* Project badge — fed from activeProject (ProjectContext / G1) */}
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-2 bg-indigo-500/10 border border-indigo-500/25 rounded-xl px-4 py-2">
               <FolderOpen className="w-4 h-4 text-indigo-400" />
               <span className="text-indigo-300 text-sm font-medium">
-                {/* TODO(G1): Replace with activeProject.name from ProjectContext */}
-                {brand.brandName}
+                {projectName ?? brandName}
               </span>
-              <span className="text-indigo-400/50 text-xs ml-1">active project</span>
+              <span className="text-indigo-400/50 text-xs ml-1">
+                {activeProject ? "active project" : "brand (no project)"}
+              </span>
             </div>
             {!configInSync && !configLoading && (
               <div
@@ -255,10 +269,10 @@ export default function SalesAgent() {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
           {[
-            { label: "Brand Name", value: brand.brandName },
-            { label: "Target Audience", value: brand.targetAudience },
-            { label: "Description", value: brand.brandDescription },
-            { label: "Brand Voice", value: brand.brandVoice },
+            { label: "Brand Name", value: brandName },
+            { label: "Target Audience", value: targetAudience },
+            { label: "Description", value: brandDescription },
+            { label: "Brand Voice", value: brandVoice },
           ].map(({ label, value }) => (
             <div key={label} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
               <p className="text-xs text-zinc-500 mb-1">{label}</p>
@@ -266,6 +280,18 @@ export default function SalesAgent() {
             </div>
           ))}
         </div>
+
+        {/* Project context indicator */}
+        {activeProject && (
+          <div className="flex items-center gap-2 mb-5 text-xs text-zinc-500">
+            <FolderOpen className="w-3.5 h-3.5 text-indigo-400" />
+            <span>
+              Sourced from project{" "}
+              <span className="text-indigo-300 font-medium">{activeProject.name}</span>
+              {" "}(id: <code className="text-zinc-400">{activeProject.id}</code>)
+            </span>
+          </div>
+        )}
 
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="text-sm text-zinc-500">
@@ -275,6 +301,11 @@ export default function SalesAgent() {
               <>
                 Last synced:{" "}
                 <span className="text-zinc-400">{timeAgo(savedConfig.updatedAt)}</span>
+                {savedConfig.projectName && (
+                  <span className="ml-3 text-indigo-400/70">
+                    · project: {savedConfig.projectName}
+                  </span>
+                )}
                 {savedConfig.mediaCount !== undefined && (
                   <span className="ml-3 text-zinc-500">
                     · {savedConfig.mediaCount} media asset{savedConfig.mediaCount !== 1 ? "s" : ""} referenced
@@ -370,8 +401,14 @@ export default function SalesAgent() {
             <h3 className="text-sm font-medium text-indigo-300 mb-2">Agent Context Preview</h3>
             <p className="text-sm text-indigo-200/70 leading-relaxed">
               When users text your Twilio number, the AI will respond as a sales agent for{" "}
-              <strong>{brand.brandName}</strong>. It uses your brand description, target audience (
-              {brand.targetAudience}), and brand voice to craft responses.
+              <strong>{brandName}</strong>. It uses your brand description, target audience (
+              {targetAudience}), and brand voice to craft responses.
+              {activeProject && (
+                <>
+                  {" "}
+                  Representing project <strong>{activeProject.name}</strong>.
+                </>
+              )}
               {totalCompleted > 0 && (
                 <>
                   {" "}
@@ -393,9 +430,14 @@ export default function SalesAgent() {
               <ImageIcon className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-white">Sales & Promotional Media</h2>
+              <h2 className="text-lg font-semibold text-white">Sales &amp; Promotional Media</h2>
               <p className="text-sm text-zinc-400">
                 Media assets tagged as sales, promotional, or campaign-related.
+                {activeProject && (
+                  <span className="ml-1 text-indigo-400/70">
+                    · filtered to <span className="font-medium">{activeProject.name}</span>
+                  </span>
+                )}
               </p>
             </div>
           </div>
