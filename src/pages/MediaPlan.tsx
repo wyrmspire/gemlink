@@ -114,6 +114,12 @@ const ASPECT_RATIOS = [
   { value: "21:9", label: "21:9 Ultra-wide" },
 ];
 
+// Veo only supports 16:9 and 9:16
+const VIDEO_ASPECT_RATIOS = [
+  { value: "16:9", label: "16:9 Widescreen" },
+  { value: "9:16", label: "9:16 Vertical" },
+];
+
 // ─── W1: Item Presets ──────────────────────────────────────────────────────
 
 interface ItemPreset {
@@ -370,7 +376,7 @@ function defaultConfig(type: MediaPlanItem["type"] = "image"): GenerationConfig 
       ? (import.meta.env.VITE_MODEL_TTS || "gemini-2.5-flash-preview-tts")
       : (import.meta.env.VITE_MODEL_IMAGE || "gemini-3-pro-image-preview"),
     size: type === "video" ? "1080p" : "1K",
-    aspectRatio: "1:1",
+    aspectRatio: type === "video" ? "16:9" : "1:1",
     count: 1,
     negativePrompt: "",
     voice: "Kore",
@@ -1040,7 +1046,21 @@ export default function MediaPlan() {
         throw new Error(err.error || `Server error ${res.status}`);
       }
       const data = await res.json();
-      const suggested = (data.items ?? []).map((x: any) => newItem(x));
+      const suggested = (data.items ?? []).map((x: any) => {
+        // Merge any AI-suggested aspectRatio/size/model into generationConfig
+        // (the plan/suggest endpoint returns them as top-level fields, not inside generationConfig)
+        const cfg = defaultConfig(x.type);
+        if (x.size) cfg.size = x.size;
+        if (x.model) cfg.model = x.model;
+        // Validate aspect ratio is compatible with the item type before applying it
+        if (x.aspectRatio) {
+          const isValidForVideo = x.type === "video"
+            ? VIDEO_ASPECT_RATIOS.some((ar) => ar.value === x.aspectRatio)
+            : true;
+          if (isValidForVideo) cfg.aspectRatio = x.aspectRatio;
+        }
+        return newItem({ ...x, generationConfig: cfg });
+      });
       if (suggested.length === 0) throw new Error("AI returned an empty plan — try a more detailed description.");
       saveItems(activePlan.id, [...activePlan.items, ...suggested]);
       toast(`Added ${suggested.length} AI-suggested items.`, "success");
@@ -2041,11 +2061,15 @@ export default function MediaPlan() {
                                   <div>
                                     <label className="block text-xs text-zinc-500 mb-1">Aspect Ratio</label>
                                     <select
-                                      value={item.generationConfig.aspectRatio}
+                                      value={
+                                        item.type === "video" && !VIDEO_ASPECT_RATIOS.some((ar) => ar.value === item.generationConfig.aspectRatio)
+                                          ? "16:9"
+                                          : item.generationConfig.aspectRatio
+                                      }
                                       onChange={(e) => patchItemConfig(item.id, { aspectRatio: e.target.value })}
                                       className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                     >
-                                      {ASPECT_RATIOS.map((ar) => (
+                                      {(item.type === "video" ? VIDEO_ASPECT_RATIOS : ASPECT_RATIOS).map((ar) => (
                                         <option key={ar.value} value={ar.value}>{ar.label}</option>
                                       ))}
                                     </select>
@@ -2105,7 +2129,11 @@ export default function MediaPlan() {
                                 <label className="block text-xs text-zinc-400 mb-1.5">Type</label>
                                 <select
                                   value={item.type}
-                                  onChange={(e) => patchItem(item.id, { type: e.target.value as MediaPlanItem["type"] })}
+                                  onChange={(e) => {
+                                    const newType = e.target.value as MediaPlanItem["type"];
+                                    // Reset generationConfig to type-appropriate defaults when type changes
+                                    patchItem(item.id, { type: newType, generationConfig: defaultConfig(newType) });
+                                  }}
                                   className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                 >
                                   <option value="image">Image</option>
