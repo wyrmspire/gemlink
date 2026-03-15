@@ -42,8 +42,14 @@ export interface ComposeProject {
   title: string;
   slides: Slide[];
   voiceJobId?: string;
+  musicJobId?: string;
+  voiceVolume?: number;
+  musicVolume?: number;
   videoJobId?: string;
   audioJobId?: string;
+  trimPoints?: { start?: number; end?: number };
+  watermarkJobId?: string;
+  watermarkOpacity?: number;
   captionConfig?: CaptionConfig;
   outputConfig: OutputConfig;
 }
@@ -154,7 +160,7 @@ export default function Compose() {
 
   // For merge/captions drop zone pickers
   const [pickerTarget, setPickerTarget] = useState<
-    "slide" | "voice" | "video" | "audio" | null
+    "slide" | "voice" | "video" | "audio" | "music" | "watermark" | null
   >(null);
 
   // ── Persistence ──────────────────────────────────────────────────────────
@@ -207,6 +213,14 @@ export default function Compose() {
     } else if (pickerTarget === "audio") {
       patch({ audioJobId: job.id });
       toast("Audio selected.", "success");
+      setPickerTarget(null);
+    } else if (pickerTarget === "music") {
+      patch({ musicJobId: job.id });
+      toast("Background music selected.", "success");
+      setPickerTarget(null);
+    } else if (pickerTarget === "watermark") {
+      patch({ watermarkJobId: job.id });
+      toast("Watermark selected.", "success");
       setPickerTarget(null);
     }
   }
@@ -393,29 +407,90 @@ export default function Compose() {
                 />
               </section>
 
-              {/* Voiceover picker */}
+              {/* Multi-Track Audio */}
               <section className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4">
-                <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center justify-between mb-4">
                   <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-                    <Mic className="w-4 h-4 text-amber-400" />
-                    Voiceover
+                    <Music className="w-4 h-4 text-amber-400" />
+                    Multi-Track Audio
                   </h2>
-                  {project.voiceJobId && (
-                    <button
-                      onClick={() => patch({ voiceJobId: undefined })}
-                      className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
-                    >
-                      Remove
-                    </button>
-                  )}
                 </div>
-                <DropZone
-                  label="Add Voiceover"
-                  description="Click to select a voice job from your library"
-                  icon={<Mic className="w-8 h-8" />}
-                  selectedJobId={project.voiceJobId}
-                  onSelect={() => setPickerTarget("voice")}
-                />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-zinc-300">Voiceover</span>
+                      {project.voiceJobId && (
+                        <button
+                          onClick={() => patch({ voiceJobId: undefined })}
+                          className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                    <DropZone
+                      label="Select Voiceover"
+                      description="Click to select a voice job"
+                      icon={<Mic className="w-6 h-6" />}
+                      selectedJobId={project.voiceJobId}
+                      onSelect={() => setPickerTarget("voice")}
+                    />
+                    {project.voiceJobId && (
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-zinc-400 w-10">Vol:</span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={project.voiceVolume ?? 1}
+                          onChange={(e) => patch({ voiceVolume: parseFloat(e.target.value) })}
+                          className="flex-1 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                        />
+                        <span className="text-xs text-zinc-400 w-8 text-right">
+                          {Math.round((project.voiceVolume ?? 1) * 100)}%
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-zinc-300">Background Music</span>
+                      {project.musicJobId && (
+                        <button
+                          onClick={() => patch({ musicJobId: undefined })}
+                          className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                    <DropZone
+                      label="Select Music"
+                      description="Click to select a music job"
+                      icon={<Music className="w-6 h-6" />}
+                      selectedJobId={project.musicJobId}
+                      onSelect={() => setPickerTarget("music")}
+                    />
+                    {project.musicJobId && (
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-zinc-400 w-10">Vol:</span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={project.musicVolume ?? 0.15}
+                          onChange={(e) => patch({ musicVolume: parseFloat(e.target.value) })}
+                          className="flex-1 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                        />
+                        <span className="text-xs text-zinc-400 w-8 text-right">
+                          {Math.round((project.musicVolume ?? 0.15) * 100)}%
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </section>
 
               {/* Caption editor */}
@@ -444,14 +519,113 @@ export default function Compose() {
                   selectedJobId={project.videoJobId}
                   onSelect={() => setPickerTarget("video")}
                 />
-                <DropZone
-                  label="Audio / Voiceover"
-                  description="Select a voice or music job"
-                  icon={<Music className="w-8 h-8" />}
-                  selectedJobId={project.audioJobId ?? project.voiceJobId}
-                  onSelect={() => setPickerTarget("audio")}
-                />
+                <div className="space-y-4">
+                  <DropZone
+                    label="Select Voiceover"
+                    description="Optional voice track"
+                    icon={<Mic className="w-8 h-8" />}
+                    selectedJobId={project.voiceJobId}
+                    onSelect={() => setPickerTarget("voice")}
+                  />
+                  {project.voiceJobId && (
+                    <div className="flex items-center gap-3 mt-2">
+                       <span className="text-xs text-zinc-400 w-10">Vol:</span>
+                       <input
+                         type="range"
+                         min="0"
+                         max="1"
+                         step="0.05"
+                         value={project.voiceVolume ?? 1}
+                         onChange={(e) => patch({ voiceVolume: parseFloat(e.target.value) })}
+                         className="flex-1 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                       />
+                       <span className="text-xs text-zinc-400 w-8 text-right">
+                         {Math.round((project.voiceVolume ?? 1) * 100)}%
+                       </span>
+                    </div>
+                  )}
+
+                  <DropZone
+                    label="Select Music"
+                    description="Optional background music"
+                    icon={<Music className="w-8 h-8" />}
+                    selectedJobId={project.musicJobId}
+                    onSelect={() => setPickerTarget("music")}
+                  />
+                  {project.musicJobId && (
+                    <div className="flex items-center gap-3 mt-2">
+                       <span className="text-xs text-zinc-400 w-10">Vol:</span>
+                       <input
+                         type="range"
+                         min="0"
+                         max="1"
+                         step="0.05"
+                         value={project.musicVolume ?? 0.15}
+                         onChange={(e) => patch({ musicVolume: parseFloat(e.target.value) })}
+                         className="flex-1 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                       />
+                       <span className="text-xs text-zinc-400 w-8 text-right">
+                         {Math.round((project.musicVolume ?? 0.15) * 100)}%
+                       </span>
+                    </div>
+                  )}
+                </div>
               </div>
+
+              {/* Trim Controls */}
+              {project.videoJobId && (
+                <div className="pt-4 border-t border-zinc-800">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                      Trim Source Video
+                    </h3>
+                    {(project.trimPoints?.start !== undefined || project.trimPoints?.end !== undefined) && (
+                      <button
+                        onClick={() => patch({ trimPoints: undefined })}
+                        className="text-xs text-red-400 hover:text-red-300 transition-colors font-medium"
+                      >
+                        Clear Trim
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-400 mb-1">Start Time (sec)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.1"
+                        value={project.trimPoints?.start ?? ""}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          patch({
+                            trimPoints: { ...project.trimPoints, start: isNaN(val) ? undefined : val },
+                          });
+                        }}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        placeholder="e.g. 2.5"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-400 mb-1">End Time (sec)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.1"
+                        value={project.trimPoints?.end ?? ""}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          patch({
+                            trimPoints: { ...project.trimPoints, end: isNaN(val) ? undefined : val },
+                          });
+                        }}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        placeholder="e.g. 10.0"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
             </section>
           )}
 
@@ -477,6 +651,57 @@ export default function Compose() {
               />
             </>
           )}
+
+          {/* ── SHARED: Watermark Section ─────────────────────────────────── */}
+          <section className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                <Layers className="w-4 h-4 text-emerald-400" />
+                Image Watermark / Overlay
+              </h2>
+              {project.watermarkJobId && (
+                <button
+                  onClick={() => patch({ watermarkJobId: undefined })}
+                  className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+            <div className="flex flex-col sm:flex-row gap-6">
+              <div className="flex-1 sm:max-w-[200px]">
+                <DropZone
+                  label="Select Image"
+                  description="Pick a watermark image"
+                  icon={<MonitorPlay className="w-6 h-6" />}
+                  selectedJobId={project.watermarkJobId}
+                  onSelect={() => setPickerTarget("watermark")}
+                />
+              </div>
+              {project.watermarkJobId && (
+                <div className="flex-1 space-y-2 flex flex-col justify-center">
+                  <label className="text-xs font-medium text-zinc-300">Opacity</label>
+                  <div className="flex items-center gap-4">
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="1"
+                      step="0.05"
+                      value={project.watermarkOpacity ?? 1}
+                      onChange={(e) => patch({ watermarkOpacity: parseFloat(e.target.value) })}
+                      className="flex-1 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                    />
+                    <span className="text-xs text-zinc-400 w-10 text-right">
+                      {Math.round((project.watermarkOpacity ?? 1) * 100)}%
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-zinc-500 mt-2">
+                    The image will be overlaid over the video based on your selected opacity.
+                  </p>
+                </div>
+              )}
+            </div>
+          </section>
 
           {/* Picker instruction banner */}
           <AnimatePresence>

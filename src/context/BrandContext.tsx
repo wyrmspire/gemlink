@@ -7,6 +7,7 @@ interface BrandData {
   brandDescription: string;
   targetAudience: string;
   brandVoice: string;
+  styleKeywords: string[];
 }
 
 interface BrandContextType extends BrandData {
@@ -14,6 +15,7 @@ interface BrandContextType extends BrandData {
   setBrandDescription: (desc: string) => void;
   setTargetAudience: (audience: string) => void;
   setBrandVoice: (voice: string) => void;
+  setStyleKeywords: (keywords: string[]) => void;
 }
 
 const DEFAULTS: BrandData = {
@@ -21,6 +23,7 @@ const DEFAULTS: BrandData = {
   brandDescription: "A forward-thinking AI automation agency.",
   targetAudience: "Small to medium businesses looking to scale with AI.",
   brandVoice: "Professional, innovative, and approachable.",
+  styleKeywords: [],
 };
 
 function loadPersistedBrand(): BrandData {
@@ -34,6 +37,7 @@ function loadPersistedBrand(): BrandData {
       brandDescription: typeof parsed.brandDescription === "string" ? parsed.brandDescription : DEFAULTS.brandDescription,
       targetAudience: typeof parsed.targetAudience === "string" ? parsed.targetAudience : DEFAULTS.targetAudience,
       brandVoice: typeof parsed.brandVoice === "string" ? parsed.brandVoice : DEFAULTS.brandVoice,
+      styleKeywords: Array.isArray(parsed.styleKeywords) ? parsed.styleKeywords : DEFAULTS.styleKeywords,
     };
   } catch {
     // localStorage unavailable or corrupt — use defaults silently
@@ -75,6 +79,10 @@ export function BrandProvider({ children }: { children: ReactNode }) {
     setBrand((prev) => ({ ...prev, brandVoice: voice }));
   }, []);
 
+  const setStyleKeywords = useCallback((keywords: string[]) => {
+    setBrand((prev) => ({ ...prev, styleKeywords: keywords }));
+  }, []);
+
   return (
     <BrandContext.Provider
       value={{
@@ -83,6 +91,7 @@ export function BrandProvider({ children }: { children: ReactNode }) {
         setBrandDescription,
         setTargetAudience,
         setBrandVoice,
+        setStyleKeywords,
       }}
     >
       {children}

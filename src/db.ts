@@ -81,7 +81,7 @@ db.exec(/* sql */ `
   CREATE TABLE IF NOT EXISTS media_jobs (
     id            TEXT    PRIMARY KEY,      -- e.g. "img_abc123"
     projectId     TEXT    REFERENCES projects(id) ON DELETE SET NULL,
-    type          TEXT    NOT NULL CHECK(type IN ('image', 'video', 'voice')),
+    type          TEXT    NOT NULL CHECK(type IN ('image', 'video', 'voice', 'music')),
     status        TEXT    NOT NULL CHECK(status IN ('pending', 'completed', 'failed')),
     prompt        TEXT,
     model         TEXT,
@@ -202,7 +202,7 @@ export interface ProjectRow {
 export interface MediaJobRow {
   id: string;
   projectId: string | null;
-  type: "image" | "video" | "voice";
+  type: "image" | "video" | "voice" | "music";
   status: "pending" | "completed" | "failed";
   prompt: string | null;
   model: string | null;

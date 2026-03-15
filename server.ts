@@ -10,7 +10,7 @@ import { mediaJobQueries, collectionQueries, collectionItemQueries, strategyArti
 import type { SlideInput as ComposeSlideInput } from "./compose.ts";
 import { loadTemplates, getTemplate, type ComposeTemplate } from "./templates.ts";
 // ── L1-S4.5 + L2-S4.5: Centralized config import ───────────────────────────
-import { models, defaults as cfgDefaultsTop, features as cfgFeaturesTop, server as serverConfig, app as cfgAppTop } from "./config.ts";
+import { models, defaults as cfgDefaultsTop, features as cfgFeaturesTop, server as serverConfig, app as cfgAppTop, rateLimits } from "./config.ts";
 
 
 // ── W1 (L5): FFmpeg availability state — populated on server start ─────────────
@@ -44,7 +44,7 @@ async function checkFfmpegOnStartup(): Promise<void> {
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 dotenv.config();
 
-type MediaType = "image" | "video" | "voice";
+type MediaType = "image" | "video" | "voice" | "music";
 type JobStatus = "pending" | "completed" | "failed";
 
 interface MediaScore {
@@ -99,6 +99,7 @@ const jobTypeDirs: Record<MediaType, string> = {
   image: "images",
   video: "videos",
   voice: "voice",
+  music: "music",
 };
 
 function requireApiKey(explicitKey?: string) {
@@ -346,25 +347,11 @@ async function startServer() {
   // W1 (L5): Check FFmpeg availability on startup
   await checkFfmpegOnStartup();
 
-  api.get("/health", (_req, res) => {
-    const health: Record<string, unknown> = {
-      status: "ok",
-      ffmpeg: _serverFfmpegAvailable,
-    };
-    if (_serverFfmpegVersion) health.ffmpegVersion = _serverFfmpegVersion;
-    res.json(health);
-  });
-
-  // ── W3: Load style database on startup + serve via API ─────────────────────
-  await loadStyleDatabase();
-
-  // ── L1-S4.5 Settings definitions (hoisted) ─────────────────────────────────
   const SETTINGS_FILE = path.join(process.cwd(), "data", "settings.json");
-  let runtimeSettings: { models?: Record<string, string>; defaults?: Record<string, unknown>; features?: Record<string, boolean> } = {};
-  
+  let runtimeSettings: any = { models: {}, defaults: {}, features: {}, app: {} };
   try {
-    const raw = await fs.readFile(SETTINGS_FILE, "utf8");
-    runtimeSettings = JSON.parse(raw);
+    const data = await fs.readFile(SETTINGS_FILE, "utf8");
+    runtimeSettings = JSON.parse(data);
     console.log("[settings] Loaded runtime overrides from data/settings.json");
   } catch {
   }
@@ -378,6 +365,60 @@ async function startServer() {
   function getMergedFeatures(): Record<string, boolean> {
     return { ...cfgFeaturesTop, ...(runtimeSettings.features ?? {}) };
   }
+
+  // ── I4: autoTagMedia — fire-and-forget helper ────────────────────────────────
+  async function autoTagMedia(
+    type: MediaType,
+    id: string,
+    filePath: string,
+    apiKey: string,
+    promptText?: string,
+  ): Promise<void> {
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      let tags: string[] = [];
+      if (type === "image" && filePath) {
+        const imgData = await fs.readFile(filePath);
+        const resp = await ai.models.generateContent({
+          model: getMergedModels().multimodal,
+          contents: {
+            parts: [
+              { inlineData: { data: imgData.toString("base64"), mimeType: "image/png" } },
+              { text: "Analyze this image. Return a JSON array of short tags covering: content type (hero,social,thumbnail,icon,background), style (minimal,bold,corporate,playful,abstract,photorealistic,illustrated), platform (instagram,twitter,linkedin,website,pitch-deck,youtube). Respond ONLY with a valid JSON array of strings, nothing else." },
+            ],
+          },
+        });
+        const txt = resp.text?.trim() ?? "[]";
+        const m = txt.match(/\[[\s\S]*?\]/);
+        if (m) tags = JSON.parse(m[0]);
+      } else if (promptText) {
+        const resp = await ai.models.generateContent({
+          model: getMergedModels().text,
+          contents: `Given this ${type} generation prompt: "${promptText.slice(0, 300)}", return a JSON array of short tags (content type, style, platform/purpose). Respond ONLY with a valid JSON array of strings.`,
+        });
+        const txt = resp.text?.trim() ?? "[]";
+        const m = txt.match(/\[[\s\S]*?\]/);
+        if (m) tags = JSON.parse(m[0]);
+      }
+      if (tags.length > 0) await patchManifest(type, id, { tags });
+    } catch (err) {
+      console.error(`Auto-tag skipped for ${type}/${id}:`, err);
+    }
+  }
+
+  api.get("/health", (_req, res) => {
+    const health: Record<string, unknown> = {
+      status: "ok",
+      ffmpeg: _serverFfmpegAvailable,
+    };
+    if (_serverFfmpegVersion) health.ffmpegVersion = _serverFfmpegVersion;
+    res.json(health);
+  });
+
+  // ── W3: Load style database on startup + serve via API ─────────────────────
+  await loadStyleDatabase();
+
+  
 
   api.get("/style-db", async (_req, res) => {
     try {
@@ -659,6 +700,59 @@ async function startServer() {
     }
   });
 
+  api.post("/media/music", async (req, res) => {
+    try {
+      const { prompt, model, duration, brandContext, projectId, apiKey } = req.body;
+      const key = requireApiKey(apiKey);
+      const ai = new GoogleGenAI({ apiKey: key });
+      const jobId = createJobId();
+      const selectedModel = model ?? getMergedModels().music;
+
+      const manifest: JobManifest = {
+        id: jobId, type: "music", prompt, model: selectedModel,
+        brandContext, projectId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        status: "pending", outputs: [], logs: [`[${new Date().toISOString()}] Music request received.`],
+      };
+      await writeManifest(manifest);
+
+      const operation = await (ai.models as any).generateMusic({
+        model: selectedModel,
+        prompt,
+        config: { durationSeconds: duration ?? 30 },
+      });
+      const operationName = (operation as any)?.name ?? null;
+      await patchManifest("music", jobId, (c) => ({ ...c, providerOperationName: operationName, logs: appendLog(c, `Operation created: ${operationName}`) }));
+
+      void (async () => {
+        try {
+          let op = operation; let attempts = 0;
+          while (!op.done) {
+            attempts++;
+            if (attempts > serverConfig.maxVideoPollAttempts) {
+              await patchManifest("music", jobId, (c) => ({ ...c, status: "failed", error: "Polling timed out.", logs: appendLog(c, `SAFETY: Polling aborted after ${attempts} attempts.`) }));
+              return;
+            }
+            await new Promise((r) => setTimeout(r, 10000));
+            op = await (ai.operations as any).getMusicOperation({ operation: op });
+          }
+          const link = op.response?.generatedMusic?.[0]?.audio?.uri;
+          if (!link) throw new Error("No download URL returned.");
+          const mRes = await fetch(link, { headers: { "x-goog-api-key": key } });
+          const fileName = "output.mp3";
+          await fs.writeFile(path.join(getJobDir("music", jobId), fileName), Buffer.from(await mRes.arrayBuffer()));
+          await patchManifest("music", jobId, (c) => ({ ...c, status: "completed", outputs: [`/jobs/music/${jobId}/${fileName}`], error: undefined, logs: appendLog(c, "Music saved.") }));
+        } catch (err: any) {
+          await patchManifest("music", jobId, (c) => ({ ...c, status: "failed", error: err?.message || "Polling failed." }));
+        }
+      })();
+
+      res.status(202).json(manifest);
+    } catch (error: any) {
+      console.error("Music Generation Error:", error);
+      res.status(500).json({ error: error.message || "Failed to generate music" });
+    }
+  });
+
   api.get("/media/job/:type/:id", async (req, res) => {
     try {
       const type = req.params.type as MediaType;
@@ -834,46 +928,6 @@ async function startServer() {
     }
   });
 
-  // ── I4: autoTagMedia — fire-and-forget helper ────────────────────────────────
-
-  async function autoTagMedia(
-    type: MediaType,
-    id: string,
-    filePath: string,
-    apiKey: string,
-    promptText?: string,
-  ): Promise<void> {
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      let tags: string[] = [];
-      if (type === "image" && filePath) {
-        const imgData = await fs.readFile(filePath);
-        const resp = await ai.models.generateContent({
-          model: getMergedModels().multimodal,
-          contents: {
-            parts: [
-              { inlineData: { data: imgData.toString("base64"), mimeType: "image/png" } },
-              { text: "Analyze this image. Return a JSON array of short tags covering: content type (hero,social,thumbnail,icon,background), style (minimal,bold,corporate,playful,abstract,photorealistic,illustrated), platform (instagram,twitter,linkedin,website,pitch-deck,youtube). Respond ONLY with a valid JSON array of strings, nothing else." },
-            ],
-          },
-        });
-        const txt = resp.text?.trim() ?? "[]";
-        const m = txt.match(/\[[\s\S]*?\]/);
-        if (m) tags = JSON.parse(m[0]);
-      } else if (promptText) {
-        const resp = await ai.models.generateContent({
-          model: getMergedModels().text,
-          contents: `Given this ${type} generation prompt: "${promptText.slice(0, 300)}", return a JSON array of short tags (content type, style, platform/purpose). Respond ONLY with a valid JSON array of strings.`,
-        });
-        const txt = resp.text?.trim() ?? "[]";
-        const m = txt.match(/\[[\s\S]*?\]/);
-        if (m) tags = JSON.parse(m[0]);
-      }
-      if (tags.length > 0) await patchManifest(type, id, { tags });
-    } catch (err) {
-      console.error(`Auto-tag skipped for ${type}/${id}:`, err);
-    }
-  }
 
   // ── H2: GenerationQueue (semaphore + exponential backoff) ───────────────────
 
@@ -882,14 +936,33 @@ async function startServer() {
   console.log(`[batch] Rehydrated ${batchStore.size} batch state(s) from disk.`);
 
   class GenerationQueue {
-    private slots: Record<MediaType, number> = { image: 0, video: 0, voice: 0 };
-    private readonly max: Record<MediaType, number> = { image: 3, video: 1, voice: 2 };
+    private slots: Record<MediaType, number> = { image: 0, video: 0, voice: 0, music: 0 };
+    private readonly max: Record<MediaType, number> = { image: 5, video: 1, voice: 4, music: 2 };
+    private lastRequest: Record<MediaType, number> = { image: 0, video: 0, voice: 0, music: 0 };
+
+    /**
+     * Ensures we stay under the RPM (Requests Per Minute) limits defined in config.
+     */
+    private async waitForThrottle(type: MediaType): Promise<void> {
+      const rpm = (rateLimits as any)[type] || 5;
+      const minInterval = Math.ceil(60000 / rpm) + 200; // Add 200ms buffer
+      const now = Date.now();
+      const elapsed = now - this.lastRequest[type];
+      if (elapsed < minInterval) {
+        await new Promise(r => setTimeout(r, minInterval - elapsed));
+      }
+      this.lastRequest[type] = Date.now();
+    }
 
     private waitForSlot(type: MediaType): Promise<void> {
       return new Promise((resolve) => {
-        const check = () => {
-          if (this.slots[type] < this.max[type]) { this.slots[type]++; resolve(); }
-          else setTimeout(check, 400);
+        const check = async () => {
+          if (this.slots[type] < this.max[type]) { 
+            this.slots[type]++; 
+            await this.waitForThrottle(type);
+            resolve(); 
+          }
+          else setTimeout(check, 500);
         };
         check();
       });
@@ -930,7 +1003,8 @@ async function startServer() {
       }
       if (state) {
         state.statuses[idx] = "failed";
-        state.errors[idx] = (lastErr as any)?.message ?? "Unknown error";
+        const errMsg = (lastErr as any)?.message || String(lastErr || "Unknown error");
+        state.errors[idx] = `${item.type.toUpperCase()} generation failed: ${errMsg}`;
         void saveBatchState(state); // W3: persist failure
       }
       this.release(item.type);
@@ -956,8 +1030,15 @@ async function startServer() {
           config: { imageConfig: { aspectRatio: "1:1", imageSize: manifest.size } },
         });
         const outputs: string[] = [];
-        for (let i = 0; i < (resp.candidates?.[0]?.content?.parts ?? []).length; i++) {
-          const part = resp.candidates![0].content!.parts![i];
+        const candidate = resp.candidates?.[0];
+
+        if (candidate?.finishReason === "SAFETY") {
+          throw new Error("Rejected by safety filter (CSM). Please try a more compliant prompt.");
+        }
+
+        const parts = candidate?.content?.parts ?? [];
+        for (let i = 0; i < parts.length; i++) {
+          const part = parts[i];
           if (!part.inlineData?.data) continue;
           const fn = `output_${i}.png`;
           const fp = path.join(getJobDir("image", jobId), fn);
@@ -966,7 +1047,7 @@ async function startServer() {
         }
         await patchManifest("image", jobId, (c) => ({
           ...c, status: outputs.length > 0 ? "completed" : "failed", outputs,
-          error: outputs.length > 0 ? undefined : "No image data.",
+          error: outputs.length > 0 ? undefined : "No image data returned from provider.",
           logs: appendLog(c, `Batch: ${outputs.length} image(s) saved.`),
         }));
         if (outputs.length > 0) {
@@ -1053,6 +1134,43 @@ async function startServer() {
         return jobId;
       }
 
+      if (type === "music") {
+        const { prompt, model, duration, brandContext, projectId } = body as any;
+        const selectedModel = model ?? getMergedModels().music;
+        const operation = await (ai.models as any).generateMusic({ model: selectedModel, prompt, config: { durationSeconds: duration ?? 30 } });
+        const operationName = (operation as any)?.name ?? null;
+        const manifest: JobManifest = {
+          id: jobId, type: "music", prompt, model: selectedModel,
+          brandContext, projectId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+          status: "pending", outputs: [], providerOperationName: operationName,
+          logs: [`[${new Date().toISOString()}] Batch music job queued. Operation: ${operationName}`],
+        };
+        await writeManifest(manifest);
+        void (async () => {
+          try {
+            let op = operation; let a = 0;
+            while (!op.done) {
+              a++;
+              if (a > serverConfig.maxVideoPollAttempts) {
+                await patchManifest("music", jobId, (c) => ({ ...c, status: "failed", error: `Max polling attempts reached for music.`, logs: appendLog(c, `SAFETY: Polling aborted.`) }));
+                return;
+              }
+              await new Promise((r) => setTimeout(r, 10000));
+              op = await (ai.operations as any).getMusicOperation({ operation: op });
+            }
+            const link = op.response?.generatedMusic?.[0]?.audio?.uri;
+            if (!link) throw new Error("No music download URL returned.");
+            const vRes = await fetch(link, { headers: { "x-goog-api-key": apiKey } });
+            const fn = "output.mp3";
+            await fs.writeFile(path.join(getJobDir("music", jobId), fn), Buffer.from(await vRes.arrayBuffer()));
+            await patchManifest("music", jobId, (c) => ({ ...c, status: "completed", outputs: [`/jobs/music/${jobId}/${fn}`], error: undefined, logs: appendLog(c, "Batch music downloaded.") }));
+          } catch (err: any) {
+            await patchManifest("music", jobId, (c) => ({ ...c, status: "failed", error: err?.message ?? "Batch music polling failed.", logs: appendLog(c, `Polling failed: ${err?.message}`) }));
+          }
+        })();
+        return jobId;
+      }
+
       throw new Error(`Unsupported batch type: ${type}`);
     }
   }
@@ -1073,7 +1191,7 @@ async function startServer() {
         // Try image first, then voice, then video (most common order)
         let manifest: JobManifest | null = null;
         let jobType: MediaType | null = null;
-        for (const t of ["image", "voice", "video"] as MediaType[]) {
+        for (const t of ["image", "voice", "video", "music"] as MediaType[]) {
           try { manifest = await readManifest(t, jobId); jobType = t; break; } catch { /* not this type */ }
         }
         if (!manifest || !jobType || manifest.status !== "completed" || manifest.outputs.length === 0) continue;
@@ -1118,7 +1236,7 @@ async function startServer() {
       if (!Array.isArray(items) || items.length === 0) {
         return res.status(400).json({ error: "items must be a non-empty array" });
       }
-      const validTypes: MediaType[] = ["image", "video", "voice"];
+      const validTypes: MediaType[] = ["image", "video", "voice", "music"];
       for (const item of items) {
         if (!validTypes.includes(item.type)) return res.status(400).json({ error: `Invalid type: ${item.type}` });
       }
@@ -1133,7 +1251,14 @@ async function startServer() {
       batchStore.set(batchId, state);
       void saveBatchState(state); // W3: persist initial state immediately
       void Promise.all(items.map((item, i) => generationQueue.enqueueOne(batchId, i, item, key)));
-      res.status(202).json({ batchId, total: items.length, jobIds: state.jobIds, statuses: state.statuses });
+      res.status(202).json({ 
+        batchId, 
+        total: items.length, 
+        jobIds: state.jobIds, 
+        statuses: state.statuses,
+        rateLimits,
+        advice: "Gemlink handles throttling internally. You can queue up to 100+ items; they will be processed as slots and RPM limits allow."
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message ?? "Batch failed" });
     }
@@ -2331,8 +2456,8 @@ async function startServer() {
       if (!body.videoJobId && !body.videoPath) {
         return res.status(400).json({ error: "merge requires videoJobId or videoPath" });
       }
-      if (!body.audioJobId && !body.audioPath) {
-        return res.status(400).json({ error: "merge requires audioJobId or audioPath" });
+      if (!body.audioJobId && !body.audioPath && (!Array.isArray(body.audioTracks) || body.audioTracks.length === 0)) {
+        return res.status(400).json({ error: "merge requires audioJobId, audioPath, or audioTracks" });
       }
     }
 
@@ -2400,21 +2525,78 @@ async function startServer() {
             videoPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
           }
 
-          // Resolve audio path
-          let audioPath: string;
-          if (body.audioPath) {
-            audioPath = body.audioPath as string;
+          // Resolve multiple audio paths
+          const resolvedAudioTracks: import("./compose.ts").AudioTrackInput[] = [];
+          if (Array.isArray(body.audioTracks) && body.audioTracks.length > 0) {
+            for (const t of body.audioTracks as Array<{ jobId?: string; path?: string; volume?: number }>) {
+              let ap = "";
+              if (t.path) {
+                ap = t.path;
+              } else if (t.jobId) {
+                // Try voice then audio
+                let manifest;
+                try {
+                  manifest = await readManifest("voice", t.jobId);
+                } catch {
+                  try {
+                    manifest = await readManifest("audio" as any, t.jobId);
+                  } catch {
+                    manifest = await readManifest("video", t.jobId); // fallback
+                  }
+                }
+                const relOut = manifest.outputs[0];
+                if (!relOut) throw new Error(`audioTrack jobId ${t.jobId} has no outputs`);
+                ap = path.join(process.cwd(), relOut.replace(/^\//, ""));
+              } else {
+                continue;
+              }
+              resolvedAudioTracks.push({ audioPath: ap, volume: t.volume });
+            }
           } else {
-            const manifest = await readManifest(
-              "voice",
-              body.audioJobId as string
-            );
-            const relOut = manifest.outputs[0];
-            if (!relOut) throw new Error(`audioJobId ${body.audioJobId} has no outputs`);
-            audioPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
+            // legacy single track fallback
+            let audioPath: string;
+            if (body.audioPath) {
+              audioPath = body.audioPath as string;
+            } else {
+              const manifest = await readManifest(
+                "voice",
+                body.audioJobId as string
+              );
+              const relOut = manifest.outputs[0];
+              if (!relOut) throw new Error(`audioJobId ${body.audioJobId} has no outputs`);
+              audioPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
+            }
+            resolvedAudioTracks.push({ audioPath });
           }
 
-          result = await compose.mergeVideoAudio(videoPath, audioPath, outputFilePath);
+          // Resolve watermark
+          let watermarkPath: string | undefined;
+          if (body.watermarkPath) {
+            watermarkPath = body.watermarkPath as string;
+          } else if (body.watermarkJobId) {
+            const manifest = await readManifest("image", body.watermarkJobId as string);
+            const relOut = manifest.outputs[0];
+            if (!relOut) throw new Error(`watermarkJobId ${body.watermarkJobId} has no outputs`);
+            watermarkPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
+          }
+
+          // Resolve trim points
+          let trimPoints: { inPoint: number; outPoint: number } | undefined;
+          if (body.trimPoints && typeof body.trimPoints === "object") {
+            const tp = body.trimPoints as { inPoint?: number; outPoint?: number };
+            if (tp.inPoint !== undefined && tp.outPoint !== undefined) {
+              trimPoints = { inPoint: Number(tp.inPoint), outPoint: Number(tp.outPoint) };
+            }
+          }
+
+          const mergeOpts: import("./compose.ts").MergeOptions = {
+             trimPoints,
+             watermarkPath,
+             watermarkOpacity: (body.watermarkOpacity as number) ?? 1.0,
+          };
+
+          result = await compose.mergeVideoAudio(videoPath, resolvedAudioTracks, outputFilePath, mergeOpts);
+
 
         } else if (type === "slideshow") {
           const slides = body.slides as Array<{
@@ -2863,6 +3045,7 @@ async function startServer() {
       ffmpeg: _serverFfmpegAvailable,
       ffmpegVersion: _serverFfmpegVersion ?? null,
       version: cfgAppTop.version,
+      rateLimits,
     });
   });
 

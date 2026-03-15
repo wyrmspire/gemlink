@@ -65,6 +65,17 @@ export function isFFprobeAvailable(): boolean { return _ffprobeAvailable; }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+export interface AudioTrackInput {
+  audioPath: string;
+  volume?: number;
+}
+
+export interface MergeOptions {
+  trimPoints?: { inPoint: number; outPoint: number };
+  watermarkPath?: string;
+  watermarkOpacity?: number;
+}
+
 export interface ProbeResult {
   duration: number;           // seconds
   width: number;
@@ -189,25 +200,104 @@ export async function probeMedia(filePath: string): Promise<ProbeResult> {
 
 export async function mergeVideoAudio(
   videoPath: string,
-  audioPath: string,
+  audioTracks: AudioTrackInput[],
   outputPath: string,
+  opts: MergeOptions = {}
 ): Promise<ComposeResult> {
   await _initPromise;
   if (!_ffmpegAvailable) throw new Error("ffmpeg is not installed");
 
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
 
-  const args = [
-    "-y",
-    "-i", videoPath,
-    "-i", audioPath,
-    "-c:v", "copy",
-    "-c:a", "aac",
-    "-map", "0:v:0",
-    "-map", "1:a:0",
-    "-shortest",
-    outputPath,
-  ];
+  const args: string[] = ["-y"];
+  const filterGraphParts: string[] = [];
+
+  // Trimming on input
+  if (opts.trimPoints) {
+    args.push("-ss", String(opts.trimPoints.inPoint));
+    args.push("-to", String(opts.trimPoints.outPoint));
+  }
+
+  // 0:v (and potentially 0:a if we keep the original audio, but we map explicitly)
+  args.push("-i", videoPath);
+
+  // 1:a to N:a are audio tracks
+  for (const track of audioTracks) {
+    args.push("-i", track.audioPath);
+  }
+
+  // Watermark is the last input
+  if (opts.watermarkPath) {
+    args.push("-i", opts.watermarkPath);
+  }
+
+  let videoOutObj = "0:v:0";
+  let requiresVideoEncode = false;
+
+  // Apply watermark to video
+  if (opts.watermarkPath) {
+    requiresVideoEncode = true;
+    const wmIndex = 1 + audioTracks.length; // Video = 0, Audio = 1..N, watermark = N+1
+    const opacity = opts.watermarkOpacity ?? 1;
+    if (opacity < 1) {
+      filterGraphParts.push(`[${wmIndex}:v]format=rgba,colorchannelmixer=aa=${opacity}[wm];[0:v:0][wm]overlay=W-w-20:H-h-20[vout]`);
+    } else {
+      filterGraphParts.push(`[0:v:0][${wmIndex}:v]overlay=W-w-20:H-h-20[vout]`);
+    }
+    videoOutObj = "vout";
+  }
+
+  let audioOutObj = "0:a:0"; // Default: original video audio if no other tracks given and no mix
+  let requiresAudioEncode = false;
+
+  if (audioTracks.length > 0) {
+    requiresAudioEncode = true;
+    const audioFilters: string[] = [];
+    const amixInputs: string[] = [];
+    
+    // We map audio from `[1:a], [2:a] ...` 
+    for (let i = 0; i < audioTracks.length; i++) {
+        const trackStr = `[${i+1}:a:0]`;
+        const vol = audioTracks[i].volume ?? 1.0;
+        if (vol !== 1.0) {
+          audioFilters.push(`${trackStr}volume=${vol}[a${i}]`);
+          amixInputs.push(`[a${i}]`);
+        } else {
+          amixInputs.push(trackStr);
+        }
+    }
+    
+    // Mix them. The default behavior is to use `duration=longest`.
+    // The -shortest flag ensures the final output matches the shortest stream (the video if trimPoints are used).
+    if (audioTracks.length === 1 && audioFilters.length === 0) {
+       audioOutObj = "1:a:0";
+    } else {
+       const mixSourceInputs = amixInputs.join("");
+       audioFilters.push(`${mixSourceInputs}amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2[aout]`);
+       filterGraphParts.push(audioFilters.join(";"));
+       audioOutObj = "aout";
+    }
+  }
+
+  if (filterGraphParts.length > 0) {
+    args.push("-filter_complex", filterGraphParts.join(";"));
+  }
+
+  args.push("-map", `[${videoOutObj}]`.replace(/\[(\d+:[av]:\d+)\]/g, "$1")); // Safe unwrap if mapping direct stream e.g. "0:v:0" vs "[vout]"
+  if (audioTracks.length > 0) {
+    args.push("-map", `[${audioOutObj}]`.replace(/\[(\d+:[av]:\d+)\]/g, "$1"));
+  }
+
+  // Set codecs
+  if (requiresVideoEncode) {
+    args.push("-c:v", "libx264", "-pix_fmt", "yuv420p");
+  } else {
+    args.push("-c:v", "copy");
+  }
+
+  args.push("-c:a", "aac"); // usually re-encode audio to aac just in case when merging
+
+  args.push("-shortest", outputPath);
 
   try {
     await execFileAsync("ffmpeg", args);

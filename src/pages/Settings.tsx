@@ -102,20 +102,24 @@ const DEFAULT_SETTINGS: AppSettings = {
 // ── Model option lists ──────────────────────────────────────────────────────
 
 const TEXT_MODELS = [
+  "gemini-2.0-flash",
+  "gemini-2.0-pro",
   "gemini-2.5-flash",
   "gemini-2.5-pro",
   "gemini-3-flash-preview",
   "gemini-3-pro-preview",
 ];
 const IMAGE_MODELS = [
-  "gemini-2.5-flash-preview-image",
+  "imagen-3",
+  "imagen-3.1",
+  "imagen-4",
   "gemini-2.5-flash-image",
-  "gemini-3.1-flash-image-preview",
   "gemini-3-pro-image-preview",
 ];
 const VIDEO_MODELS = [
   "veo-2.0-generate-001",
   "veo-3.1-fast-generate-preview",
+  "veo-3.1-pro-preview",
 ];
 const TTS_MODELS = [
   "gemini-2.5-flash-preview-tts",

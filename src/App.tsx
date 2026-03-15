@@ -19,6 +19,7 @@ const Setup       = lazy(() => import("./pages/Setup"));
 const SocialMedia = lazy(() => import("./pages/SocialMedia"));
 const VideoLab    = lazy(() => import("./pages/VideoLab"));
 const VoiceLab    = lazy(() => import("./pages/VoiceLab"));
+const MusicLab    = lazy(() => import("./pages/MusicLab"));
 const Boardroom   = lazy(() => import("./pages/Boardroom"));
 const Research    = lazy(() => import("./pages/Research"));
 const SalesAgent  = lazy(() => import("./pages/SalesAgent"));
@@ -51,7 +52,7 @@ function PageLoader() {
  */
 function BrandProjectSync() {
   const { activeProject } = useProject();
-  const { setBrandName, setBrandDescription, setTargetAudience, setBrandVoice } = useBrand();
+  const { setBrandName, setBrandDescription, setTargetAudience, setBrandVoice, setStyleKeywords } = useBrand();
 
   useEffect(() => {
     if (!activeProject) return;
@@ -59,12 +60,14 @@ function BrandProjectSync() {
     setBrandDescription(activeProject.brandDescription);
     setTargetAudience(activeProject.targetAudience);
     setBrandVoice(activeProject.brandVoice);
+    setStyleKeywords(activeProject.styleKeywords || []);
   }, [
     activeProject,
     setBrandName,
     setBrandDescription,
     setTargetAudience,
     setBrandVoice,
+    setStyleKeywords,
   ]);
 
   return null;
@@ -88,6 +91,7 @@ export default function App() {
                     <Route path="social" element={<SocialMedia />} />
                     <Route path="video" element={<VideoLab />} />
                     <Route path="voice" element={<VoiceLab />} />
+                    <Route path="music" element={<MusicLab />} />
                     <Route path="boardroom" element={<Boardroom />} />
                     <Route path="research" element={<Research />} />
                     <Route path="sales" element={<SalesAgent />} />

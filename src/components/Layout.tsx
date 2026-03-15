@@ -20,6 +20,7 @@ import {
   Presentation,
   FileStack,
   Clapperboard,
+  Music,
 } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -41,6 +42,7 @@ const navigation = [
   { name: "Social Media Gen", href: "/social", icon: ImageIcon },
   { name: "Video Lab", href: "/video", icon: Video },
   { name: "Voice Lab", href: "/voice", icon: Mic },
+  { name: "Music Lab", href: "/music", icon: Music },
   { name: "Boardroom", href: "/boardroom", icon: MessageSquare },
   { name: "Research", href: "/research", icon: Search },
   { name: "Sales Agent", href: "/sales", icon: PhoneCall },

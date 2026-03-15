@@ -9,19 +9,30 @@
 
 export const models = {
   /** Text/JSON reasoning — plan suggest, scoring, grading, strategy analysis */
-  text:        process.env.MODEL_TEXT        || "gemini-2.5-flash",
+  text:        process.env.MODEL_TEXT        || "gemini-2.0-flash", // Updated to Flash 2.0
   /** Multimodal analysis — video analysis, image labeling, scoring with images */
-  multimodal:  process.env.MODEL_MULTIMODAL  || "gemini-2.5-flash",
-  /** Image generation */
-  image:       process.env.MODEL_IMAGE       || "gemini-2.5-flash-preview-image",
-  /** Video generation */
+  multimodal:  process.env.MODEL_MULTIMODAL  || "gemini-2.0-flash",
+  /** Image generation (Imagen 4 or Flash Image) */
+  image:       process.env.MODEL_IMAGE       || "imagen-3", 
+  /** Video generation (Veo 2.0 or 3.1) */
   video:       process.env.MODEL_VIDEO       || "veo-2.0-generate-001",
-  /** Text-to-speech / voice generation */
+  /** Text-to-speech / voice generation (Preview) */
   tts:         process.env.MODEL_TTS         || "gemini-2.5-flash-preview-tts",
   /** Prompt expansion and creative text generation */
   creative:    process.env.MODEL_CREATIVE    || "gemini-2.5-flash",
-  /** Boardroom multi-turn chat sessions */
-  boardroom:   process.env.MODEL_BOARDROOM   || "gemini-2.5-flash",
+  /** Boardroom multi-turn chat sessions (Pro for better context) */
+  boardroom:   process.env.MODEL_BOARDROOM   || "gemini-2.5-pro",
+  /** Background music generation */
+  music:       process.env.MODEL_MUSIC       || "music-1.0-generate-preview",
+} as const;
+
+// ─── Rate Limits (RPM: Requests Per Minute, IPM: Images Per Minute) ───────────
+export const rateLimits = {
+  text:  parseInt(process.env.LIMIT_RPM_TEXT  || "15"),
+  image: parseInt(process.env.LIMIT_IPM_IMAGE || "2"),   // Free tier default
+  video: parseInt(process.env.LIMIT_RPM_VIDEO || "1"),   // Veo is slow
+  voice: parseInt(process.env.LIMIT_RPM_VOICE || "5"),
+  music: parseInt(process.env.LIMIT_RPM_MUSIC || "1"),   // Music generation is slow
 } as const;
 
 // ─── Generation Defaults ──────────────────────────────────────────────────────

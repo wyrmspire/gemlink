@@ -1,8 +1,6 @@
 #!/bin/bash
-if [ -z "$1" ]; then
-    echo "Usage: ./gitr.sh \"commit message\""
-    exit 1
-fi
+# gitr.sh - Commit everything and push to remote
+msg="${1:-Music Generation support}"
 git add .
-git commit -m "$1"
-git push
+git commit -m "$msg"
+git push origin $(git rev-parse --abbrev-ref HEAD)

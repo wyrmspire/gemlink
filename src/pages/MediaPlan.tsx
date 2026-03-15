@@ -25,6 +25,7 @@ import {
   Users,
   Film,
   Layers,
+  Music,
 } from "lucide-react";
 import { useProject } from "../context/ProjectContext";
 import { useToast } from "../context/ToastContext";
@@ -42,7 +43,7 @@ export interface GenerationConfig {
 
 export interface MediaPlanItem {
   id: string;
-  type: "image" | "video" | "voice";
+  type: "image" | "video" | "voice" | "music";
   label: string;
   purpose: string;
   promptTemplate: string;
@@ -53,6 +54,7 @@ export interface MediaPlanItem {
   generationConfig: GenerationConfig;
   batchId?: string;
   batchIndex?: number;
+  error?: string;
 }
 
 export interface MediaPlan {
@@ -73,10 +75,13 @@ const STATUS_ORDER: MediaPlanItem["status"][] = [
 
 // ── L3-S4.5: Use real model names (env vars with stable fallbacks)
 const MODELS = [
-  { value: import.meta.env.VITE_MODEL_IMAGE || "gemini-2.5-flash-preview-image", label: "Flash Image (Fast)" },
-  { value: "gemini-3-pro-image-preview", label: "Pro Image (Quality)" },
-  { value: import.meta.env.VITE_MODEL_VIDEO || "veo-2.0-generate-001", label: "Veo Video" },
+  { value: import.meta.env.VITE_MODEL_IMAGE || "imagen-3", label: "Imagen 3 (Quality)" },
+  { value: "imagen-4", label: "Imagen 4 (Latest)" },
+  { value: "gemini-2.0-flash-image", label: "Flash Image 2.0 (Fast)" },
+  { value: import.meta.env.VITE_MODEL_VIDEO || "veo-2.0-generate-001", label: "Veo 2.0" },
+  { value: "veo-3.1-fast-generate-preview", label: "Veo 3.1 Fast" },
   { value: import.meta.env.VITE_MODEL_TTS || "gemini-2.5-flash-preview-tts", label: "Gemini TTS (Voice)" },
+  { value: "music-1.0-generate-preview", label: "MusicGen (Latest)" },
 ];
 
 const SIZES = [
@@ -136,7 +141,7 @@ function newPlan(name = "New Plan"): MediaPlan {
 
 // ─── UI helpers ─────────────────────────────────────────────────────────────
 
-function statusPill(status: MediaPlanItem["status"]) {
+function statusPill(status: MediaPlanItem["status"], error?: string) {
   const configs: Record<string, { label: string; className: string; icon: React.ReactNode }> = {
     draft: { label: "Draft", className: "bg-zinc-700/40 text-zinc-300", icon: <ListOrdered className="w-3 h-3" /> },
     queued: { label: "Queued", className: "bg-amber-500/15 text-amber-300", icon: <Clock className="w-3 h-3" /> },
@@ -147,7 +152,10 @@ function statusPill(status: MediaPlanItem["status"]) {
   };
   const c = configs[status] ?? configs.draft;
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${c.className}`}>
+    <span 
+      title={error || (status === "rejected" ? "Generation failed - hover or check logs" : undefined)}
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${c.className} ${error ? "cursor-help" : ""}`}
+    >
       {c.icon}{c.label}
     </span>
   );
@@ -156,6 +164,7 @@ function statusPill(status: MediaPlanItem["status"]) {
 function typeIcon(type: string) {
   if (type === "video") return <Video className="w-4 h-4 text-emerald-400" />;
   if (type === "voice") return <Mic className="w-4 h-4 text-amber-400" />;
+  if (type === "music") return <Music className="w-4 h-4 text-rose-400" />;
   return <ImageIcon className="w-4 h-4 text-indigo-400" />;
 }
 
@@ -670,13 +679,14 @@ export default function MediaPlan() {
             
             const batchStatus = data.statuses[item.batchIndex];
             const jobId = data.jobIds[item.batchIndex];
+            const error = data.errors[item.batchIndex];
             
             if (batchStatus === "completed") {
               updatedItems = true;
-              return { ...item, status: "review" as const, generatedJobIds: jobId ? [jobId] : item.generatedJobIds };
+              return { ...item, status: "review" as const, generatedJobIds: jobId ? [jobId] : item.generatedJobIds, error: undefined };
             } else if (batchStatus === "failed") {
               updatedItems = true;
-              return { ...item, status: "rejected" as const };
+              return { ...item, status: "rejected" as const, error: error || "Unknown batch error" };
             }
             return item;
           });
@@ -1139,7 +1149,7 @@ export default function MediaPlan() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-medium text-white truncate">{item.label}</span>
-                          {statusPill(item.status)}
+                          {statusPill(item.status, item.error)}
                         </div>
                         {item.purpose && (
                           <p className="text-xs text-zinc-500 mt-0.5 truncate">{item.purpose}</p>
