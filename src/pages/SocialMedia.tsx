@@ -1,9 +1,18 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useBrand } from "../context/BrandContext";
 import { useApiKey } from "../components/ApiKeyGuard";
 import { useToast } from "../context/ToastContext";
 import { motion } from "motion/react";
-import { Loader2, Image as ImageIcon, Sparkles } from "lucide-react";
+import { Loader2, Image as ImageIcon, Sparkles, History } from "lucide-react";
+
+interface HistoryItem {
+  id: string;
+  type: string;
+  prompt: string;
+  text?: string;
+  outputs: string[];
+  createdAt: string;
+}
 
 const PLATFORM_PRESETS = [
   { label: "Custom", value: "custom", size: "1K", aspectRatio: "" },
@@ -21,11 +30,34 @@ export default function SocialMedia() {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [images, setImages] = useState<string[]>([]);
-  const [model, setModel] = useState(import.meta.env.VITE_MODEL_IMAGE || "imagen-3.0-generate-002"); // ── L3-S4.5: use env var, not hardcoded string
+  const [model, setModel] = useState(import.meta.env.VITE_MODEL_IMAGE || "gemini-3-pro-image-preview");
   const [size, setSize] = useState("1K");
   const [aspectRatio, setAspectRatio] = useState("");
   const [count, setCount] = useState(1);
   const [preset, setPreset] = useState("custom");
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [recentPrompts, setRecentPrompts] = useState<string[]>([]);
+  const [showPrompts, setShowPrompts] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/media/history?type=image")
+      .then(res => res.json())
+      .then(data => setHistory(data.slice(0, 5)))
+      .catch(console.error);
+    
+    try {
+      const saved = localStorage.getItem("gemlink-prompts-image");
+      if (saved) setRecentPrompts(JSON.parse(saved));
+    } catch {}
+  }, []);
+
+  const savePrompt = (p: string) => {
+    const updated = [p, ...recentPrompts.filter(x => x !== p)].slice(0, 10);
+    setRecentPrompts(updated);
+    try {
+      localStorage.setItem("gemlink-prompts-image", JSON.stringify(updated));
+    } catch {}
+  };
 
   function applyPreset(value: string) {
     const p = PLATFORM_PRESETS.find((x) => x.value === value);
@@ -37,6 +69,7 @@ export default function SocialMedia() {
 
   const generateImages = async () => {
     if (!prompt) return;
+    savePrompt(prompt);
     setLoading(true);
     let anySuccess = false;
     try {
@@ -73,6 +106,10 @@ export default function SocialMedia() {
       if (results.length > 0) {
         setImages((prev) => [...results, ...prev]);
         toast(`Generated ${results.length} image${results.length > 1 ? "s" : ""}.`, "success");
+        fetch("/api/media/history?type=image")
+          .then(res => res.json())
+          .then(data => setHistory(data.slice(0, 5)))
+          .catch(console.error);
       }
     } catch (error: any) {
       console.error(error);
@@ -118,15 +155,40 @@ export default function SocialMedia() {
           </div>
 
           {/* Prompt */}
-          <div>
-            <label className="block text-sm font-medium text-zinc-300 mb-2">Image Prompt</label>
+          <div className="relative">
+            <div className="flex justify-between items-end mb-2">
+              <label className="block text-sm font-medium text-zinc-300">Image Prompt</label>
+              {recentPrompts.length > 0 && (
+                <button 
+                  onClick={() => setShowPrompts(!showPrompts)} 
+                  className="text-xs flex items-center gap-1 text-indigo-400 hover:text-indigo-300 transition-colors"
+                >
+                  <History className="w-3.5 h-3.5" /> Recent
+                </button>
+              )}
+            </div>
+            
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               rows={4}
               className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
               placeholder="A futuristic workspace with neon lights..."
+              onFocus={() => setShowPrompts(false)}
             />
+            {showPrompts && recentPrompts.length > 0 && (
+              <div className="absolute z-10 w-full mt-1 top-full left-0 bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl max-h-48 overflow-y-auto">
+                {recentPrompts.map((rp, i) => (
+                  <button
+                    key={i}
+                    onClick={() => { setPrompt(rp); setShowPrompts(false); }}
+                    className="w-full text-left px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-700 truncate border-b border-zinc-700/50 last:border-0"
+                  >
+                    {rp}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Count */}
@@ -160,8 +222,10 @@ export default function SocialMedia() {
               onChange={(e) => setModel(e.target.value)}
               className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
-              <option value="gemini-3.1-flash-image-preview">Nano Banana 2 (Fast)</option>
-              <option value="gemini-3-pro-image-preview">Nano Banana Pro (High Quality)</option>
+              <option value="gemini-3.1-flash-image-preview">Nano Banana 2 (Recommended)</option>
+              <option value="gemini-3-pro-image-preview">Nano Banana Pro (Studio Quality)</option>
+              <option value="gemini-2.5-flash-image">Nano Banana (Budget)</option>
+              <option value="imagen-4.0-generate-001">Imagen 4</option>
             </select>
           </div>
 
@@ -226,6 +290,29 @@ export default function SocialMedia() {
           </div>
         </div>
       </div>
+
+      {/* Recent Generations */}
+      {history.length > 0 && (
+        <div className="mt-12 pt-8 border-t border-zinc-800/50">
+          <h2 className="text-xl font-semibold text-white mb-6">Recent Generations</h2>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+            {history.map(item => (
+              <div key={item.id} className="bg-zinc-950 border border-zinc-800 rounded-xl overflow-hidden aspect-square flex flex-col items-center justify-center relative group">
+                {item.outputs?.[0] ? (
+                  <>
+                    <img src={item.outputs[0]} alt={item.prompt} className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity p-2 flex items-end">
+                      <p className="text-xs text-white line-clamp-3">{item.prompt}</p>
+                    </div>
+                  </>
+                ) : (
+                  <span className="text-xs text-zinc-500 p-4 text-center line-clamp-3">{item.prompt}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }

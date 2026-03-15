@@ -1,8 +1,17 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useBrand } from "../context/BrandContext";
 import { useApiKey } from "../components/ApiKeyGuard";
 import { motion } from "motion/react";
-import { Loader2, Music, Play, CheckCircle2, Clock, AlertCircle } from "lucide-react";
+import { Loader2, Music, Play, CheckCircle2, Clock, AlertCircle, History } from "lucide-react";
+
+interface HistoryItem {
+  id: string;
+  type: string;
+  prompt: string;
+  text?: string;
+  outputs: string[];
+  createdAt: string;
+}
 
 interface MusicJob {
   id: string;
@@ -20,9 +29,33 @@ export default function MusicLab() {
   const [musicUrl, setMusicUrl] = useState<string | null>(null);
   const [job, setJob] = useState<MusicJob | null>(null);
   const [duration, setDuration] = useState(30);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [recentPrompts, setRecentPrompts] = useState<string[]>([]);
+  const [showPrompts, setShowPrompts] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/media/history?type=music")
+      .then(res => res.json())
+      .then(data => setHistory(data.slice(0, 5)))
+      .catch(console.error);
+
+    try {
+      const saved = localStorage.getItem("gemlink-prompts-music");
+      if (saved) setRecentPrompts(JSON.parse(saved));
+    } catch {}
+  }, []);
+
+  const savePrompt = (p: string) => {
+    const updated = [p, ...recentPrompts.filter(x => x !== p)].slice(0, 10);
+    setRecentPrompts(updated);
+    try {
+      localStorage.setItem("gemlink-prompts-music", JSON.stringify(updated));
+    } catch {}
+  };
 
   const generateMusic = async () => {
     if (!prompt) return;
+    savePrompt(prompt);
     setLoading(true);
     setMusicUrl(null);
     setJob(null);
@@ -58,6 +91,10 @@ export default function MusicLab() {
              setMusicUrl(statusData.outputs?.[0] || null);
              clearInterval(poll);
              setLoading(false);
+             fetch("/api/media/history?type=music")
+               .then(res => res.json())
+               .then(data => setHistory(data.slice(0, 5)))
+               .catch(console.error);
            } else if (statusData.status === "failed") {
              clearInterval(poll);
              setLoading(false);
@@ -88,15 +125,40 @@ export default function MusicLab() {
       </div>
 
       <div className="bg-zinc-950 p-6 rounded-2xl border border-zinc-800 space-y-6">
-        <div>
-          <label className="block text-sm font-medium text-zinc-300 mb-2">Music Prompt</label>
+        <div className="relative">
+          <div className="flex justify-between items-end mb-2">
+            <label className="block text-sm font-medium text-zinc-300">Music Prompt</label>
+            {recentPrompts.length > 0 && (
+              <button 
+                onClick={() => setShowPrompts(!showPrompts)} 
+                className="text-xs flex items-center gap-1 text-rose-400 hover:text-rose-300 transition-colors"
+              >
+                <History className="w-3.5 h-3.5" /> Recent
+              </button>
+            )}
+          </div>
+          
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             rows={4}
             className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
             placeholder="A cinematic orchestral track with a sense of wonder and uplifting energy..."
+            onFocus={() => setShowPrompts(false)}
           />
+          {showPrompts && recentPrompts.length > 0 && (
+            <div className="absolute z-10 w-full mt-1 top-full left-0 bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl max-h-48 overflow-y-auto">
+              {recentPrompts.map((rp, i) => (
+                <button
+                  key={i}
+                  onClick={() => { setPrompt(rp); setShowPrompts(false); }}
+                  className="w-full text-left px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-700 truncate border-b border-zinc-700/50 last:border-0"
+                >
+                  {rp}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-4">
@@ -162,6 +224,32 @@ export default function MusicLab() {
           </div>
         )}
       </div>
+
+      {/* Recent Generations */}
+      {history.length > 0 && (
+        <div className="mt-12 pt-8 border-t border-zinc-800/50">
+          <h2 className="text-xl font-semibold text-white mb-6">Recent Music</h2>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+            {history.map(item => (
+              <div key={item.id} className="bg-zinc-950 border border-zinc-800 rounded-xl overflow-hidden aspect-square flex flex-col items-center justify-center relative group p-4">
+                {item.outputs?.[0] ? (
+                  <>
+                    <div className="w-12 h-12 bg-rose-500/10 rounded-full flex items-center justify-center mb-3">
+                      <Music className="w-6 h-6 text-rose-500" />
+                    </div>
+                    <audio src={item.outputs[0]} controls controlsList="nodownload" className="w-full max-w-[120px] scale-75 origin-top" />
+                    <div className="mt-auto text-xs text-zinc-400 line-clamp-2 text-center w-full">
+                      {item.prompt}
+                    </div>
+                  </>
+                ) : (
+                  <span className="text-xs text-zinc-500 text-center line-clamp-3">{item.prompt}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }

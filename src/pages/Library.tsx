@@ -18,10 +18,15 @@ import {
   Film,
   Layers,
   ExternalLink,
+  Trash2,
+  SendHorizonal,
+  Music,
+  Download,
 } from "lucide-react";
 import { useToast } from "../context/ToastContext";
 import { useProject } from "../context/ProjectContext";
 import { useNavigate } from "react-router-dom";
+import MediaLightbox from "../components/MediaLightbox";
 
 interface MediaScore {
   brandAlignment: number;
@@ -36,7 +41,7 @@ interface MediaScore {
 
 interface Job {
   id: string;
-  type: "image" | "video" | "voice" | "compose";
+  type: "image" | "video" | "voice" | "music" | "compose";
   prompt?: string;
   text?: string;
   createdAt: string;
@@ -56,7 +61,7 @@ interface Job {
 }
 
 type SortMode = "newest" | "highest";
-type FilterType = "all" | "image" | "video" | "voice" | "compose";
+type FilterType = "all" | "image" | "video" | "voice" | "music" | "compose";
 
 export default function Library() {
   const { toast } = useToast();
@@ -67,6 +72,7 @@ export default function Library() {
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("newest");
   const [filterType, setFilterType] = useState<FilterType>("all");
   const [savingInsights, setSavingInsights] = useState(false);
@@ -131,6 +137,24 @@ export default function Library() {
     }
     return result;
   }, [jobs, search, sortMode, filterType]);
+
+  const selectedJobIndex = useMemo(() => {
+    return selectedJobId ? filtered.findIndex(j => j.id === selectedJobId) : -1;
+  }, [filtered, selectedJobId]);
+  
+  const selectedJob = selectedJobIndex >= 0 ? filtered[selectedJobIndex] : null;
+
+  const handleNext = () => {
+    if (selectedJobIndex < filtered.length - 1) {
+      setSelectedJobId(filtered[selectedJobIndex + 1].id);
+    }
+  };
+
+  const handlePrev = () => {
+    if (selectedJobIndex > 0) {
+      setSelectedJobId(filtered[selectedJobIndex - 1].id);
+    }
+  };
 
   const getIcon = (type: string) => {
     switch (type) {
@@ -200,6 +224,40 @@ export default function Library() {
     }
   };
 
+  const handleDelete = async (job: Job) => {
+    if (!confirm("Are you sure you want to delete this item?")) return;
+    try {
+      const res = await fetch(`/api/media/job/${job.type}/${job.id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error("Delete failed");
+      toast("Item deleted.", "success");
+      fetchHistory(true);
+    } catch (e: any) {
+      toast(e.message || "Failed to delete.", "error");
+    }
+  };
+
+  /** W3 (L2): Send a Library item directly to the Compose page */
+  const handleSendToCompose = (job: Job) => {
+    try {
+      // Store a compact job descriptor; Compose reads this on mount
+      const payload = {
+        id: job.id,
+        type: job.type,
+        prompt: job.prompt,
+        text: job.text,
+        outputs: job.outputs,
+        outputPath: job.outputs?.[0],
+        tags: job.tags,
+      };
+      sessionStorage.setItem("compose-send-item", JSON.stringify(payload));
+      navigate("/compose");
+    } catch {
+      toast("Failed to send to Compose.", "error");
+    }
+  };
+
   const lastLog = (job: Job) => job.logs?.[job.logs.length - 1];
 
   /** W4 (L6): Save scoring insights as a strategy artifact */
@@ -262,7 +320,8 @@ export default function Library() {
     { value: "image", label: "Images" },
     { value: "video", label: "Videos" },
     { value: "voice", label: "Voice" },
-    { value: "compose", label: "Composed" }, // Lane 3 W5
+    { value: "music", label: "Music" },
+    { value: "compose", label: "Composed" },
   ];
 
   return (
@@ -275,7 +334,7 @@ export default function Library() {
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-white mb-2">Media Library</h1>
           <p className="text-zinc-400 text-sm md:text-base">
-            Browse your generated images, videos, voice assets, and composed videos.
+            Browse your generated images, videos, voice, music, and composed videos.
           </p>
         </div>
         <button
@@ -422,7 +481,14 @@ export default function Library() {
                 className="bg-zinc-950 border border-zinc-800 rounded-2xl overflow-hidden flex flex-col"
               >
                 {/* Media area */}
-                <div className="aspect-square bg-zinc-900 relative flex items-center justify-center overflow-hidden">
+                <div 
+                  className={`aspect-square bg-zinc-900 relative flex items-center justify-center overflow-hidden ${job.status === "completed" && job.outputs && job.outputs.length > 0 ? "cursor-pointer" : ""}`}
+                  onClick={() => {
+                    if (job.status === "completed" && job.outputs && job.outputs.length > 0) {
+                      setSelectedJobId(job.id);
+                    }
+                  }}
+                >
                   {job.type === "image" && job.outputs.length > 0 ? (
                     <img src={job.outputs[0]} alt={job.prompt} className="w-full h-full object-cover" />
                   ) : (job.type === "video" || job.type === "compose") && job.status === "completed" && job.outputs.length > 0 ? (
@@ -549,6 +615,48 @@ export default function Library() {
                         Regenerate
                       </button>
                     )}
+                    
+                    {/* W3 (L2): Send to Compose — for non-compose jobs only */}
+                    {job.type !== "compose" && job.status !== "pending" && (
+                      <button
+                        id={`send-compose-${job.id}`}
+                        onClick={() => handleSendToCompose(job)}
+                        title={
+                          job.type === "voice" ? "Use as voiceover in Compose"
+                          : job.type === "music" ? "Use as background music in Compose"
+                          : "Add as slide in Compose"
+                        }
+                        className="flex items-center justify-center p-1.5 rounded-lg border border-indigo-900/50 text-indigo-500/70 hover:text-indigo-400 hover:border-indigo-500/60 transition-colors"
+                      >
+                        {job.type === "voice" || job.type === "music" ? (
+                          <Music className="w-3.5 h-3.5" />
+                        ) : (
+                          <SendHorizonal className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    )}
+
+                    {job.status === "completed" && job.outputs && job.outputs.length > 0 && (
+                      <a
+                        id={`download-${job.id}`}
+                        href={job.outputs[0]}
+                        download
+                        title="Download"
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex items-center justify-center p-1.5 rounded-lg border border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </a>
+                    )}
+
+                    <button
+                      id={`delete-${job.id}`}
+                      onClick={() => handleDelete(job)}
+                      title="Delete"
+                      className="flex items-center justify-center p-1.5 rounded-lg border border-red-900/40 text-red-500/60 hover:text-red-400 hover:border-red-500/60 transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
               </motion.div>
@@ -556,6 +664,14 @@ export default function Library() {
           </AnimatePresence>
         </div>
       )}
+
+      {/* Lightbox */}
+      <MediaLightbox
+        job={selectedJob as any}
+        onClose={() => setSelectedJobId(null)}
+        onNext={selectedJobIndex < filtered.length - 1 ? handleNext : undefined}
+        onPrev={selectedJobIndex > 0 ? handlePrev : undefined}
+      />
     </motion.div>
   );
 }

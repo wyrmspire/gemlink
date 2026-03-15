@@ -21,6 +21,8 @@ import {
   FileStack,
   Clapperboard,
   Music,
+  Activity,
+  Loader2,
 } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -161,7 +163,56 @@ function ProjectSwitcher() {
   );
 }
 
+// ── W2 (Lane 5): Global Job Queue Indicator ───────────────────────────────────
+
+interface QueueStatus {
+  running: Record<string, number>;
+  pending: Record<string, number>;
+}
+
+function GlobalJobIndicator() {
+  const navigate = useNavigate();
+  const [activeCount, setActiveCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function poll() {
+      try {
+        const res = await fetch("/api/queue", { cache: "no-store" });
+        if (!res.ok) return;
+        const data: QueueStatus = await res.json();
+        if (!cancelled) {
+          const total = Object.values(data.running).reduce((acc, n) => acc + n, 0);
+          setActiveCount(total);
+        }
+      } catch {
+        // Server unavailable — keep previous count
+      }
+    }
+
+    poll();
+    const timer = setInterval(poll, 15000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
+  if (activeCount === 0) return null;
+
+  return (
+    <button
+      onClick={() => navigate("/library")}
+      title={`${activeCount} job${activeCount !== 1 ? "s" : ""} in progress — click to view Library`}
+      className="flex items-center gap-2 px-3 py-2 mx-3 mb-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-300 hover:bg-amber-500/20 transition-colors text-xs font-medium"
+    >
+      <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+      <span className="flex-1 text-left">{activeCount} job{activeCount !== 1 ? "s" : ""} running</span>
+      <Activity className="w-3.5 h-3.5 shrink-0 opacity-60" />
+    </button>
+  );
+}
+
 export default function Layout() {
+
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -216,6 +267,8 @@ export default function Layout() {
         <nav className="flex-1 overflow-y-auto py-2 px-3 space-y-1">
           <NavLinks />
         </nav>
+        {/* ── W2 (Lane 5): Global Job Indicator ── */}
+        <GlobalJobIndicator />
       </div>
 
       {/* Mobile Menu Overlay */}

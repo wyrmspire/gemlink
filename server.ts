@@ -475,9 +475,56 @@ async function startServer() {
     };
   }
 
+  // ── L3-S7 (W3): Queue and Cancellation Tracking ──────────────────────────────
+  const jobTracker = {
+    running: { image: 0, video: 0, voice: 0, music: 0, boardroom: 0, compose: 0 },
+    pending: { image: 0, video: 0, voice: 0, music: 0, boardroom: 0, compose: 0 },
+    cancellations: new Set<string>(),
+    activeOperations: new Map<string, any>(),
+  };
+
+  api.get("/queue", (req, res) => {
+    const rateLimitStatus: Record<string, any> = {};
+    for (const [type, limit] of Object.entries(rateLimits)) {
+      const tracker = rateTrackers.get(type);
+      rateLimitStatus[type] = {
+        callsThisMinute: tracker ? tracker.count : 0,
+        limit,
+      };
+    }
+    res.json({
+      running: jobTracker.running,
+      pending: jobTracker.pending,
+      rateLimitStatus,
+    });
+  });
+
+  api.post("/media/job/:type/:id/cancel", async (req, res) => {
+    const { type, id } = req.params;
+    jobTracker.cancellations.add(id);
+    
+    const op = jobTracker.activeOperations.get(id);
+    if (op && typeof op.cancel === 'function') {
+      try { await op.cancel(); } catch (e) { console.error("Cancel error", e); }
+    }
+    
+    try {
+      if (jobTypeDirs[type as MediaType]) {
+        await patchManifest(type as MediaType, id, (m) => ({
+          ...m,
+          status: "failed",
+          error: "Cancelled by user",
+          logs: appendLog(m, "Job cancelled by user request."),
+        }));
+      }
+    } catch {}
+
+    res.json({ success: true, message: `Cancellation requested for job ${id}` });
+  });
 
   api.post("/media/image", rateLimitMiddleware("image"), async (req, res) => {
     try {
+      jobTracker.running.image++;
       // ── L2-S7 (W3): Idempotency wrapper (image) ──
       const idempotencyKey = req.headers["idempotency-key"] as string | undefined;
       if (idempotencyKey) {
@@ -554,11 +601,14 @@ async function startServer() {
     } catch (error: any) {
       console.error("Image Generation Error:", error);
       res.status(500).json({ error: error.message || "Failed to generate image" });
+    } finally {
+      jobTracker.running.image--;
     }
   });
 
   api.post("/media/video", rateLimitMiddleware("video"), async (req, res) => {
     try {
+      jobTracker.running.video++;
       // ── L2-S7 (W3): Idempotency wrapper (video) ──
       const idempotencyKey = req.headers["idempotency-key"] as string | undefined;
       if (idempotencyKey) {
@@ -614,12 +664,25 @@ async function startServer() {
 
       void (async () => {
         try {
+          jobTracker.activeOperations.set(jobId, operation);
           let currentOp = operation;
           let attempts = 0;
 
           // SAFETY: Hard upper bound to prevent infinite polling if the provider
-          // never reports done. Fails the job after MAX_VIDEO_POLL_ATTEMPTS.
+          // never reports done. Fails the job after serverConfig.maxVideoPollAttempts.
           while (!currentOp.done) {
+            if (jobTracker.cancellations.has(jobId)) {
+               console.log(`[video] Polling aborted for cancelled job ${jobId}`);
+               jobTracker.activeOperations.delete(jobId);
+               jobTracker.cancellations.delete(jobId);
+               await patchManifest("video", jobId, (current) => ({
+                ...current,
+                status: "failed",
+                error: "Video generation cancelled by user.",
+                logs: appendLog(current, "Polling aborted: Job cancelled by user."),
+              }));
+               return;
+            }
             attempts += 1;
             if (attempts > serverConfig.maxVideoPollAttempts) {
               await patchManifest("video", jobId, (current) => ({
@@ -628,6 +691,7 @@ async function startServer() {
                 error: `Video polling timed out after ${attempts} attempts (~${Math.round(attempts * 10 / 60)} minutes). The provider never reported completion.`,
                 logs: appendLog(current, `SAFETY: Polling aborted after ${attempts} attempts. Possible stuck operation.`),
               }));
+              jobTracker.activeOperations.delete(jobId);
               return;
             }
             await patchManifest("video", jobId, (current) => ({
@@ -646,6 +710,7 @@ async function startServer() {
               error: "Video operation finished without a downloadable file.",
               logs: appendLog(current, "Provider completed, but no download URL was returned."),
             }));
+            jobTracker.activeOperations.delete(jobId);
             return;
           }
 
@@ -666,6 +731,7 @@ async function startServer() {
             error: undefined,
             logs: appendLog(current, "Video downloaded and saved locally."),
           }));
+          jobTracker.activeOperations.delete(jobId);
         } catch (err: any) {
           console.error("Background video polling error:", err);
           await patchManifest("video", jobId, (current) => ({
@@ -674,6 +740,7 @@ async function startServer() {
             error: err?.message || "Background video polling failed.",
             logs: appendLog(current, `Background polling failed: ${err?.message || "unknown error"}`),
           }));
+          jobTracker.activeOperations.delete(jobId);
         }
       })();
 
@@ -682,13 +749,16 @@ async function startServer() {
     } catch (error: any) {
       console.error("Video Generation Error:", error);
       res.status(500).json({ error: error.message || "Failed to generate video" });
+    } finally {
+      jobTracker.running.video--;
     }
   });
 
   api.post("/media/voice", rateLimitMiddleware("voice"), async (req, res) => {
     try {
+      jobTracker.running.voice++;
       // ── L2-S7 (W3): Idempotency wrapper (voice) ──
-      const idempotencyKey = req.headers["idempotency-key"] as string | undefined;
+      const idempotencyKey = req.headers["x-idempotency-key"] as string | undefined;
       if (idempotencyKey) {
         const cached = idempotencyQueries.get(`${idempotencyKey}-voice`);
         if (cached) return res.status(200).json(cached);
@@ -781,12 +851,14 @@ async function startServer() {
     } catch (error: any) {
       console.error("Voice Generation Error:", error);
       res.status(500).json({ error: error.message || "Failed to generate voice" });
+    } finally {
+      jobTracker.running.voice--;
     }
   });
 
   api.post("/media/music", rateLimitMiddleware("music"), async (req, res) => {
     try {
-      // ── L2-S7 (W3): Idempotency wrapper (music) ──
+      jobTracker.running.music++;
       const idempotencyKey = req.headers["idempotency-key"] as string | undefined;
       if (idempotencyKey) {
         const cached = idempotencyQueries.get(`${idempotencyKey}-music`);
@@ -794,51 +866,163 @@ async function startServer() {
       }
 
       const { prompt, model, duration, brandContext, projectId, apiKey } = req.body;
-      // ── L2-S7 (W4): Dry-Run Mode (music) ──
       const dryRun = req.headers["x-dry-run"] || req.body["dry-run"];
       if (dryRun) {
         return res.status(200).json({ valid: true, estimatedCredits: 1, model: model || getMergedModels().music });
       }
       const key = requireApiKey(apiKey);
-      const ai = new GoogleGenAI({ apiKey: key });
       const jobId = createJobId();
       const selectedModel = model ?? getMergedModels().music;
+      const durationSec = Math.min(Math.max(duration ?? 30, 5), 120);
 
       const manifest: JobManifest = {
         id: jobId, type: "music", prompt, model: selectedModel,
         brandContext, projectId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-        status: "pending", outputs: [], logs: [`[${new Date().toISOString()}] Music request received.`],
+        status: "pending", outputs: [], logs: [`[${new Date().toISOString()}] Music request received (${durationSec}s via Lyria RealTime).`],
       };
       await writeManifest(manifest);
 
-      const operation = await (ai.models as any).generateMusic({
-        model: selectedModel,
-        prompt,
-        config: { durationSeconds: duration ?? 30 },
-      });
-      const operationName = (operation as any)?.name ?? null;
-      await patchManifest("music", jobId, (c) => ({ ...c, providerOperationName: operationName, logs: appendLog(c, `Operation created: ${operationName}`) }));
-
+      // Lyria RealTime uses WebSocket streaming via ai.live.music.connect()
       void (async () => {
         try {
-          let op = operation; let attempts = 0;
-          while (!op.done) {
-            attempts++;
-            if (attempts > serverConfig.maxVideoPollAttempts) {
-              await patchManifest("music", jobId, (c) => ({ ...c, status: "failed", error: "Polling timed out.", logs: appendLog(c, `SAFETY: Polling aborted after ${attempts} attempts.`) }));
+          const ai = new GoogleGenAI({ apiKey: key, apiVersion: "v1alpha" });
+          const audioChunks: Buffer[] = [];
+          let setupDone = false;
+          const sampleRate = 44100;
+          const channels = 2;
+
+          await patchManifest("music", jobId, (c) => ({
+            ...c, logs: appendLog(c, `Connecting to Lyria RealTime (model: ${selectedModel})...`),
+          }));
+
+          const session = await (ai.live as any).music.connect({
+            model: `models/${selectedModel}`,
+            callbacks: {
+              onmessage: (message: any) => {
+                if (message.setupComplete) {
+                  setupDone = true;
+                  console.log(`[music] Job ${jobId}: setup complete`);
+                }
+                if (message.serverContent && message.serverContent.audioChunks) {
+                  for (const chunk of message.serverContent.audioChunks) {
+                    if (chunk.data) {
+                      audioChunks.push(Buffer.from(chunk.data, "base64"));
+                    }
+                  }
+                }
+                if (message.filteredPrompt) {
+                  console.log(`[music] Job ${jobId}: prompt filtered — ${message.filteredPrompt.filteredReason || "unknown"}`);
+                }
+              },
+              onerror: (error: any) => {
+                console.error(`[music] Job ${jobId}: session error:`, error);
+              },
+              onclose: () => {
+                console.log(`[music] Job ${jobId}: session closed`);
+              },
+            },
+          });
+
+          // Wait for setup to complete (max 10s)
+          for (let i = 0; i < 100 && !setupDone; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+          }
+          if (!setupDone) {
+            await patchManifest("music", jobId, (c) => ({
+              ...c, status: "failed", error: "Lyria setup timed out.",
+              logs: appendLog(c, "Setup timed out after 10s."),
+            }));
+            try { session.close(); } catch {}
+            return;
+          }
+
+          await patchManifest("music", jobId, (c) => ({
+            ...c, logs: appendLog(c, "Connected. Sending prompt and starting..."),
+          }));
+
+          // Send the prompt
+          await session.setWeightedPrompts({
+            weightedPrompts: [{ text: prompt, weight: 1.0 }],
+          });
+
+          // Configure generation
+          await session.setMusicGenerationConfig({
+            musicGenerationConfig: { temperature: 1.0, bpm: 120 },
+          });
+
+          // Start playback (synchronous WebSocket send)
+          session.play();
+          console.log(`[music] Job ${jobId}: play() sent, recording for ${durationSec}s...`);
+
+          // Give it a moment to start streaming
+          await new Promise((r) => setTimeout(r, 1000));
+
+          // Record for the requested duration
+          const startTime = Date.now();
+          while (Date.now() - startTime < durationSec * 1000) {
+            if (jobTracker.cancellations.has(jobId)) {
+              jobTracker.cancellations.delete(jobId);
+              try { session.close(); } catch {}
+              await patchManifest("music", jobId, (c) => ({
+                ...c, status: "failed", error: "Cancelled by user.",
+                logs: appendLog(c, "Cancelled by user."),
+              }));
               return;
             }
-            await new Promise((r) => setTimeout(r, 10000));
-            op = await (ai.operations as any).getMusicOperation({ operation: op });
+            if ((Date.now() - startTime) % 2000 < 600) {
+              console.log(`[music] Job ${jobId}: ${audioChunks.length} chunks (${((Date.now() - startTime) / 1000).toFixed(0)}s)`);
+            }
+            await new Promise((r) => setTimeout(r, 500));
           }
-          const link = op.response?.generatedMusic?.[0]?.audio?.uri;
-          if (!link) throw new Error("No download URL returned.");
-          const mRes = await fetch(link, { headers: { "x-goog-api-key": key } });
-          const fileName = "output.mp3";
-          await fs.writeFile(path.join(getJobDir("music", jobId), fileName), Buffer.from(await mRes.arrayBuffer()));
-          await patchManifest("music", jobId, (c) => ({ ...c, status: "completed", outputs: [`/jobs/music/${jobId}/${fileName}`], error: undefined, logs: appendLog(c, "Music saved.") }));
+
+          console.log(`[music] Job ${jobId}: done recording, ${audioChunks.length} chunks total`);
+          try { session.stop(); } catch {}
+          await new Promise((r) => setTimeout(r, 500));
+          try { session.close(); } catch {}
+
+          if (audioChunks.length === 0) {
+            await patchManifest("music", jobId, (c) => ({
+              ...c, status: "failed", error: "No audio data received from Lyria.",
+              logs: appendLog(c, "Session completed but no audio chunks received."),
+            }));
+            return;
+          }
+
+          // Combine PCM chunks and wrap as WAV
+          const rawPcm = Buffer.concat(audioChunks);
+          const bitsPerSample = 16;
+          const byteRate = sampleRate * channels * bitsPerSample / 8;
+          const blockAlign = channels * bitsPerSample / 8;
+          const hdr = Buffer.alloc(44);
+          hdr.write("RIFF", 0);
+          hdr.writeUInt32LE(36 + rawPcm.length, 4);
+          hdr.write("WAVE", 8);
+          hdr.write("fmt ", 12);
+          hdr.writeUInt32LE(16, 16);
+          hdr.writeUInt16LE(1, 20);
+          hdr.writeUInt16LE(channels, 22);
+          hdr.writeUInt32LE(sampleRate, 24);
+          hdr.writeUInt32LE(byteRate, 28);
+          hdr.writeUInt16LE(blockAlign, 32);
+          hdr.writeUInt16LE(bitsPerSample, 34);
+          hdr.write("data", 36);
+          hdr.writeUInt32LE(rawPcm.length, 40);
+          const wavBuffer = Buffer.concat([hdr, rawPcm]);
+
+          const fileName = "output.wav";
+          await fs.writeFile(path.join(getJobDir("music", jobId), fileName), wavBuffer);
+          await patchManifest("music", jobId, (c) => ({
+            ...c, status: "completed",
+            outputs: [`/jobs/music/${jobId}/${fileName}`],
+            error: undefined,
+            logs: appendLog(c, `Music saved (${(rawPcm.length / byteRate).toFixed(1)}s, ${(wavBuffer.length / 1024).toFixed(0)}KB WAV).`),
+          }));
+          console.log(`[music] Job ${jobId} completed: ${(rawPcm.length / byteRate).toFixed(1)}s of audio`);
         } catch (err: any) {
-          await patchManifest("music", jobId, (c) => ({ ...c, status: "failed", error: err?.message || "Polling failed." }));
+          console.error("Music generation error:", err);
+          await patchManifest("music", jobId, (c) => ({
+            ...c, status: "failed", error: err?.message || "Music generation failed.",
+          }));
         }
       })();
 
@@ -847,6 +1031,8 @@ async function startServer() {
     } catch (error: any) {
       console.error("Music Generation Error:", error);
       res.status(500).json({ error: error.message || "Failed to generate music" });
+    } finally {
+      jobTracker.running.music--;
     }
   });
 
@@ -860,6 +1046,38 @@ async function startServer() {
       res.json(manifest);
     } catch (error: any) {
       res.status(404).json({ error: error.message || "Job not found" });
+    }
+  });
+
+  api.delete("/media/job/:type/:id", async (req, res) => {
+    try {
+      const type = req.params.type;
+      const { id } = req.params;
+      
+      const isCompose = type === "compose";
+      if (!isCompose && !jobTypeDirs[type as MediaType]) {
+        return res.status(400).json({ error: `Invalid media type: ${type}` });
+      }
+
+      // 1. Delete from DB
+      if (isCompose) {
+        composeJobQueries.delete(id);
+      } else {
+        mediaJobQueries.delete(id);
+      }
+
+      // 2. Delete from filesystem
+      const dirName = isCompose ? "compose" : jobTypeDirs[type as MediaType];
+      const jobDir = path.join(jobsDir, dirName, id);
+      try {
+        await fs.rm(jobDir, { recursive: true, force: true });
+      } catch (e: any) {
+        console.warn(`Could not completely remove job dir: ${e.message}`);
+      }
+      res.json({ ok: true });
+    } catch (error: any) {
+      console.error("Delete Error:", error);
+      res.status(500).json({ error: error.message || "Failed to delete job" });
     }
   });
 
@@ -1160,17 +1378,19 @@ async function startServer() {
       }
 
       if (type === "voice") {
-        const { text, voice, brandContext, projectId } = body as any;
+        const { text, prompt, voice, brandContext, projectId } = body as any;
+        const actualText = text || prompt;
+        const actualVoice = voice || "Kore";
         const manifest: JobManifest = {
-          id: jobId, type: "voice", text, voice, brandContext, projectId,
+          id: jobId, type: "voice", text: actualText, voice: actualVoice, brandContext, projectId,
           createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
           status: "pending", outputs: [],
           logs: [`[${new Date().toISOString()}] Batch voice generation started.`],
         };
         await writeManifest(manifest);
         const resp = await ai.models.generateContent({
-          model: getMergedModels().tts, contents: [{ parts: [{ text }] }],
-          config: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } },
+          model: getMergedModels().tts, contents: [{ parts: [{ text: actualText }] }],
+          config: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: actualVoice } } } },
         });
         const inlineAudio = resp.candidates?.[0]?.content?.parts?.[0]?.inlineData;
         const b64 = inlineAudio?.data;
@@ -1192,7 +1412,7 @@ async function startServer() {
           error: outputs.length > 0 ? undefined : "No audio data.",
           logs: appendLog(c, "Batch: audio saved."),
         }));
-        if (outputs.length > 0) void autoTagMedia("voice", jobId, "", apiKey, text);
+        if (outputs.length > 0) void autoTagMedia("voice", jobId, "", apiKey, actualText);
         return jobId;
       }
 
@@ -1208,67 +1428,113 @@ async function startServer() {
           logs: [`[${new Date().toISOString()}] Batch video job queued. Operation: ${operationName}`],
         };
         await writeManifest(manifest);
-         void (async () => {
-          try {
-            let op = operation; let a = 0;
-            // SAFETY: Hard upper bound — same MAX_VIDEO_POLL_ATTEMPTS guard as the
-            // single-video endpoint. Never loop forever waiting for provider.
-            while (!op.done) {
-              a++;
-              if (a > serverConfig.maxVideoPollAttempts) {
-                await patchManifest("video", jobId, (c) => ({ ...c, status: "failed", error: `Batch video polling timed out after ${a} attempts.`, logs: appendLog(c, `SAFETY: Polling aborted after ${a} attempts.`) }));
-                return;
-              }
-              await patchManifest("video", jobId, (c) => ({ ...c, logs: appendLog(c, `Polling attempt ${a}/${serverConfig.maxVideoPollAttempts}...`) }));
-              await new Promise((r) => setTimeout(r, 10000));
-              op = await ai.operations.getVideosOperation({ operation: op });
+        try {
+          let op = operation; let a = 0;
+          // SAFETY: Hard upper bound — same MAX_VIDEO_POLL_ATTEMPTS guard as the
+          // single-video endpoint. Never loop forever waiting for provider.
+          while (!op.done) {
+            a++;
+            if (a > serverConfig.maxVideoPollAttempts) {
+              await patchManifest("video", jobId, (c) => ({ ...c, status: "failed", error: `Batch video polling timed out after ${a} attempts.`, logs: appendLog(c, `SAFETY: Polling aborted after ${a} attempts.`) }));
+              throw new Error(`Batch video polling timed out after ${a} attempts.`);
             }
-            const link = op.response?.generatedVideos?.[0]?.video?.uri;
-            if (!link) throw new Error("No video download URL returned.");
-            const vRes = await fetch(link, { headers: { "x-goog-api-key": apiKey } });
-            if (!vRes.ok) throw new Error(`Video download failed (${vRes.status}).`);
-            const fn = "output.mp4";
-            await fs.writeFile(path.join(getJobDir("video", jobId), fn), Buffer.from(await vRes.arrayBuffer()));
-            await patchManifest("video", jobId, (c) => ({ ...c, status: "completed", outputs: [`/jobs/videos/${jobId}/${fn}`], error: undefined, logs: appendLog(c, "Batch video downloaded.") }));
-          } catch (err: any) {
-            await patchManifest("video", jobId, (c) => ({ ...c, status: "failed", error: err?.message ?? "Batch video polling failed.", logs: appendLog(c, `Polling failed: ${err?.message}`) }));
+            await patchManifest("video", jobId, (c) => ({ ...c, logs: appendLog(c, `Polling attempt ${a}/${serverConfig.maxVideoPollAttempts}...`) }));
+            await new Promise((r) => setTimeout(r, 10000));
+            op = await ai.operations.getVideosOperation({ operation: op });
           }
-        })();
+          const link = op.response?.generatedVideos?.[0]?.video?.uri;
+          if (!link) throw new Error("No video download URL returned.");
+          const vRes = await fetch(link, { headers: { "x-goog-api-key": apiKey } });
+          if (!vRes.ok) throw new Error(`Video download failed (${vRes.status}).`);
+          const fn = "output.mp4";
+          await fs.writeFile(path.join(getJobDir("video", jobId), fn), Buffer.from(await vRes.arrayBuffer()));
+          await patchManifest("video", jobId, (c) => ({ ...c, status: "completed", outputs: [`/jobs/videos/${jobId}/${fn}`], error: undefined, logs: appendLog(c, "Batch video downloaded.") }));
+        } catch (err: any) {
+          await patchManifest("video", jobId, (c) => ({ ...c, status: "failed", error: err?.message ?? "Batch video polling failed.", logs: appendLog(c, `Polling failed: ${err?.message}`) }));
+          throw err;
+        }
         return jobId;
       }
 
       if (type === "music") {
         const { prompt, model, duration, brandContext, projectId } = body as any;
         const selectedModel = model ?? getMergedModels().music;
-        const operation = await (ai.models as any).generateMusic({ model: selectedModel, prompt, config: { durationSeconds: duration ?? 30 } });
-        const operationName = (operation as any)?.name ?? null;
+        const durationSec = Math.min(Math.max(duration ?? 30, 5), 120);
         const manifest: JobManifest = {
           id: jobId, type: "music", prompt, model: selectedModel,
           brandContext, projectId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-          status: "pending", outputs: [], providerOperationName: operationName,
-          logs: [`[${new Date().toISOString()}] Batch music job queued. Operation: ${operationName}`],
+          status: "pending", outputs: [],
+          logs: [`[${new Date().toISOString()}] Batch music job queued (${durationSec}s via Lyria).`],
         };
         await writeManifest(manifest);
+
+        // Use Lyria WebSocket streaming (same as main music endpoint)
         void (async () => {
           try {
-            let op = operation; let a = 0;
-            while (!op.done) {
-              a++;
-              if (a > serverConfig.maxVideoPollAttempts) {
-                await patchManifest("music", jobId, (c) => ({ ...c, status: "failed", error: `Max polling attempts reached for music.`, logs: appendLog(c, `SAFETY: Polling aborted.`) }));
-                return;
-              }
-              await new Promise((r) => setTimeout(r, 10000));
-              op = await (ai.operations as any).getMusicOperation({ operation: op });
-            }
-            const link = op.response?.generatedMusic?.[0]?.audio?.uri;
-            if (!link) throw new Error("No music download URL returned.");
-            const vRes = await fetch(link, { headers: { "x-goog-api-key": apiKey } });
-            const fn = "output.mp3";
-            await fs.writeFile(path.join(getJobDir("music", jobId), fn), Buffer.from(await vRes.arrayBuffer()));
-            await patchManifest("music", jobId, (c) => ({ ...c, status: "completed", outputs: [`/jobs/music/${jobId}/${fn}`], error: undefined, logs: appendLog(c, "Batch music downloaded.") }));
+            const lyAi = new GoogleGenAI({ apiKey, apiVersion: "v1alpha" });
+            const audioChunks: Buffer[] = [];
+            let setupDone = false;
+            const sampleRate = 44100;
+            const channels = 2;
+
+            const session = await (lyAi.live as any).music.connect({
+              model: `models/${selectedModel}`,
+              callbacks: {
+                onmessage: (message: any) => {
+                  if (message.setupComplete) setupDone = true;
+                  if (message.serverContent?.audioChunks) {
+                    for (const chunk of message.serverContent.audioChunks) {
+                      if (chunk.data) audioChunks.push(Buffer.from(chunk.data, "base64"));
+                    }
+                  }
+                },
+                onerror: () => {},
+                onclose: () => {},
+              },
+            });
+
+            // Wait for setup
+            for (let i = 0; i < 100 && !setupDone; i++) await new Promise((r) => setTimeout(r, 100));
+            if (!setupDone) { try { session.close(); } catch {} throw new Error("Lyria setup timed out."); }
+
+            await session.setWeightedPrompts({ weightedPrompts: [{ text: prompt, weight: 1.0 }] });
+            await session.setMusicGenerationConfig({ musicGenerationConfig: { temperature: 1.0, bpm: 120 } });
+            session.play();
+
+            await new Promise((r) => setTimeout(r, 1000));
+            const start = Date.now();
+            while (Date.now() - start < durationSec * 1000) await new Promise((r) => setTimeout(r, 500));
+
+            try { session.stop(); } catch {}
+            await new Promise((r) => setTimeout(r, 500));
+            try { session.close(); } catch {}
+
+            if (audioChunks.length === 0) throw new Error("No audio data received from Lyria.");
+
+            const rawPcm = Buffer.concat(audioChunks);
+            const bitsPerSample = 16;
+            const byteRate = sampleRate * channels * bitsPerSample / 8;
+            const blockAlign = channels * bitsPerSample / 8;
+            const hdr = Buffer.alloc(44);
+            hdr.write("RIFF", 0); hdr.writeUInt32LE(36 + rawPcm.length, 4);
+            hdr.write("WAVE", 8); hdr.write("fmt ", 12);
+            hdr.writeUInt32LE(16, 16); hdr.writeUInt16LE(1, 20);
+            hdr.writeUInt16LE(channels, 22); hdr.writeUInt32LE(sampleRate, 24);
+            hdr.writeUInt32LE(byteRate, 28); hdr.writeUInt16LE(blockAlign, 32);
+            hdr.writeUInt16LE(bitsPerSample, 34); hdr.write("data", 36);
+            hdr.writeUInt32LE(rawPcm.length, 40);
+
+            const fn = "output.wav";
+            await fs.writeFile(path.join(getJobDir("music", jobId), fn), Buffer.concat([hdr, rawPcm]));
+            await patchManifest("music", jobId, (c) => ({
+              ...c, status: "completed", outputs: [`/jobs/music/${jobId}/${fn}`], error: undefined,
+              logs: appendLog(c, `Batch music saved (${(rawPcm.length / byteRate).toFixed(1)}s WAV).`),
+            }));
           } catch (err: any) {
-            await patchManifest("music", jobId, (c) => ({ ...c, status: "failed", error: err?.message ?? "Batch music polling failed.", logs: appendLog(c, `Polling failed: ${err?.message}`) }));
+            await patchManifest("music", jobId, (c) => ({
+              ...c, status: "failed", error: err?.message ?? "Batch music failed.",
+              logs: appendLog(c, `Failed: ${err?.message}`),
+            }));
           }
         })();
         return jobId;
@@ -2772,15 +3038,18 @@ async function startServer() {
             timing?: "sentence" | "word";
           };
 
+          const videoProbe = await compose.probeMedia(videoPath);
+          const duration = videoProbe.duration;
+
           const style = (captionCfg.style ?? "clean") as Parameters<typeof compose.generateASS>[1];
           const assResult =
             captionCfg.timing === "word"
-              ? await compose.generateWordLevelASS(captionCfg.text, style, 0, {
+              ? await compose.generateWordLevelASS(captionCfg.text, style, duration, {
                   fontSize: captionCfg.fontSize,
                   fontColor: captionCfg.color,
                   position: captionCfg.position,
                 })
-              : await compose.generateASS(captionCfg.text, style, 0, {
+              : await compose.generateASS(captionCfg.text, style, duration, {
                   fontSize: captionCfg.fontSize,
                   fontColor: captionCfg.color,
                   position: captionCfg.position,

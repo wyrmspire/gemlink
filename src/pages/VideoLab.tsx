@@ -3,7 +3,16 @@ import { useBrand } from "../context/BrandContext";
 import { useApiKey } from "../components/ApiKeyGuard";
 import { useToast } from "../context/ToastContext";
 import { motion } from "motion/react";
-import { Loader2, Video, Upload, CheckCircle2, AlertCircle } from "lucide-react";
+import { Loader2, Video, Upload, CheckCircle2, AlertCircle, History } from "lucide-react";
+
+interface HistoryItem {
+  id: string;
+  type: string;
+  prompt: string;
+  text?: string;
+  outputs: string[];
+  createdAt: string;
+}
 
 interface VideoJob {
   id: string;
@@ -21,6 +30,12 @@ const VIDEO_PRESETS = [
   { label: "Twitter/X Landscape (16:9 720p)", value: "twitter", aspectRatio: "16:9", resolution: "720p" },
 ];
 
+const VIDEO_MODELS = [
+  { value: "veo-3.1-generate-preview", label: "Veo 3.1 (Latest)" },
+  { value: "veo-3.0-generate-001", label: "Veo 3.0 (Stable)" },
+  { value: "veo-2.0-generate-001", label: "Veo 2.0 (Budget)" },
+];
+
 export default function VideoLab() {
   const brand = useBrand();
   const { resetKey } = useApiKey();
@@ -34,8 +49,34 @@ export default function VideoLab() {
   const [aspectRatio, setAspectRatio] = useState("16:9");
   const [resolution, setResolution] = useState("1080p");
   const [preset, setPreset] = useState("custom");
+  const [videoModel, setVideoModel] = useState(
+    import.meta.env.VITE_MODEL_VIDEO || "veo-3.1-generate-preview"
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [recentPrompts, setRecentPrompts] = useState<string[]>([]);
+  const [showPrompts, setShowPrompts] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/media/history?type=video")
+      .then(res => res.json())
+      .then(data => setHistory(data.slice(0, 5)))
+      .catch(console.error);
+
+    try {
+      const saved = localStorage.getItem("gemlink-prompts-video");
+      if (saved) setRecentPrompts(JSON.parse(saved));
+    } catch {}
+  }, []);
+
+  const savePrompt = (p: string) => {
+    const updated = [p, ...recentPrompts.filter(x => x !== p)].slice(0, 10);
+    setRecentPrompts(updated);
+    try {
+      localStorage.setItem("gemlink-prompts-video", JSON.stringify(updated));
+    } catch {}
+  };
 
   function applyPreset(value: string) {
     const p = VIDEO_PRESETS.find((x) => x.value === value);
@@ -47,6 +88,7 @@ export default function VideoLab() {
 
   const generateVideo = async () => {
     if (!prompt && !imageFile) return;
+    if (prompt) savePrompt(prompt);
     setLoading(true);
     setJob(null);
     try {
@@ -72,7 +114,7 @@ export default function VideoLab() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: fullPrompt,
-          model: import.meta.env.VITE_MODEL_VIDEO || "veo-2.0-generate-001", // ── L3-S4.5: use env var
+          model: videoModel,
           resolution,
           aspectRatio,
           brandContext: brand,
@@ -165,8 +207,15 @@ export default function VideoLab() {
         setJob(updated);
         if (updated.status !== "pending") {
           clearInterval(interval);
-          if (updated.status === "completed") toast("Video generation complete!", "success");
-          else toast("Video generation failed.", "error");
+          if (updated.status === "completed") {
+            toast("Video generation complete!", "success");
+            fetch("/api/media/history?type=video")
+              .then(res => res.json())
+              .then(data => setHistory(data.slice(0, 5)))
+              .catch(console.error);
+          } else {
+            toast("Video generation failed.", "error");
+          }
         }
       } catch {
         // Silently retry on next interval
@@ -206,6 +255,20 @@ export default function VideoLab() {
             </select>
           </div>
 
+          {/* Model selector */}
+          <div>
+            <label className="block text-sm font-medium text-zinc-300 mb-2">Video Model</label>
+            <select
+              value={videoModel}
+              onChange={(e) => setVideoModel(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              {VIDEO_MODELS.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-zinc-300 mb-2">Starting Image (Optional)</label>
             <input
@@ -227,15 +290,40 @@ export default function VideoLab() {
             </div>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-zinc-300 mb-2">Video Prompt</label>
+          <div className="relative">
+            <div className="flex justify-between items-end mb-2">
+              <label className="block text-sm font-medium text-zinc-300">Video Prompt</label>
+              {recentPrompts.length > 0 && (
+                <button 
+                  onClick={() => setShowPrompts(!showPrompts)} 
+                  className="text-xs flex items-center gap-1 text-indigo-400 hover:text-indigo-300 transition-colors"
+                >
+                  <History className="w-3.5 h-3.5" /> Recent
+                </button>
+              )}
+            </div>
+            
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               rows={4}
               className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
               placeholder="A cinematic drone shot of a futuristic city..."
+              onFocus={() => setShowPrompts(false)}
             />
+            {showPrompts && recentPrompts.length > 0 && (
+              <div className="absolute z-10 w-full mt-1 top-full left-0 bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl max-h-48 overflow-y-auto">
+                {recentPrompts.map((rp, i) => (
+                  <button
+                    key={i}
+                    onClick={() => { setPrompt(rp); setShowPrompts(false); }}
+                    className="w-full text-left px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-700 truncate border-b border-zinc-700/50 last:border-0"
+                  >
+                    {rp}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -351,6 +439,29 @@ export default function VideoLab() {
           )}
         </div>
       </div>
+
+      {/* Recent Generations */}
+      {history.length > 0 && (
+        <div className="mt-12 pt-8 border-t border-zinc-800/50">
+          <h2 className="text-xl font-semibold text-white mb-6">Recent Videos</h2>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+            {history.map(item => (
+              <div key={item.id} className="bg-zinc-950 border border-zinc-800 rounded-xl overflow-hidden aspect-video flex flex-col items-center justify-center relative group">
+                {item.outputs?.[0] ? (
+                  <>
+                    <video src={item.outputs[0]} className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity p-2 flex items-end">
+                      <p className="text-xs text-white line-clamp-3">{item.prompt}</p>
+                    </div>
+                  </>
+                ) : (
+                  <span className="text-xs text-zinc-500 p-4 text-center line-clamp-3">{item.prompt}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }

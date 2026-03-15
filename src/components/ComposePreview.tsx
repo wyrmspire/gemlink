@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Play, Pause, RotateCcw, Info } from "lucide-react";
 import type { ComposeProject } from "../pages/Compose";
@@ -121,11 +121,22 @@ function getCaptionCSS(config: ComposeProject["captionConfig"]): React.CSSProper
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
+// Ken Burns animation name per direction
+function kenBurnsAnimationName(dir?: string): string {
+  switch (dir) {
+    case "zoom-out":  return "kenBurnsZoomOut";
+    case "pan-left":  return "kenBurnsPanLeft";
+    case "pan-right": return "kenBurnsPanRight";
+    default:          return "kenBurnsZoomIn";
+  }
+}
+
 export default function ComposePreview({ project, className = "" }: ComposePreviewProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
   const [slideState, setSlideState] = useState<SlideState>("active");
   const [elapsed, setElapsed] = useState(0);
+  const [voiceAudioUrl, setVoiceAudioUrl] = useState<string | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -189,6 +200,18 @@ export default function ComposePreview({ project, className = "" }: ComposePrevi
   useEffect(() => {
     resetPlayback();
   }, [slides.length, resetPlayback]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Resolve voice audio URL from job history when voiceJobId changes
+  useEffect(() => {
+    if (!project.voiceJobId) { setVoiceAudioUrl(null); return; }
+    fetch("/api/media/history", { cache: "no-store" })
+      .then((r) => r.ok ? r.json() : [])
+      .then((jobs: Array<{ id: string; outputs?: string[] }>) => {
+        const job = jobs.find((j) => j.id === project.voiceJobId);
+        setVoiceAudioUrl(job?.outputs?.[0] ?? null);
+      })
+      .catch(() => setVoiceAudioUrl(null));
+  }, [project.voiceJobId]);
 
   function togglePlay() {
     if (!isPlaying && currentSlideIndex >= slides.length - 1 && elapsed >= totalDuration - 0.2) {
@@ -255,7 +278,7 @@ export default function ComposePreview({ project, className = "" }: ComposePrevi
                       style={
                         currentSlide.kenBurns && isPlaying
                           ? {
-                              animation: `kenBurns ${currentSlide.duration}s ease-out forwards`,
+                              animation: `${kenBurnsAnimationName(currentSlide.kenBurnsDirection)} ${currentSlide.duration}s ease-out forwards`,
                             }
                           : {}
                       }
@@ -355,16 +378,28 @@ export default function ComposePreview({ project, className = "" }: ComposePrevi
         </p>
       </div>
 
-      {/* Hidden audio for voiceover */}
-      {project.voiceJobId && (
-        <audio ref={audioRef} preload="none" style={{ display: "none" }} />
+      {/* Hidden audio for voiceover preview */}
+      {voiceAudioUrl && (
+        <audio ref={audioRef} src={voiceAudioUrl} preload="auto" style={{ display: "none" }} />
       )}
 
-      {/* Ken Burns keyframe style */}
+      {/* Ken Burns keyframe styles — one per direction */}
       <style>{`
-        @keyframes kenBurns {
-          from { transform: scale(1); }
+        @keyframes kenBurnsZoomIn {
+          from { transform: scale(1) translate(0, 0); }
           to   { transform: scale(1.12) translate(2%, -2%); }
+        }
+        @keyframes kenBurnsZoomOut {
+          from { transform: scale(1.12) translate(-2%, 2%); }
+          to   { transform: scale(1) translate(0, 0); }
+        }
+        @keyframes kenBurnsPanLeft {
+          from { transform: scale(1.08) translateX(4%); }
+          to   { transform: scale(1.08) translateX(-4%); }
+        }
+        @keyframes kenBurnsPanRight {
+          from { transform: scale(1.08) translateX(-4%); }
+          to   { transform: scale(1.08) translateX(4%); }
         }
       `}</style>
     </div>

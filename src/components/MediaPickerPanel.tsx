@@ -4,6 +4,7 @@ import {
   Image as ImageIcon,
   Film,
   Mic,
+  Music,
   Search,
   Loader2,
   RefreshCw,
@@ -15,7 +16,7 @@ import {
 
 export interface MediaJob {
   id: string;
-  type: "image" | "video" | "voice";
+  type: "image" | "video" | "voice" | "music";
   prompt?: string;
   text?: string;
   outputPath?: string;
@@ -25,7 +26,7 @@ export interface MediaJob {
   createdAt?: string;
 }
 
-type FilterType = "all" | "image" | "video" | "voice";
+type FilterType = "all" | "image" | "video" | "voice" | "music";
 
 interface MediaPickerPanelProps {
   onSelect: (job: MediaJob) => void;
@@ -41,6 +42,7 @@ const FILTER_TABS: { key: FilterType; label: string; icon: React.ReactNode }[] =
   { key: "image", label: "Images", icon: <ImageIcon className="w-3.5 h-3.5" /> },
   { key: "video", label: "Videos", icon: <Film className="w-3.5 h-3.5" /> },
   { key: "voice", label: "Voice", icon: <Mic className="w-3.5 h-3.5" /> },
+  { key: "music", label: "Music", icon: <Music className="w-3.5 h-3.5" /> },
 ];
 
 // ─── Thumbnail helpers ────────────────────────────────────────────────────────
@@ -58,12 +60,13 @@ function getJobThumbnail(job: MediaJob): string | null {
 }
 
 function TypeBadge({ type }: { type: MediaJob["type"] }) {
-  const configs = {
+  const configs: Record<string, { label: string; className: string }> = {
     image: { label: "IMG", className: "bg-indigo-500/20 text-indigo-300 border-indigo-500/30" },
     video: { label: "VID", className: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30" },
     voice: { label: "VOX", className: "bg-amber-500/20 text-amber-300 border-amber-500/30" },
+    music: { label: "MUS", className: "bg-pink-500/20 text-pink-300 border-pink-500/30" },
   };
-  const c = configs[type];
+  const c = configs[type] ?? { label: type.slice(0, 3).toUpperCase(), className: "bg-zinc-500/20 text-zinc-300 border-zinc-500/30" };
   return (
     <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${c.className}`}>
       {c.label}
@@ -74,6 +77,7 @@ function TypeBadge({ type }: { type: MediaJob["type"] }) {
 function TypeIconPlaceholder({ type }: { type: MediaJob["type"] }) {
   if (type === "video") return <Film className="w-8 h-8 text-emerald-400/60" />;
   if (type === "voice") return <Mic className="w-8 h-8 text-amber-400/60" />;
+  if (type === "music") return <Music className="w-8 h-8 text-pink-400/60" />;
   return <ImageIcon className="w-8 h-8 text-indigo-400/60" />;
 }
 
@@ -102,6 +106,13 @@ export default function MediaPickerPanel({
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterType>(initialFilter ?? "all");
   const [search, setSearch] = useState("");
+
+  // Sync filter when parent changes pickerTarget (e.g., voice → only voice)
+  useEffect(() => {
+    if (initialFilter !== undefined) {
+      setFilter(initialFilter);
+    }
+  }, [initialFilter]);
 
   const fetchJobs = useCallback(async () => {
     setLoading(true);
@@ -177,9 +188,12 @@ export default function MediaPickerPanel({
             <button
               key={tab.key}
               onClick={() => setFilter(tab.key)}
+              disabled={initialFilter !== undefined && initialFilter !== "all" && tab.key !== initialFilter && tab.key !== "all"}
               className={`flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                 filter === tab.key
                   ? "bg-indigo-600 text-white"
+                  : initialFilter !== undefined && initialFilter !== "all" && tab.key !== initialFilter && tab.key !== "all"
+                  ? "bg-zinc-900/40 text-zinc-700 cursor-not-allowed"
                   : "bg-zinc-900 text-zinc-500 hover:text-white hover:bg-zinc-800"
               }`}
             >
@@ -188,6 +202,13 @@ export default function MediaPickerPanel({
             </button>
           ))}
         </div>
+
+        {/* Locked filter notice */}
+        {initialFilter !== undefined && initialFilter !== "all" && (
+          <p className="text-[10px] text-amber-400/70 mt-1.5 px-0.5">
+            Showing {initialFilter} items only for this selection.
+          </p>
+        )}
       </div>
 
       {/* Content */}

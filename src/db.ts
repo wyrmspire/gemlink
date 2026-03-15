@@ -424,6 +424,7 @@ export const mediaJobQueries = {
       ...opts,
       scores: JSON.stringify(opts.scores),
     }),
+  delete: (id: string) => db.prepare("DELETE FROM media_jobs WHERE id = ?").run(id),
 };
 
 // ── Collections ──────────────────────────────────────────────────────────────
@@ -625,6 +626,7 @@ export const composeJobQueries = {
       duration: opts.duration ?? null,
       updatedAt: opts.updatedAt ?? new Date().toISOString(),
     }),
+  delete: (id: string) => db.prepare("DELETE FROM compose_jobs WHERE id = ?").run(id),
 };
 
 // ── L2-S7 (W3): Idempotency ──────────────────────────────────────────────────

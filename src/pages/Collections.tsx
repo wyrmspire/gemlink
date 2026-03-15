@@ -14,6 +14,7 @@ import {
   RefreshCw,
   Check,
   Server,
+  Pencil,
 } from "lucide-react";
 import { useToast } from "../context/ToastContext";
 import { useProject } from "../context/ProjectContext";
@@ -104,6 +105,15 @@ async function apiReorderItems(collectionId: string, items: CollectionItem[]): P
   if (!res.ok) throw new Error(`PUT /api/collections/${collectionId}/items/reorder failed`);
 }
 
+async function apiRenameCollection(id: string, name: string): Promise<void> {
+  const res = await fetch(`/api/collections/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error(`PATCH /api/collections/${id} failed`);
+}
+
 interface LibraryJob {
   id: string;
   type: "image" | "video" | "voice";
@@ -128,6 +138,10 @@ export default function Collections() {
   const [libraryJobs, setLibraryJobs] = useState<LibraryJob[]>([]);
   const [libLoading, setLibLoading] = useState(false);
   const [showLibPicker, setShowLibPicker] = useState(false);
+
+  // ── W3 (Lane 5): Collection rename state ──
+  const [renamingColId, setRenamingColId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
 
   const projectCols = collections.filter((c) => c.projectId === projectId);
   const activeCol = collections.find((c) => c.id === activeColId) ?? projectCols[0] ?? null;
@@ -214,6 +228,38 @@ export default function Collections() {
       setActiveColId(remaining[0]?.id ?? null);
     }
     toast("Collection deleted.", "info");
+  }
+
+  // ── W3 (Lane 5): Rename collection ────────────────────────────────────────
+  function startRename(col: Collection) {
+    setRenamingColId(col.id);
+    setRenameValue(col.name);
+  }
+
+  async function commitRename() {
+    if (!renamingColId || !renameValue.trim()) {
+      setRenamingColId(null);
+      return;
+    }
+    const newName = renameValue.trim();
+
+    // Optimistic update locally first
+    const updated = collections.map((c) =>
+      c.id === renamingColId ? { ...c, name: newName, updatedAt: new Date().toISOString() } : c
+    );
+    setCollections(updated);
+    saveCollectionsLS(updated);
+    setRenamingColId(null);
+
+    // Attempt server sync
+    if (useServerApi) {
+      try {
+        await apiRenameCollection(renamingColId, newName);
+      } catch {
+        // Silent fail — local update already applied
+      }
+    }
+    toast(`Renamed to "${newName}".`, "success");
   }
 
   // ─── Reorder items ─────────────────────────────────────────────────────────
@@ -385,7 +431,37 @@ export default function Collections() {
                 <div className="flex items-center gap-3">
                   <FolderOpen className="w-5 h-5 text-indigo-400" />
                   <div>
-                    <h2 className="text-lg font-semibold text-white">{activeCol.name}</h2>
+                    {/* ── W3: Inline rename ── */}
+                    {renamingColId === activeCol.id ? (
+                      <input
+                        autoFocus
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitRename();
+                          if (e.key === "Escape") setRenamingColId(null);
+                        }}
+                        onBlur={commitRename}
+                        className="text-lg font-semibold bg-zinc-800 text-white px-2 py-0.5 rounded-lg border border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <h2
+                          className="text-lg font-semibold text-white cursor-pointer hover:text-indigo-300 transition-colors"
+                          onDoubleClick={() => startRename(activeCol)}
+                          title="Double-click to rename"
+                        >
+                          {activeCol.name}
+                        </h2>
+                        <button
+                          onClick={() => startRename(activeCol)}
+                          className="p-1 text-zinc-600 hover:text-indigo-400 transition-colors rounded-lg hover:bg-indigo-500/10"
+                          title="Rename collection"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                     <p className="text-xs text-zinc-500">{activeCol.items.length} items</p>
                   </div>
                 </div>

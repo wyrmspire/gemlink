@@ -39,6 +39,7 @@ interface SettingsModels {
   image: string;
   video: string;
   tts: string;
+  music: string;
   creative: string;
   boardroom: string;
 }
@@ -75,11 +76,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   models: {
     text:       import.meta.env.VITE_MODEL_TEXT       || "gemini-2.5-flash",
     multimodal: import.meta.env.VITE_MODEL_MULTIMODAL || "gemini-2.5-flash",
-    image:      import.meta.env.VITE_MODEL_IMAGE      || "imagen-3.0-generate-002",
-    video:      import.meta.env.VITE_MODEL_VIDEO      || "veo-2.0-generate-001",
+    image:      import.meta.env.VITE_MODEL_IMAGE      || "gemini-3-pro-image-preview",
+    video:      import.meta.env.VITE_MODEL_VIDEO      || "veo-3.1-generate-preview",
     tts:        import.meta.env.VITE_MODEL_TTS        || "gemini-2.5-flash-preview-tts",
+    music:      import.meta.env.VITE_MODEL_MUSIC      || "lyria-realtime-exp",
     creative:   import.meta.env.VITE_MODEL_CREATIVE   || "gemini-2.5-flash",
-    boardroom:  import.meta.env.VITE_MODEL_BOARDROOM  || "gemini-2.5-flash",
+    boardroom:  import.meta.env.VITE_MODEL_BOARDROOM  || "gemini-2.5-pro",
   },
   defaults: {
     imageCount: 1,
@@ -100,30 +102,36 @@ const DEFAULT_SETTINGS: AppSettings = {
 };
 
 // ── Model option lists ──────────────────────────────────────────────────────
+// Only verified, working models from https://ai.google.dev/gemini-api/docs/models
+// Updated 2026-03-15. Deprecated/shutdown models removed.
 
 const TEXT_MODELS = [
-  "gemini-2.0-flash",
-  "gemini-2.0-pro",
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
-  "gemini-3-flash-preview",
-  "gemini-3-pro-preview",
+  "gemini-2.5-flash",           // GA — best price-performance
+  "gemini-2.5-pro",             // GA — best reasoning
+  "gemini-2.5-flash-lite",      // GA — cheapest
+  "gemini-3-flash-preview",     // Preview — frontier performance
+  "gemini-3.1-pro-preview",     // Preview — most intelligent
+  "gemini-3.1-flash-lite-preview", // Preview — cost-efficient
 ];
 const IMAGE_MODELS = [
-  "imagen-3",
-  "imagen-3.1",
-  "imagen-4",
-  "gemini-2.5-flash-image",
-  "gemini-3-pro-image-preview",
+  "gemini-3.1-flash-image-preview", // Nano Banana 2 — recommended default
+  "gemini-3-pro-image-preview",     // Nano Banana Pro — studio quality, 4K
+  "gemini-2.5-flash-image",         // Nano Banana — fast/budget option
+  "imagen-4.0-generate-001",        // Imagen 4 — dedicated image model
+  "imagen-4.0-fast-generate-001",   // Imagen 4 Fast
 ];
 const VIDEO_MODELS = [
-  "veo-2.0-generate-001",
-  "veo-3.1-fast-generate-preview",
-  "veo-3.1-pro-preview",
+  "veo-3.1-generate-preview",       // Veo 3.1 — latest, cinematic + audio
+  "veo-3.1-fast-generate-preview",  // Veo 3.1 Fast — faster generation
+  "veo-3.0-generate-001",           // Veo 3.0 — stable
+  "veo-2.0-generate-001",           // Veo 2.0 — GA, budget option
 ];
 const TTS_MODELS = [
-  "gemini-2.5-flash-preview-tts",
-  "gemini-2.5-pro-preview-tts",
+  "gemini-2.5-flash-preview-tts",   // Fast, low-latency TTS
+  "gemini-2.5-pro-preview-tts",     // High-fidelity TTS (podcasts, audiobooks)
+];
+const MUSIC_MODELS = [
+  "lyria-realtime-exp",             // Lyria RealTime — WebSocket streaming music
 ];
 
 const MODEL_OPTIONS: Record<keyof SettingsModels, string[]> = {
@@ -132,6 +140,7 @@ const MODEL_OPTIONS: Record<keyof SettingsModels, string[]> = {
   image:      IMAGE_MODELS,
   video:      VIDEO_MODELS,
   tts:        TTS_MODELS,
+  music:      MUSIC_MODELS,
   creative:   TEXT_MODELS,
   boardroom:  TEXT_MODELS,
 };
@@ -142,6 +151,7 @@ const MODEL_LABELS: Record<keyof SettingsModels, { label: string; description: s
   image:      { label: "Image Model",      description: "Generates images from prompts" },
   video:      { label: "Video Model",      description: "Generates video clips" },
   tts:        { label: "TTS Model",        description: "Text-to-speech voice generation" },
+  music:      { label: "Music Model",      description: "Background music & native audio" },
   creative:   { label: "Creative Model",   description: "Prompt expansion, variants" },
   boardroom:  { label: "Boardroom Model",  description: "Multi-turn discussion sessions" },
 };

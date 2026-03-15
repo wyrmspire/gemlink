@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+
 import { motion, AnimatePresence } from "motion/react";
 import {
   Clapperboard,
@@ -16,6 +17,9 @@ import {
   AlertTriangle,
   CheckCircle2,
   WifiOff,
+  RefreshCw,
+  Trash2,
+  RotateCcw,
 } from "lucide-react";
 import { useProject } from "../context/ProjectContext";
 import { useToast } from "../context/ToastContext";
@@ -142,6 +146,55 @@ function DropZone({
   );
 }
 
+// ── Confirm clear modal (W4 Lane 5) ─────────────────────────────────────────────
+
+function ConfirmClearModal({
+  onConfirm,
+  onCancel,
+}: {
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 10 }}
+        className="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl"
+      >
+        <div className="flex items-center gap-3 mb-4">
+          <div className="p-2.5 rounded-xl bg-red-500/15 text-red-400">
+            <Trash2 className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-base font-semibold text-white">Start Fresh?</h2>
+            <p className="text-xs text-zinc-400">This will clear all slides, audio, and settings.</p>
+          </div>
+        </div>
+        <p className="text-sm text-zinc-400 mb-6">
+          Your current composition cannot be recovered after clearing. Are you sure you want to start over?
+        </p>
+        <div className="flex gap-3">
+          <button
+            onClick={onConfirm}
+            className="flex-1 flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-xl transition-colors text-sm"
+          >
+            <RotateCcw className="w-4 h-4" />
+            Clear Everything
+          </button>
+          <button
+            onClick={onCancel}
+            className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium py-2.5 rounded-xl transition-colors text-sm"
+          >
+            Keep Working
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 // ─── Main Compose page ────────────────────────────────────────────────────────
 
 export default function Compose() {
@@ -157,11 +210,41 @@ export default function Compose() {
   const [showPreview, setShowPreview] = useState(false);
   const [rendering, setRendering] = useState(false);
   const [renderJobId, setRenderJobId] = useState<string | null>(null);
+  const [showClearModal, setShowClearModal] = useState(false);  // W4 Lane5
 
   // For merge/captions drop zone pickers
   const [pickerTarget, setPickerTarget] = useState<
     "slide" | "voice" | "video" | "audio" | "music" | "watermark" | null
   >(null);
+
+  // ── Audio preview URLs (W2) ──────────────────────────────────────────────
+  // Map from jobId → resolved audio URL (output[0] from history)
+  const [audioUrls, setAudioUrls] = useState<Record<string, string>>({});
+  const fetchedAudioIds = useRef<Set<string>>(new Set());
+
+  const resolveAudioUrl = useCallback(async (jobId: string) => {
+    if (fetchedAudioIds.current.has(jobId)) return;
+    fetchedAudioIds.current.add(jobId);
+    try {
+      const res = await fetch("/api/media/history", { cache: "no-store" });
+      if (!res.ok) return;
+      const jobs: MediaJob[] = await res.json();
+      const job = jobs.find((j) => j.id === jobId);
+      const url = job?.outputs?.[0] ?? job?.outputPath;
+      if (url) setAudioUrls((prev) => ({ ...prev, [jobId]: url }));
+    } catch {
+      console.error("[compose] Failed to resolve audio URL for job", jobId);
+    }
+  }, []);
+
+  // Resolve URLs whenever voice/music jobIds change
+  useEffect(() => {
+    if (project.voiceJobId) resolveAudioUrl(project.voiceJobId);
+  }, [project.voiceJobId, resolveAudioUrl]);
+
+  useEffect(() => {
+    if (project.musicJobId) resolveAudioUrl(project.musicJobId);
+  }, [project.musicJobId, resolveAudioUrl]);
 
   // ── Persistence ──────────────────────────────────────────────────────────
 
@@ -174,6 +257,36 @@ export default function Compose() {
       }
     } catch { /* ignore */ }
   }, [storageKey]);
+
+  // ── W3: Read "Send to Compose" from sessionStorage on mount ───────────────
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem("compose-send-item");
+      if (!raw) return;
+      sessionStorage.removeItem("compose-send-item");
+      const job = JSON.parse(raw) as MediaJob;
+      // Route by type
+      if (job.type === "voice") {
+        patch({ voiceJobId: job.id });
+        toast("Voiceover added from Library.", "success");
+      } else if (job.type === "music") {
+        patch({ musicJobId: job.id });
+        toast("Background music added from Library.", "success");
+      } else {
+        // image or video → add as slide
+        const slide = jobToSlide(job);
+        setProject((prev) => {
+          const next = { ...prev, slides: [...prev.slides, slide] };
+          saveProject(next);
+          return next;
+        });
+        toast(`${job.type === "video" ? "Video" : "Image"} added as slide from Library.`, "success");
+      }
+    } catch {
+      console.error("[compose] Failed to read compose-send-item from sessionStorage");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const saveProject = useCallback(
     (next: ComposeProject) => {
@@ -238,6 +351,33 @@ export default function Compose() {
   function deleteSlide(id: string) {
     patch({ slides: project.slides.filter((s) => s.id !== id) });
     toast("Slide removed.", "info");
+  }
+
+  function duplicateSlide(id: string) {
+    const idx = project.slides.findIndex((s) => s.id === id);
+    if (idx < 0) return;
+    const clone = { ...project.slides[idx], id: `slide_${Math.random().toString(36).slice(2, 10)}` };
+    const next = [...project.slides];
+    next.splice(idx + 1, 0, clone);
+    patch({ slides: next });
+    toast("Slide duplicated.", "success");
+  }
+
+  function setAllDurations(duration: number) {
+    patch({ slides: project.slides.map((s) => ({ ...s, duration })) });
+  }
+
+  function setAllTransitions(transition: string) {
+    patch({ slides: project.slides.map((s) => ({ ...s, transition })) });
+  }
+
+  // ── W4 (Lane 5): Clear composition ────────────────────────────────────
+  function handleClearAll() {
+    const fresh = defaultProject();
+    setProject(fresh);
+    try { localStorage.removeItem(storageKey); } catch { /* ignore */ }
+    setShowClearModal(false);
+    toast("Composition cleared. Starting fresh!", "info");
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -353,6 +493,13 @@ export default function Compose() {
             <MediaPickerPanel
               onSelect={handleMediaSelect}
               projectId={activeProject?.id}
+              filterType={
+                pickerTarget === "voice" ? "voice"
+                : pickerTarget === "music" ? "music"
+                : pickerTarget === "video" ? "video"
+                : pickerTarget === "watermark" ? "image"
+                : undefined
+              }
               className="h-full"
             />
           </motion.aside>
@@ -385,6 +532,16 @@ export default function Compose() {
             placeholder="Composition title…"
           />
 
+          {/* W4 (Lane 5): Start Fresh button */}
+          <button
+            onClick={() => setShowClearModal(true)}
+            title="Clear everything and start fresh"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-zinc-500 hover:text-red-400 hover:bg-red-400/10 transition-colors text-xs font-medium border border-zinc-800 shrink-0"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Start Fresh</span>
+          </button>
+
           {/* Mode tabs */}
           <div className="flex border border-zinc-800 rounded-xl overflow-hidden bg-zinc-900 shrink-0">
             {MODE_TABS.map((tab) => (
@@ -411,12 +568,47 @@ export default function Compose() {
             <>
               {/* Slide timeline */}
               <section className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4">
-                <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
                   <h2 className="text-sm font-semibold text-white flex items-center gap-2">
                     <Film className="w-4 h-4 text-indigo-400" />
                     Slide Storyboard
                   </h2>
-                  <span className="text-xs text-zinc-500">
+                  {project.slides.length > 1 && (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {/* Set All Durations */}
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] text-zinc-600">All:</span>
+                        {[2, 3, 5].map((d) => (
+                          <button
+                            key={d}
+                            onClick={() => setAllDurations(d)}
+                            className="text-[10px] px-1.5 py-0.5 rounded border border-zinc-700 text-zinc-500 hover:text-white hover:border-zinc-500 transition-colors"
+                            title={`Set all slides to ${d}s`}
+                          >
+                            {d}s
+                          </button>
+                        ))}
+                      </div>
+                      {/* Set All Transitions */}
+                      <select
+                        onChange={(e) => e.target.value && setAllTransitions(e.target.value)}
+                        defaultValue=""
+                        className="text-[10px] bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-zinc-500 hover:text-white cursor-pointer focus:outline-none"
+                        title="Apply one transition to all slides"
+                      >
+                        <option value="" disabled>All transitions…</option>
+                        <option value="fade">Fade</option>
+                        <option value="fadeblack">Fade Black</option>
+                        <option value="dissolve">Dissolve</option>
+                        <option value="slideright">Slide Right</option>
+                        <option value="slideleft">Slide Left</option>
+                        <option value="slideup">Slide Up</option>
+                        <option value="smoothleft">Smooth Left</option>
+                        <option value="wiperight">Wipe Right</option>
+                      </select>
+                    </div>
+                  )}
+                  <span className="text-xs text-zinc-500 ml-auto">
                     {project.slides.length} slide{project.slides.length !== 1 ? "s" : ""} ·{" "}
                     {project.slides.reduce((s, sl) => s + sl.duration, 0).toFixed(1)}s
                   </span>
@@ -426,6 +618,7 @@ export default function Compose() {
                   onReorder={reorderSlides}
                   onUpdateSlide={updateSlide}
                   onDeleteSlide={deleteSlide}
+                  onDuplicateSlide={duplicateSlide}
                   onAddSlide={() => setPickerTarget("slide")}
                 />
               </section>
@@ -442,14 +635,24 @@ export default function Compose() {
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-medium text-zinc-300">Voiceover</span>
-                      {project.voiceJobId && (
-                        <button
-                          onClick={() => patch({ voiceJobId: undefined })}
-                          className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
-                        >
-                          Remove
-                        </button>
-                      )}
+                      <div className="flex gap-2">
+                        {project.voiceJobId && (
+                          <>
+                            <button
+                              onClick={() => setPickerTarget("voice")}
+                              className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                            >
+                              Swap
+                            </button>
+                            <button
+                              onClick={() => patch({ voiceJobId: undefined })}
+                              className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
+                            >
+                              Remove
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
                     <DropZone
                       label="Select Voiceover"
@@ -458,6 +661,24 @@ export default function Compose() {
                       selectedJobId={project.voiceJobId}
                       onSelect={() => setPickerTarget("voice")}
                     />
+                    {/* W2: Audio preview player */}
+                    {project.voiceJobId && audioUrls[project.voiceJobId] && (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[10px] text-zinc-500">Preview voiceover:</span>
+                        <audio
+                          controls
+                          src={audioUrls[project.voiceJobId]}
+                          className="w-full h-8"
+                          style={{ colorScheme: "dark" }}
+                        />
+                      </div>
+                    )}
+                    {project.voiceJobId && !audioUrls[project.voiceJobId] && (
+                      <div className="flex items-center gap-1.5 text-[10px] text-zinc-600">
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                        Resolving audio…
+                      </div>
+                    )}
                     {project.voiceJobId && (
                       <div className="flex items-center gap-3">
                         <span className="text-xs text-zinc-400 w-10">Vol:</span>
@@ -479,14 +700,24 @@ export default function Compose() {
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-medium text-zinc-300">Background Music</span>
-                      {project.musicJobId && (
-                        <button
-                          onClick={() => patch({ musicJobId: undefined })}
-                          className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
-                        >
-                          Remove
-                        </button>
-                      )}
+                      <div className="flex gap-2">
+                        {project.musicJobId && (
+                          <>
+                            <button
+                              onClick={() => setPickerTarget("music")}
+                              className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                            >
+                              Swap
+                            </button>
+                            <button
+                              onClick={() => patch({ musicJobId: undefined })}
+                              className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
+                            >
+                              Remove
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
                     <DropZone
                       label="Select Music"
@@ -495,6 +726,24 @@ export default function Compose() {
                       selectedJobId={project.musicJobId}
                       onSelect={() => setPickerTarget("music")}
                     />
+                    {/* W2: Audio preview player */}
+                    {project.musicJobId && audioUrls[project.musicJobId] && (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[10px] text-zinc-500">Preview music:</span>
+                        <audio
+                          controls
+                          src={audioUrls[project.musicJobId]}
+                          className="w-full h-8"
+                          style={{ colorScheme: "dark" }}
+                        />
+                      </div>
+                    )}
+                    {project.musicJobId && !audioUrls[project.musicJobId] && (
+                      <div className="flex items-center gap-1.5 text-[10px] text-zinc-600">
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                        Resolving audio…
+                      </div>
+                    )}
                     {project.musicJobId && (
                       <div className="flex items-center gap-3">
                         <span className="text-xs text-zinc-400 w-10">Vol:</span>
@@ -550,6 +799,32 @@ export default function Compose() {
                     selectedJobId={project.voiceJobId}
                     onSelect={() => setPickerTarget("voice")}
                   />
+                  {/* W4: Swap button for merge mode voiceover */}
+                  {project.voiceJobId && (
+                    <div className="flex items-center gap-2 -mt-2">
+                      <button
+                        onClick={() => setPickerTarget("voice")}
+                        className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                      >
+                        Swap
+                      </button>
+                      <button
+                        onClick={() => patch({ voiceJobId: undefined })}
+                        className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  )}
+                  {/* W2: Audio preview in merge mode */}
+                  {project.voiceJobId && audioUrls[project.voiceJobId] && (
+                    <audio
+                      controls
+                      src={audioUrls[project.voiceJobId]}
+                      className="w-full h-8"
+                      style={{ colorScheme: "dark" }}
+                    />
+                  )}
                   {project.voiceJobId && (
                     <div className="flex items-center gap-3 mt-2">
                        <span className="text-xs text-zinc-400 w-10">Vol:</span>
@@ -575,6 +850,32 @@ export default function Compose() {
                     selectedJobId={project.musicJobId}
                     onSelect={() => setPickerTarget("music")}
                   />
+                  {/* W4: Swap button for merge mode music */}
+                  {project.musicJobId && (
+                    <div className="flex items-center gap-2 -mt-2">
+                      <button
+                        onClick={() => setPickerTarget("music")}
+                        className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                      >
+                        Swap
+                      </button>
+                      <button
+                        onClick={() => patch({ musicJobId: undefined })}
+                        className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  )}
+                  {/* W2: Audio preview in merge mode */}
+                  {project.musicJobId && audioUrls[project.musicJobId] && (
+                    <audio
+                      controls
+                      src={audioUrls[project.musicJobId]}
+                      className="w-full h-8"
+                      style={{ colorScheme: "dark" }}
+                    />
+                  )}
                   {project.musicJobId && (
                     <div className="flex items-center gap-3 mt-2">
                        <span className="text-xs text-zinc-400 w-10">Vol:</span>
@@ -862,6 +1163,16 @@ export default function Compose() {
           </div>
         </div>
       </div>
+
+      {/* W4 (Lane 5): Confirm clear modal */}
+      <AnimatePresence>
+        {showClearModal && (
+          <ConfirmClearModal
+            onConfirm={handleClearAll}
+            onCancel={() => setShowClearModal(false)}
+          />
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

@@ -18,6 +18,7 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   Plus,
   X,
+  Copy,
   GripHorizontal,
   Image as ImageIcon,
   Film,
@@ -34,10 +35,11 @@ export interface Slide {
   id: string;
   jobId: string;
   thumbnail: string | null;
-  jobType?: "image" | "video" | "voice";
+  jobType?: "image" | "video" | "voice" | "music";
   duration: number;
   transition: string;
   kenBurns: boolean;
+  kenBurnsDirection?: "zoom-in" | "zoom-out" | "pan-left" | "pan-right";
   textOverlay?: {
     text: string;
     position: "top" | "center" | "bottom";
@@ -49,6 +51,7 @@ interface SlideTimelineProps {
   onReorder: (slides: Slide[]) => void;
   onUpdateSlide: (id: string, patch: Partial<Slide>) => void;
   onDeleteSlide: (id: string) => void;
+  onDuplicateSlide: (id: string) => void;
   onAddSlide: () => void;
 }
 
@@ -61,6 +64,7 @@ interface SortableSlideCardProps {
   onToggleExpand: () => void;
   onUpdate: (patch: Partial<Slide>) => void;
   onDelete: () => void;
+  onDuplicate: () => void;
   isLast: boolean;
 }
 
@@ -71,6 +75,7 @@ function SortableSlideCard({
   onToggleExpand,
   onUpdate,
   onDelete,
+  onDuplicate,
   isLast,
 }: SortableSlideCardProps) {
   const {
@@ -132,6 +137,18 @@ function SortableSlideCard({
             </div>
           )}
 
+          {/* Duplicate button */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDuplicate();
+            }}
+            className="absolute top-0.5 left-0.5 hidden group-hover:flex w-5 h-5 bg-zinc-700 hover:bg-indigo-600 rounded text-white items-center justify-center transition-colors"
+            title="Duplicate slide"
+          >
+            <Copy className="w-3 h-3" />
+          </button>
+
           {/* Delete button */}
           <button
             onClick={(e) => {
@@ -192,11 +209,26 @@ function SlideSettingsPanel({ slide, onUpdate }: SlidePanelProps) {
       exit={{ opacity: 0, height: 0 }}
       className="mt-3 p-4 bg-zinc-950/80 border border-zinc-800 rounded-2xl overflow-hidden space-y-4"
     >
-      {/* Duration slider */}
+      {/* Duration slider + presets */}
       <div>
         <div className="flex items-center justify-between mb-1.5">
           <label className="text-xs uppercase tracking-wider text-zinc-500">Duration</label>
-          <span className="text-xs text-zinc-300 font-mono">{slide.duration}s</span>
+          <div className="flex items-center gap-1">
+            {[2, 3, 5].map((d) => (
+              <button
+                key={d}
+                onClick={() => onUpdate({ duration: d })}
+                className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                  slide.duration === d
+                    ? "bg-indigo-600 border-indigo-500 text-white"
+                    : "border-zinc-700 text-zinc-500 hover:text-white hover:border-zinc-500"
+                }`}
+              >
+                {d}s
+              </button>
+            ))}
+            <span className="text-xs text-zinc-300 font-mono ml-1">{slide.duration}s</span>
+          </div>
         </div>
         <input
           type="range"
@@ -219,31 +251,50 @@ function SlideSettingsPanel({ slide, onUpdate }: SlidePanelProps) {
         onChange={(t) => onUpdate({ transition: t })}
       />
 
-      {/* Ken Burns toggle */}
-      <label className="flex items-center gap-3 cursor-pointer group">
-        <div className="relative">
-          <input
-            type="checkbox"
-            checked={slide.kenBurns}
-            onChange={(e) => onUpdate({ kenBurns: e.target.checked })}
-            className="sr-only"
-          />
-          <div
-            className={`w-10 h-5 rounded-full transition-colors ${
-              slide.kenBurns ? "bg-indigo-600" : "bg-zinc-700"
-            }`}
-          />
-          <div
-            className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
-              slide.kenBurns ? "translate-x-5" : "translate-x-0"
-            }`}
-          />
-        </div>
-        <div>
-          <span className="text-sm font-medium text-zinc-200">Ken Burns effect</span>
-          <p className="text-[11px] text-zinc-600">Slow zoom/pan on static image</p>
-        </div>
-      </label>
+      {/* Ken Burns toggle + direction */}
+      <div className="space-y-2">
+        <label className="flex items-center gap-3 cursor-pointer group">
+          <div className="relative">
+            <input
+              type="checkbox"
+              checked={slide.kenBurns}
+              onChange={(e) => onUpdate({ kenBurns: e.target.checked })}
+              className="sr-only"
+            />
+            <div
+              className={`w-10 h-5 rounded-full transition-colors ${
+                slide.kenBurns ? "bg-indigo-600" : "bg-zinc-700"
+              }`}
+            />
+            <div
+              className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                slide.kenBurns ? "translate-x-5" : "translate-x-0"
+              }`}
+            />
+          </div>
+          <div>
+            <span className="text-sm font-medium text-zinc-200">Ken Burns effect</span>
+            <p className="text-[11px] text-zinc-600">Slow zoom/pan on static image</p>
+          </div>
+        </label>
+        {slide.kenBurns && (
+          <div className="flex gap-1.5 pl-[52px]">
+            {(["zoom-in", "zoom-out", "pan-left", "pan-right"] as const).map((dir) => (
+              <button
+                key={dir}
+                onClick={() => onUpdate({ kenBurnsDirection: dir })}
+                className={`text-[10px] px-2 py-1 rounded-lg border capitalize transition-colors ${
+                  (slide.kenBurnsDirection ?? "zoom-in") === dir
+                    ? "bg-indigo-600/30 border-indigo-500/60 text-indigo-300"
+                    : "border-zinc-800 text-zinc-500 hover:text-white"
+                }`}
+              >
+                {dir.replace("-", " ")}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Text overlay */}
       <div>
@@ -299,6 +350,7 @@ export default function SlideTimeline({
   onReorder,
   onUpdateSlide,
   onDeleteSlide,
+  onDuplicateSlide,
   onAddSlide,
 }: SlideTimelineProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -366,6 +418,7 @@ export default function SlideTimeline({
                     onDeleteSlide(slide.id);
                     if (expandedId === slide.id) setExpandedId(null);
                   }}
+                  onDuplicate={() => onDuplicateSlide(slide.id)}
                   isLast={i === slides.length - 1}
                 />
               ))}

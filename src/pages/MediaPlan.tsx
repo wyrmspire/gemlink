@@ -39,6 +39,8 @@ export interface GenerationConfig {
   aspectRatio: string;
   count: number;
   negativePrompt: string;
+  voice?: string;
+  duration?: number;
 }
 
 export interface MediaPlanItem {
@@ -75,13 +77,15 @@ const STATUS_ORDER: MediaPlanItem["status"][] = [
 
 // ── L3-S4.5: Use real model names (env vars with stable fallbacks)
 const MODELS = [
-  { value: import.meta.env.VITE_MODEL_IMAGE || "imagen-3.0-generate-002", label: "Imagen 3 (Quality)" },
-  { value: "imagen-4", label: "Imagen 4 (Latest)" },
-  { value: "gemini-2.0-flash-image", label: "Flash Image 2.0 (Fast)" },
-  { value: import.meta.env.VITE_MODEL_VIDEO || "veo-2.0-generate-001", label: "Veo 2.0" },
+  { value: import.meta.env.VITE_MODEL_IMAGE || "gemini-3-pro-image-preview", label: "Nano Banana Pro (Default)" },
+  { value: "gemini-3.1-flash-image-preview", label: "Nano Banana 2 (Fast)" },
+  { value: "gemini-2.5-flash-image", label: "Nano Banana (Budget)" },
+  { value: "imagen-4.0-generate-001", label: "Imagen 4" },
+  { value: import.meta.env.VITE_MODEL_VIDEO || "veo-3.1-generate-preview", label: "Veo 3.1" },
   { value: "veo-3.1-fast-generate-preview", label: "Veo 3.1 Fast" },
+  { value: "veo-2.0-generate-001", label: "Veo 2.0 (Budget)" },
   { value: import.meta.env.VITE_MODEL_TTS || "gemini-2.5-flash-preview-tts", label: "Gemini TTS (Voice)" },
-  { value: "music-1.0-generate-preview", label: "MusicGen (Latest)" },
+  { value: "gemini-2.5-pro-preview-tts", label: "Gemini Pro TTS (Voice)" },
 ];
 
 const SIZES = [
@@ -112,11 +116,13 @@ function planId() {
 
 function defaultConfig(): GenerationConfig {
   return {
-    model: import.meta.env.VITE_MODEL_IMAGE || "imagen-3.0-generate-002", // L3-S4.5: real model
+    model: import.meta.env.VITE_MODEL_IMAGE || "gemini-3-pro-image-preview",
     size: "1K",
     aspectRatio: "1:1",
     count: 1,
     negativePrompt: "",
+    voice: "Kore",
+    duration: 30,
   };
 }
 
@@ -1191,70 +1197,114 @@ export default function MediaPlan() {
                             <p className="text-xs text-indigo-400 font-medium mb-3 flex items-center gap-1.5">
                               <Settings2 className="w-3.5 h-3.5" /> Generation Settings
                             </p>
-                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                              {/* Model */}
-                              <div>
-                                <label className="block text-xs text-zinc-500 mb-1">Model</label>
-                                <select
-                                  value={item.generationConfig.model}
-                                  onChange={(e) => patchItemConfig(item.id, { model: e.target.value })}
-                                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                >
-                                  {MODELS.map((m) => (
-                                    <option key={m.value} value={m.value}>{m.label}</option>
-                                  ))}
-                                </select>
+                            {item.type === "voice" ? (
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                <div>
+                                  <label className="block text-xs text-zinc-500 mb-1">Voice</label>
+                                  <select
+                                    value={item.generationConfig.voice || "Kore"}
+                                    onChange={(e) => patchItemConfig(item.id, { voice: e.target.value })}
+                                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                  >
+                                    {["Puck", "Charon", "Kore", "Fenrir", "Zephyr"].map((v) => (
+                                      <option key={v} value={v}>{v}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div>
+                                  <label className="block text-xs text-zinc-500 mb-1">Variants</label>
+                                  <select
+                                    value={item.generationConfig.count}
+                                    onChange={(e) => patchItemConfig(item.id, { count: parseInt(e.target.value) })}
+                                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                  >
+                                    {[1, 2, 3, 4].map((n) => (
+                                      <option key={n} value={n}>{n}</option>
+                                    ))}
+                                  </select>
+                                </div>
                               </div>
-                              {/* Size */}
-                              <div>
-                                <label className="block text-xs text-zinc-500 mb-1">Size</label>
-                                <select
-                                  value={item.generationConfig.size}
-                                  onChange={(e) => patchItemConfig(item.id, { size: e.target.value })}
-                                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                >
-                                  {SIZES.map((s) => (
-                                    <option key={s.value} value={s.value}>{s.label}</option>
-                                  ))}
-                                </select>
+                            ) : item.type === "music" ? (
+                              <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                  <label className="block text-xs text-zinc-500 mb-1">Duration (seconds)</label>
+                                  <input
+                                    type="number"
+                                    min={5} max={120} step={5}
+                                    value={item.generationConfig.duration || 30}
+                                    onChange={(e) => patchItemConfig(item.id, { duration: parseInt(e.target.value) || 30 })}
+                                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                  />
+                                </div>
                               </div>
-                              {/* Aspect Ratio */}
-                              <div>
-                                <label className="block text-xs text-zinc-500 mb-1">Aspect Ratio</label>
-                                <select
-                                  value={item.generationConfig.aspectRatio}
-                                  onChange={(e) => patchItemConfig(item.id, { aspectRatio: e.target.value })}
-                                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                >
-                                  {ASPECT_RATIOS.map((ar) => (
-                                    <option key={ar.value} value={ar.value}>{ar.label}</option>
-                                  ))}
-                                </select>
-                              </div>
-                              {/* Count */}
-                              <div>
-                                <label className="block text-xs text-zinc-500 mb-1">Variants</label>
-                                <select
-                                  value={item.generationConfig.count}
-                                  onChange={(e) => patchItemConfig(item.id, { count: parseInt(e.target.value) })}
-                                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                >
-                                  {[1, 2, 3, 4].map((n) => (
-                                    <option key={n} value={n}>{n}</option>
-                                  ))}
-                                </select>
-                              </div>
-                            </div>
-                            {/* Negative prompt */}
-                            <div className="mt-3">
-                              <label className="block text-xs text-zinc-500 mb-1">Negative Prompt</label>
-                              <input
-                                value={item.generationConfig.negativePrompt}
-                                onChange={(e) => patchItemConfig(item.id, { negativePrompt: e.target.value })}
-                                placeholder="e.g. no text, no watermarks, no blurry…"
-                                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                              />
-                            </div>
+                            ) : (
+                              <>
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                  {/* Model */}
+                                  <div>
+                                    <label className="block text-xs text-zinc-500 mb-1">Model</label>
+                                    <select
+                                      value={item.generationConfig.model}
+                                      onChange={(e) => patchItemConfig(item.id, { model: e.target.value })}
+                                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                    >
+                                      {MODELS.filter(m => item.type === "video" ? m.value.includes("veo") : !m.value.includes("veo") && !m.value.includes("tts")).map((m) => (
+                                        <option key={m.value} value={m.value}>{m.label}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  {/* Size */}
+                                  <div>
+                                    <label className="block text-xs text-zinc-500 mb-1">Size</label>
+                                    <select
+                                      value={item.generationConfig.size}
+                                      onChange={(e) => patchItemConfig(item.id, { size: e.target.value })}
+                                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                    >
+                                      {SIZES.map((s) => (
+                                        <option key={s.value} value={s.value}>{s.label}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  {/* Aspect Ratio */}
+                                  <div>
+                                    <label className="block text-xs text-zinc-500 mb-1">Aspect Ratio</label>
+                                    <select
+                                      value={item.generationConfig.aspectRatio}
+                                      onChange={(e) => patchItemConfig(item.id, { aspectRatio: e.target.value })}
+                                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                    >
+                                      {ASPECT_RATIOS.map((ar) => (
+                                        <option key={ar.value} value={ar.value}>{ar.label}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  {/* Count */}
+                                  <div>
+                                    <label className="block text-xs text-zinc-500 mb-1">Variants</label>
+                                    <select
+                                      value={item.generationConfig.count}
+                                      onChange={(e) => patchItemConfig(item.id, { count: parseInt(e.target.value) })}
+                                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                    >
+                                      {[1, 2, 3, 4].map((n) => (
+                                        <option key={n} value={n}>{n}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </div>
+                                {/* Negative prompt */}
+                                <div className="mt-3">
+                                  <label className="block text-xs text-zinc-500 mb-1">Negative Prompt</label>
+                                  <input
+                                    value={item.generationConfig.negativePrompt}
+                                    onChange={(e) => patchItemConfig(item.id, { negativePrompt: e.target.value })}
+                                    placeholder="e.g. no text, no watermarks, no blurry…"
+                                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                  />
+                                </div>
+                              </>
+                            )}
                           </div>
                         </motion.div>
                       )}

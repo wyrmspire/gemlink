@@ -9,21 +9,21 @@
 
 export const models = {
   /** Text/JSON reasoning — plan suggest, scoring, grading, strategy analysis */
-  text:        process.env.MODEL_TEXT        || "gemini-2.0-flash", // Updated to Flash 2.0
+  text:        process.env.MODEL_TEXT        || "gemini-2.5-flash",
   /** Multimodal analysis — video analysis, image labeling, scoring with images */
-  multimodal:  process.env.MODEL_MULTIMODAL  || "gemini-2.0-flash",
-  /** Image generation (Imagen 4 or Flash Image) */
-  image:       process.env.MODEL_IMAGE       || "imagen-3", 
-  /** Video generation (Veo 2.0 or 3.1) */
-  video:       process.env.MODEL_VIDEO       || "veo-2.0-generate-001",
-  /** Text-to-speech / voice generation (Preview) */
+  multimodal:  process.env.MODEL_MULTIMODAL  || "gemini-2.5-flash",
+  /** Image generation — Nano Banana Pro (studio quality, 4K, reasoning) */
+  image:       process.env.MODEL_IMAGE       || "gemini-3-pro-image-preview",
+  /** Video generation (Veo 3.1 — latest cinematic quality) */
+  video:       process.env.MODEL_VIDEO       || "veo-3.1-generate-preview",
+  /** Text-to-speech / voice generation */
   tts:         process.env.MODEL_TTS         || "gemini-2.5-flash-preview-tts",
   /** Prompt expansion and creative text generation */
   creative:    process.env.MODEL_CREATIVE    || "gemini-2.5-flash",
-  /** Boardroom multi-turn chat sessions (Pro for better context) */
+  /** Boardroom multi-turn chat sessions (Pro for best reasoning) */
   boardroom:   process.env.MODEL_BOARDROOM   || "gemini-2.5-pro",
-  /** Background music generation */
-  music:       process.env.MODEL_MUSIC       || "music-1.0-generate-preview",
+  /** Music generation — Lyria uses WebSocket streaming via ai.live.music.connect() */
+  music:       process.env.MODEL_MUSIC       || "lyria-realtime-exp",
 } as const;
 
 // ─── Rate Limits (RPM: Requests Per Minute, IPM: Images Per Minute) ───────────

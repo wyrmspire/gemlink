@@ -190,6 +190,17 @@ try {
 - Cross-page data transfer: `sessionStorage` (ephemeral, cleared on tab close)
 - Server-side persistence: `data/` directory for JSON, `jobs/` for media files
 
+### SOP-15: Model Synchronization Issues
+**Learned from**: Sprint 4.5 → Media generation failed because `MediaPlan.tsx` hardcoded fallback strings that conflicted with `Settings.tsx`, `data/settings.json`, and `config.ts`.
+- ❌ Do not define a dictionary of fallback models inside feature components like `MediaPlan.tsx`.
+- ✅ Rely entirely on the server's source of truth (`config.ts`) or properly pass down centralized variables from a context provider.
+- If an API returns `404 NOT_FOUND` during model generation, it's almost always a desynchronization between a hardcoded frontend fallback and the backend's allowed models list.
+
+### SOP-16: Board Overwritten Mid-Sprint
+**Learned from**: Sprint 7 → While executing Sprint 7 Lane 2 and Lane 3, `board.md` was overwritten with Sprint 5 context by an external anomaly.
+- ❌ Do not assume the board always retains your team's context if multiple external checkout events are happening.
+- ✅ Always append your Execution Report to `board.md` and add a note to `agents.md` if you find the board was hijacked by a different sprint version. No pushing/pulling from git or using git checkout!
+
 ---
 
 ## Commands
