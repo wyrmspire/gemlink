@@ -80,7 +80,7 @@ db.exec(/* sql */ `
   -- Binary outputs remain on disk; this table is the queryable index.
   CREATE TABLE IF NOT EXISTS media_jobs (
     id            TEXT    PRIMARY KEY,      -- e.g. "img_abc123"
-    projectId     TEXT    REFERENCES projects(id) ON DELETE SET NULL,
+    projectId     TEXT,
     type          TEXT    NOT NULL CHECK(type IN ('image', 'video', 'voice', 'music')),
     status        TEXT    NOT NULL CHECK(status IN ('pending', 'completed', 'failed')),
     prompt        TEXT,
@@ -106,7 +106,7 @@ db.exec(/* sql */ `
   -- ── Collections ───────────────────────────────────────────────────────────
   CREATE TABLE IF NOT EXISTS collections (
     id        TEXT    PRIMARY KEY,           -- e.g. "col_abc123"
-    projectId TEXT    REFERENCES projects(id) ON DELETE CASCADE,
+    projectId TEXT,
     name      TEXT    NOT NULL,
     createdAt TEXT    NOT NULL
   );
@@ -128,7 +128,7 @@ db.exec(/* sql */ `
   -- style directions, etc. Pinned artifacts auto-inject into generation context.
   CREATE TABLE IF NOT EXISTS strategy_artifacts (
     id         TEXT    PRIMARY KEY,
-    projectId  TEXT    REFERENCES projects(id) ON DELETE CASCADE,
+    projectId  TEXT,
     type       TEXT    NOT NULL CHECK(type IN (
       'boardroom_insight','research_finding','strategy_brief',
       'style_direction','scoring_analysis','custom'
@@ -151,7 +151,7 @@ db.exec(/* sql */ `
   -- items is a JSON array of MediaPlanItem (defined in upgrade.md Track H).
   CREATE TABLE IF NOT EXISTS media_plans (
     id        TEXT    PRIMARY KEY,             -- e.g. "plan_abc123"
-    projectId TEXT    REFERENCES projects(id) ON DELETE CASCADE,
+    projectId TEXT,
     name      TEXT    NOT NULL,
     items     TEXT    NOT NULL DEFAULT '[]',   -- JSON array of MediaPlanItem
     createdAt TEXT    NOT NULL
@@ -163,7 +163,7 @@ db.exec(/* sql */ `
   -- Tracks FFmpeg compose jobs (slideshow, merge, caption).
   CREATE TABLE IF NOT EXISTS compose_jobs (
     id           TEXT    PRIMARY KEY,     -- e.g. "compose_abc123"
-    projectId    TEXT    REFERENCES projects(id) ON DELETE SET NULL,
+    projectId    TEXT,
     type         TEXT    NOT NULL CHECK(type IN ('merge', 'slideshow', 'caption')),
     status       TEXT    NOT NULL CHECK(status IN ('pending', 'processing', 'done', 'failed')),
     title        TEXT,

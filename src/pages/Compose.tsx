@@ -313,9 +313,8 @@ export default function Compose() {
   }
 
   function handleMediaSelect(job: MediaJob) {
-    if (pickerTarget === "slide" || project.mode === "slideshow") {
-      addSlideFromJob(job);
-    } else if (pickerTarget === "voice") {
+    // Explicit picker target always wins
+    if (pickerTarget === "voice") {
       patch({ voiceJobId: job.id });
       toast("Voiceover selected.", "success");
       setPickerTarget(null);
@@ -335,6 +334,20 @@ export default function Compose() {
       patch({ watermarkJobId: job.id });
       toast("Watermark selected.", "success");
       setPickerTarget(null);
+    } else if (pickerTarget === "slide") {
+      addSlideFromJob(job);
+    } else {
+      // No explicit target — auto-route by media type
+      if (job.type === "voice") {
+        patch({ voiceJobId: job.id });
+        toast("Voiceover added to audio track.", "success");
+      } else if (job.type === "music") {
+        patch({ musicJobId: job.id });
+        toast("Music added to audio track.", "success");
+      } else {
+        // Image or video → add as slide
+        addSlideFromJob(job);
+      }
     }
   }
 
@@ -613,75 +626,49 @@ export default function Compose() {
                     {project.slides.reduce((s, sl) => s + sl.duration, 0).toFixed(1)}s
                   </span>
                 </div>
-                <SlideTimeline
-                  slides={project.slides}
-                  onReorder={reorderSlides}
-                  onUpdateSlide={updateSlide}
-                  onDeleteSlide={deleteSlide}
-                  onDuplicateSlide={duplicateSlide}
-                  onAddSlide={() => setPickerTarget("slide")}
-                />
-              </section>
 
-              {/* Multi-Track Audio */}
-              <section className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-                    <Music className="w-4 h-4 text-amber-400" />
-                    Multi-Track Audio
-                  </h2>
+                {/* ── Visual Track (Slides) ─────────────────────────────── */}
+                <div className="relative">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <Film className="w-3 h-3 text-indigo-400" />
+                    <span className="text-[10px] uppercase tracking-wider text-zinc-600 font-medium">Video Track</span>
+                  </div>
+                  <SlideTimeline
+                    slides={project.slides}
+                    onReorder={reorderSlides}
+                    onUpdateSlide={updateSlide}
+                    onDeleteSlide={deleteSlide}
+                    onDuplicateSlide={duplicateSlide}
+                    onAddSlide={() => setPickerTarget("slide")}
+                  />
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-medium text-zinc-300">Voiceover</span>
-                      <div className="flex gap-2">
-                        {project.voiceJobId && (
-                          <>
-                            <button
-                              onClick={() => setPickerTarget("voice")}
-                              className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
-                            >
-                              Swap
-                            </button>
-                            <button
-                              onClick={() => patch({ voiceJobId: undefined })}
-                              className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
-                            >
-                              Remove
-                            </button>
-                          </>
+
+                {/* ── Audio Track: Voiceover ─────────────────────────────── */}
+                <div className="mt-3 pt-3 border-t border-zinc-800/60">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <Mic className="w-3 h-3 text-amber-400" />
+                    <span className="text-[10px] uppercase tracking-wider text-zinc-600 font-medium">Voiceover Track</span>
+                  </div>
+                  {project.voiceJobId ? (
+                    <div className="flex items-center gap-3 bg-amber-500/5 border border-amber-500/20 rounded-xl px-3 py-2">
+                      <Mic className="w-4 h-4 text-amber-400 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        {audioUrls[project.voiceJobId] ? (
+                          <audio
+                            controls
+                            src={audioUrls[project.voiceJobId]}
+                            className="w-full h-7"
+                            style={{ colorScheme: "dark" }}
+                          />
+                        ) : (
+                          <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                            Loading audio…
+                          </div>
                         )}
                       </div>
-                    </div>
-                    <DropZone
-                      label="Select Voiceover"
-                      description="Click to select a voice job"
-                      icon={<Mic className="w-6 h-6" />}
-                      selectedJobId={project.voiceJobId}
-                      onSelect={() => setPickerTarget("voice")}
-                    />
-                    {/* W2: Audio preview player */}
-                    {project.voiceJobId && audioUrls[project.voiceJobId] && (
-                      <div className="flex flex-col gap-1">
-                        <span className="text-[10px] text-zinc-500">Preview voiceover:</span>
-                        <audio
-                          controls
-                          src={audioUrls[project.voiceJobId]}
-                          className="w-full h-8"
-                          style={{ colorScheme: "dark" }}
-                        />
-                      </div>
-                    )}
-                    {project.voiceJobId && !audioUrls[project.voiceJobId] && (
-                      <div className="flex items-center gap-1.5 text-[10px] text-zinc-600">
-                        <RefreshCw className="w-3 h-3 animate-spin" />
-                        Resolving audio…
-                      </div>
-                    )}
-                    {project.voiceJobId && (
-                      <div className="flex items-center gap-3">
-                        <span className="text-xs text-zinc-400 w-10">Vol:</span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[10px] text-zinc-500">Vol</span>
                         <input
                           type="range"
                           min="0"
@@ -689,64 +676,62 @@ export default function Compose() {
                           step="0.05"
                           value={project.voiceVolume ?? 1}
                           onChange={(e) => patch({ voiceVolume: parseFloat(e.target.value) })}
-                          className="flex-1 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                          className="w-16 h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
                         />
-                        <span className="text-xs text-zinc-400 w-8 text-right">
+                        <span className="text-[10px] text-zinc-400 w-7 text-right">
                           {Math.round((project.voiceVolume ?? 1) * 100)}%
                         </span>
                       </div>
-                    )}
+                      <button
+                        onClick={() => setPickerTarget("voice")}
+                        className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-zinc-600"
+                      >
+                        Swap
+                      </button>
+                      <button
+                        onClick={() => patch({ voiceJobId: undefined })}
+                        className="text-[10px] text-zinc-500 hover:text-red-400 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-red-500/40"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setPickerTarget("voice")}
+                      className="w-full flex items-center justify-center gap-2 py-2 rounded-xl border border-dashed border-zinc-700 hover:border-amber-500/50 text-zinc-600 hover:text-amber-400 transition-all text-xs"
+                    >
+                      <Mic className="w-3.5 h-3.5" />
+                      Click to add voiceover
+                    </button>
+                  )}
+                </div>
+
+                {/* ── Audio Track: Music ─────────────────────────────────── */}
+                <div className="mt-2">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <Music className="w-3 h-3 text-emerald-400" />
+                    <span className="text-[10px] uppercase tracking-wider text-zinc-600 font-medium">Music Track</span>
                   </div>
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-medium text-zinc-300">Background Music</span>
-                      <div className="flex gap-2">
-                        {project.musicJobId && (
-                          <>
-                            <button
-                              onClick={() => setPickerTarget("music")}
-                              className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
-                            >
-                              Swap
-                            </button>
-                            <button
-                              onClick={() => patch({ musicJobId: undefined })}
-                              className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
-                            >
-                              Remove
-                            </button>
-                          </>
+                  {project.musicJobId ? (
+                    <div className="flex items-center gap-3 bg-emerald-500/5 border border-emerald-500/20 rounded-xl px-3 py-2">
+                      <Music className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        {audioUrls[project.musicJobId] ? (
+                          <audio
+                            controls
+                            src={audioUrls[project.musicJobId]}
+                            className="w-full h-7"
+                            style={{ colorScheme: "dark" }}
+                          />
+                        ) : (
+                          <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                            Loading audio…
+                          </div>
                         )}
                       </div>
-                    </div>
-                    <DropZone
-                      label="Select Music"
-                      description="Click to select a music job"
-                      icon={<Music className="w-6 h-6" />}
-                      selectedJobId={project.musicJobId}
-                      onSelect={() => setPickerTarget("music")}
-                    />
-                    {/* W2: Audio preview player */}
-                    {project.musicJobId && audioUrls[project.musicJobId] && (
-                      <div className="flex flex-col gap-1">
-                        <span className="text-[10px] text-zinc-500">Preview music:</span>
-                        <audio
-                          controls
-                          src={audioUrls[project.musicJobId]}
-                          className="w-full h-8"
-                          style={{ colorScheme: "dark" }}
-                        />
-                      </div>
-                    )}
-                    {project.musicJobId && !audioUrls[project.musicJobId] && (
-                      <div className="flex items-center gap-1.5 text-[10px] text-zinc-600">
-                        <RefreshCw className="w-3 h-3 animate-spin" />
-                        Resolving audio…
-                      </div>
-                    )}
-                    {project.musicJobId && (
-                      <div className="flex items-center gap-3">
-                        <span className="text-xs text-zinc-400 w-10">Vol:</span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[10px] text-zinc-500">Vol</span>
                         <input
                           type="range"
                           min="0"
@@ -754,14 +739,34 @@ export default function Compose() {
                           step="0.05"
                           value={project.musicVolume ?? 0.15}
                           onChange={(e) => patch({ musicVolume: parseFloat(e.target.value) })}
-                          className="flex-1 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                          className="w-16 h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
                         />
-                        <span className="text-xs text-zinc-400 w-8 text-right">
+                        <span className="text-[10px] text-zinc-400 w-7 text-right">
                           {Math.round((project.musicVolume ?? 0.15) * 100)}%
                         </span>
                       </div>
-                    )}
-                  </div>
+                      <button
+                        onClick={() => setPickerTarget("music")}
+                        className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-zinc-600"
+                      >
+                        Swap
+                      </button>
+                      <button
+                        onClick={() => patch({ musicJobId: undefined })}
+                        className="text-[10px] text-zinc-500 hover:text-red-400 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-red-500/40"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setPickerTarget("music")}
+                      className="w-full flex items-center justify-center gap-2 py-2 rounded-xl border border-dashed border-zinc-700 hover:border-emerald-500/50 text-zinc-600 hover:text-emerald-400 transition-all text-xs"
+                    >
+                      <Music className="w-3.5 h-3.5" />
+                      Click to add background music
+                    </button>
+                  )}
                 </div>
               </section>
 

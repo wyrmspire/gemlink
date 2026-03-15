@@ -779,6 +779,13 @@ export default function MediaPlan() {
     if (!activePlan) return;
     const draftItems = activePlan.items.filter((i) => i.status === "draft" || i.status === "approved");
     if (draftItems.length === 0) { toast("No draft items to generate.", "warning"); return; }
+
+    // Filter out items with empty prompts — they'll fail silently otherwise
+    const readyItems = draftItems.filter((i) => i.promptTemplate.trim().length > 0);
+    const skipped = draftItems.length - readyItems.length;
+    if (skipped > 0) toast(`Skipped ${skipped} item(s) with empty prompts.`, "warning");
+    if (readyItems.length === 0) { toast("All items have empty prompts — nothing to generate.", "warning"); return; }
+
     setBatchRunning(true);
     const queued = activePlan.items.map((i) =>
       i.status === "draft" ? { ...i, status: "queued" as const } : i
@@ -789,27 +796,64 @@ export default function MediaPlan() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          items: draftItems.map((i) => ({
-            type: i.type,
-            body: {
-              prompt: i.promptTemplate,
-              ...i.generationConfig,
+          items: readyItems.map((i) => {
+            const cfg = i.generationConfig;
+            // Build type-specific body payloads
+            if (i.type === "voice") {
+              return {
+                type: "voice",
+                body: {
+                  text: i.promptTemplate,
+                  voice: cfg.voice || "Kore",
+                },
+              };
             }
-          })),
+            if (i.type === "video") {
+              return {
+                type: "video",
+                body: {
+                  prompt: i.promptTemplate,
+                  model: cfg.model,
+                  aspectRatio: cfg.aspectRatio,
+                },
+              };
+            }
+            if (i.type === "music") {
+              return {
+                type: "music",
+                body: {
+                  prompt: i.promptTemplate,
+                  duration: cfg.duration || 30,
+                },
+              };
+            }
+            // Default: image
+            return {
+              type: "image",
+              body: {
+                prompt: i.promptTemplate,
+                model: cfg.model,
+                size: cfg.size,
+                aspectRatio: cfg.aspectRatio,
+                count: cfg.count,
+                negativePrompt: cfg.negativePrompt,
+              },
+            };
+          }),
         }),
       });
       if (!res.ok) throw new Error("unavailable");
       const data = await res.json();
       
       const updated = activePlan.items.map((item) => {
-        const draftIdx = draftItems.findIndex(d => d.id === item.id);
-        if (draftIdx !== -1) {
-          return { ...item, status: "generating" as const, batchId: data.batchId, batchIndex: draftIdx };
+        const readyIdx = readyItems.findIndex(d => d.id === item.id);
+        if (readyIdx !== -1) {
+          return { ...item, status: "generating" as const, batchId: data.batchId, batchIndex: readyIdx };
         }
         return item;
       });
       saveItems(activePlan.id, updated);
-      toast(`Batch started — ${draftItems.length} items queued.`, "success");
+      toast(`Batch started — ${readyItems.length} items queued.`, "success");
     } catch {
       toast("Batch endpoint not yet live. Items left in draft.", "info");
       saveItems(activePlan.id, activePlan.items.map((i) => i.status === "queued" ? { ...i, status: "draft" as const } : i));
@@ -1573,15 +1617,57 @@ export default function MediaPlan() {
                               />
                             </div>
                             <div>
-                              <label className="block text-xs text-zinc-400 mb-1.5">Prompt / Template</label>
+                              <label className="block text-xs text-zinc-400 mb-1.5">
+                                {item.type === "voice" ? "Voiceover Script" : item.type === "music" ? "Music Description" : "Prompt / Template"}
+                              </label>
                               <textarea
                                 value={item.promptTemplate}
                                 onChange={(e) => patchItem(item.id, { promptTemplate: e.target.value })}
                                 rows={3}
-                                placeholder="The actual generation prompt for this asset…"
+                                placeholder={
+                                  item.type === "voice" ? "The text to be spoken as a voiceover…"
+                                  : item.type === "music" ? "Describe the mood, genre, and feel of the music…"
+                                  : "The actual generation prompt for this asset…"
+                                }
                                 className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
                               />
                             </div>
+
+                            {/* Type-specific config */}
+                            {item.type === "voice" && (
+                              <div>
+                                <label className="block text-xs text-zinc-400 mb-1.5">Voice</label>
+                                <select
+                                  value={item.generationConfig.voice || "Kore"}
+                                  onChange={(e) => patchItem(item.id, { generationConfig: { ...item.generationConfig, voice: e.target.value } })}
+                                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                >
+                                  {["Kore", "Puck", "Charon", "Fenrir", "Zephyr", "Aoede", "Leda", "Orus", "Perseus"].map((v) => (
+                                    <option key={v} value={v}>{v}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            )}
+                            {item.type === "music" && (
+                              <div>
+                                <label className="block text-xs text-zinc-400 mb-1.5">
+                                  Duration: {item.generationConfig.duration || 30}s
+                                </label>
+                                <input
+                                  type="range"
+                                  min={5}
+                                  max={120}
+                                  step={5}
+                                  value={item.generationConfig.duration || 30}
+                                  onChange={(e) => patchItem(item.id, { generationConfig: { ...item.generationConfig, duration: Number(e.target.value) } })}
+                                  className="w-full accent-indigo-500"
+                                />
+                                <div className="flex justify-between text-[10px] text-zinc-700 mt-0.5">
+                                  <span>5s</span>
+                                  <span>120s</span>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         </motion.div>
                       )}

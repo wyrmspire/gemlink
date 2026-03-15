@@ -41,12 +41,16 @@
 │   ├── components/        # Component smoke tests
 │   └── helpers/           # Test utilities
 ├── data/
-│   └── style-db.json      # Style database
+│   └── style-db/           # Style database (JSON files)
 ├── .env.local             # API key + model config (git-ignored)
 ├── board.md               # Active sprint plan
 ├── agents.md              # This file
+├── check.md               # Known bugs & confusion inventory
+├── medpln.md              # MediaPlan gap analysis & roadmap
+├── AGENTS.md              # Comprehensive agent guide (PR2)
 ├── settings.md            # Settings system design doc
 ├── editor.md              # Media editor feature spec
+├── ux.md                  # UX gap inventory (597 lines)
 └── boardinit.md           # How to set up board+agents in any repo
 ```
 
@@ -201,6 +205,21 @@ try {
 - ❌ Do not assume the board always retains your team's context if multiple external checkout events are happening.
 - ✅ Always append your Execution Report to `board.md` and add a note to `agents.md` if you find the board was hijacked by a different sprint version. No pushing/pulling from git or using git checkout!
 
+### SOP-17: Batch Field Name Mismatches
+**Learned from**: Sprint 9 → `check.md` CHECK-001 (video `resolution` vs `size`), CHECK-002 (image `aspectRatio` hardcoded)
+- ❌ `const { resolution } = body as any` — silently `undefined` if client sends `size`
+- ✅ `const resolution = body.resolution ?? body.size` — accept both names
+- When batch `runJob()` destructures fields, always check what the client actually sends vs what the handler reads
+- Reference `check.md` for the full set of known field mismatches
+
+### SOP-18: Client-Side Validation Before Fetch
+**Learned from**: Sprint 9 → `check.md` CHECK-012 (merge with no audio → 400), CHECK-013 (captions with no text → 400)
+- ❌ Send the request and let the server return 400, then show generic "not yet live" toast
+- ✅ Validate required fields client-side BEFORE fetch — show a warning toast and return early
+- Compose merge mode: require at least one audio track
+- Compose captions mode: require non-empty caption text
+- MediaPlan batch: require at least one draft item
+
 ---
 
 ## Commands
@@ -230,10 +249,20 @@ grep -rn "gemini-.*preview-04\|gemini-3-flash\|gemini-3.1-pro\|veo-3.1-fast" ser
 
 ---
 
-## File Ownership Rules
+## Sprint 9 Ownership Zones
 
-- `board.md` defines per-sprint file ownership
-- Each file is owned by exactly ONE lane per sprint
+| Zone | Files | Lane |
+|------|-------|------|
+| Server batch handlers | `server.ts` (L1296–L1650 batch/queue section) | Lane 1 |
+| MediaPlan batch+polling | `src/pages/MediaPlan.tsx` (handleGenerateAll, polling useEffect, PreviewModal) | Lane 1 |
+| Compose validation | `src/pages/Compose.tsx` (handleRender only) | Lane 1 |
+| Compose editor UI | `src/pages/Compose.tsx` (non-handleRender), `src/components/SlideTimeline.tsx`, `src/components/ComposePreview.tsx`, `compose.ts` | Lane 2 |
+| MediaPlan UI additions | `src/pages/MediaPlan.tsx` (new UI: presets, templates, filter bar, export, badges) | Lane 3 |
+| Presentation page | `src/pages/Presentation.tsx` (new file) | Lane 4 |
+| Global infrastructure | `src/App.tsx`, `src/components/Layout.tsx`, new `src/components/ErrorBoundary.tsx`, new `src/components/CommandPalette.tsx`, new `src/components/Breadcrumbs.tsx` | Lane 5 |
+
+**Rules**:
+- Each file/zone is owned by exactly ONE lane
 - If you must edit a file owned by another lane, add your changes in a clearly marked section: `// ── Added by Lane N ──`
 - Shared files (`App.tsx`, `Layout.tsx`) — only add lines, don't refactor existing code
 - Never modify `agents.md` during a sprint
@@ -262,7 +291,20 @@ grep -rn "gemini-.*preview-04\|gemini-3-flash\|gemini-3.1-pro\|veo-3.1-fast" ser
 | Sprint 1 | Core architecture, security, UX polish | 31 | ✅ |
 | Sprint 2 | Media pipeline, batch gen, collections, SQLite | 78 | ✅ |
 | Sprint 3 | Multi-stage planning, strategy artifacts, multi-plan UI, CI | 114 | ✅ |
-| Sprint 4 | Media Editor / Compose Engine | — | Planned |
-| Sprint 4.5 | Settings & Model Centralization | — | 🟡 Active |
+| Sprint 5 | Enhanced Editor (Tier 2) — trim, watermarks, multi-track audio | 199 | ✅ |
+| Sprint 6 | Music generation — Lyria WebSocket streaming | 199 | ✅ |
+| Sprint 7 | Agent ergonomics — rate limits, idempotency, dry-run, job queue | 200 | ✅ |
+| Sprint 8 | Model fixes + UX Polish — progress bar, duplicate, single gen, collect approved | 200 | ✅ |
+| Sprint 9 | Bug fixes, editor polish, MediaPlan UX, presentation, infrastructure | — | 🟡 Active |
 
-Current test count: **114 passing** | Build: clean | TSC: clean
+Current test count: **200 passing** | Build: clean | TSC: clean
+
+---
+
+## Lessons Learned (Changelog)
+
+- **2026-03-15**: Added SOP-17 (batch field mismatches) after `check.md` cataloged CHECK-001/002
+- **2026-03-15**: Added SOP-18 (client-side validation) after `check.md` cataloged CHECK-012/013
+- **2026-03-15**: Merged PR1 (MediaPlan improvements) and PR2 (check.md + AGENTS.md rewrite)
+- **2026-03-15**: Added SOP-16 (board overwrite protection) after Sprint 7 board hijack
+- **2026-03-15**: Added SOP-15 (model sync) after model 404s from desynchronized fallbacks
