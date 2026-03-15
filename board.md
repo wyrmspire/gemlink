@@ -60,7 +60,8 @@
   - All functions return `Promise<{ outputPath, duration, size }>`, throw on FFmpeg errors with stderr
   - Validate FFmpeg availability on import; export `ffmpegAvailable: boolean`
 
-### W2. `POST /api/media/compose` Endpoint (P0) 🟡
+### W2. `POST /api/media/compose` Endpoint (P0) ✅
+- **Done**: Added `POST /api/media/compose` (type: merge|slideshow|caption) + `GET /api/media/compose/:id` under `// ── Compose ──` in `server.ts`. Fire-and-forget background jobs, 202 Accepted return, jobId manifest files, auto-insert into `media_jobs` on completion. Returns 400 for empty slides, missing fields; 503 if FFmpeg unavailable.
 - **Files**: `server.ts`
 - **What**: Unified composition endpoint matching `editor.md` API spec.
   - Accepts `ComposeRequest` body (type: `merge | slideshow | caption`)
@@ -96,7 +97,8 @@
   - `word-highlight` style: current word in accent color, other words dimmed
   - Viral Reels/TikTok caption style — single word highlighted at a time
 
-### W5. Compose Job DB Schema (P1) 🟡
+### W5. Compose Job DB Schema (P1) ✅
+- **Done**: Added `compose_jobs` table to `src/db.ts` with CHECK constraints on type (merge/slideshow/caption) and status (pending/processing/done/failed), FK to projects ON DELETE SET NULL, indexes on projectId+status. Added `composeJobQueries.insert()`, `.getById()`, `.listByProject()`, `.updateStatus()` typed helpers.
 - **Files**: `src/db.ts`
 - **What**: Add `compose_jobs` table to SQLite schema.
   - Columns: id, projectId, type, status, title, inputConfig (JSON), outputPath, duration, createdAt, updatedAt
