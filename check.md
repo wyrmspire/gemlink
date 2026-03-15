@@ -282,21 +282,13 @@ if (project.mode === "captions" && !project.captionConfig?.text?.trim()) {
 
 ### CHECK-015 — Slideshow mode adds any job type as a slide (no type check)
 
-**Status**: ⬜ (partially mitigated by W1 type-aware picker)
+**Status**: ✅ Fixed in Sprint 10
 
-**Files**: `src/pages/Compose.tsx` `handleMediaSelect` (~line 316), `addSlideFromJob` (~line 299)
+**Files**: `src/pages/Compose.tsx` `addSlideFromJob` (~line 315)
 
-**What happens**: When `pickerTarget === "slide"` OR `project.mode === "slideshow"`, any selected job is added as a slide — including `voice` and `music` job types. The `jobToSlide` function sets `thumbnail: null` for non-image types and `jobType: job.type`. When a voice or music job becomes a slide, the compose engine may fail to process it because it expects an image file path for slideshow slides.
+**What happens**: When `pickerTarget === "slide"`, any selected job was added as a slide — including `voice` and `music` job types. The `jobToSlide` function sets `thumbnail: null` for non-image types and `jobType: job.type`. When a voice or music job becomes a slide, the compose engine may fail to process it because it expects an image file path for slideshow slides.
 
-**Mitigation**: The type-aware media picker (W1, Sprint 8) auto-filters to appropriate types. But `pickerTarget === "slide"` still doesn't block voice/music — it only filters the UI. If picker filtering fails or is bypassed, voice items can still become slides.
-
-**Fix required**: In `handleMediaSelect`, when adding slides in slideshow mode, filter out voice/music types with a warning:
-```typescript
-if (job.type === "voice" || job.type === "music") {
-  toast("Voice and music jobs cannot be used as slides. Use them as audio tracks instead.", "warning");
-  return;
-}
-```
+**Fix**: `addSlideFromJob()` now checks the job type first. If `job.type === "voice" || job.type === "music"`, it shows a warning toast and returns early. Additionally, the media picker panel now defaults to the "image" filter tab when `pickerTarget === "slide"`, reducing the chance of the user accidentally seeing voice/music items.
 
 ---
 
@@ -400,13 +392,13 @@ body: {
 
 ### CHECK-022 — `defaultConfig()` always uses image model for all types
 
-**Status**: ⬜
+**Status**: ✅ Fixed in Sprint 9
 
 **Files**: `src/pages/MediaPlan.tsx` `defaultConfig()` (~line 115)
 
 **What happens**: `defaultConfig()` returns `{ model: import.meta.env.VITE_MODEL_IMAGE || "gemini-3-pro-image-preview", ... }`. When a new item is created with `type: "video"` or `type: "voice"`, its `generationConfig.model` still defaults to the image model. This gets sent to the batch endpoint, which then uses the wrong model.
 
-**Fix required**: `newItem()` or `patchItem` on type change should set the appropriate default model based on type.
+**Fix**: `defaultConfig()` is now type-aware (returns correct model per type). The type-change handler in the item config panel now resets `generationConfig` to `defaultConfig(newType)`, so changing an item's type always updates the model. `defaultConfig()` also now defaults `aspectRatio` to `"16:9"` for video items instead of `"1:1"`.
 
 ---
 
@@ -433,26 +425,11 @@ The server reads `body.trimPoints.inPoint`/`outPoint`. This mapping is consisten
 
 ### CHECK-024 — Compose `mode === "slideshow"` auto-adds all jobs as slides (ignores `pickerTarget`)
 
-**Status**: ⬜
+**Status**: ✅ Fixed in Sprint 9
 
 **Files**: `src/pages/Compose.tsx` `handleMediaSelect` (~line 316)
 
-**What happens**: The picker handler has:
-```typescript
-if (pickerTarget === "slide" || project.mode === "slideshow") {
-  addSlideFromJob(job);
-}
-```
-The `|| project.mode === "slideshow"` part means that in slideshow mode, clicking ANY job in the picker adds it as a slide — even if the user intended to add it as voiceover (e.g., they opened the picker via "Select Voiceover"). The `pickerTarget` for voice in slideshow mode is `"voice"`, not `"slide"`, so this branch should NOT trigger for voice selections. But the condition order means slideshow mode always wins.
-
-**Fix required**: Change the condition to check `pickerTarget` first:
-```typescript
-if (pickerTarget === "slide") {
-  addSlideFromJob(job);
-} else if (pickerTarget === "voice") {
-  ...
-```
-Remove the `|| project.mode === "slideshow"` fallback, which is a logic error.
+**What happens**: The picker handler originally had `if (pickerTarget === "slide" || project.mode === "slideshow")` which would add any job as a slide when in slideshow mode, overriding the pickerTarget. The `|| project.mode === "slideshow"` condition was removed. The handler now checks `pickerTarget` first in all cases. Additionally, `addSlideFromJob()` now rejects voice/music types with a warning toast (CHECK-015 fix), and the picker panel shows the "image" filter tab by default when targeting slides.
 
 ---
 
@@ -476,10 +453,10 @@ Remove the `|| project.mode === "slideshow"` fallback, which is a logic error.
 
 | File | Issues |
 |------|--------|
-| `src/pages/MediaPlan.tsx` | CHECK-001 (resolution), CHECK-004 (apiKey), CHECK-005 (errors), CHECK-006 (defaults), CHECK-007 (music count), CHECK-008 (stale closure), CHECK-009 (brand), CHECK-017 (brandContext batch), CHECK-021 (models mixed), CHECK-022 (defaultConfig) |
-| `server.ts` (batch handler) | CHECK-001 (resolution), CHECK-002 (aspectRatio hardcoded), CHECK-003 (music type dropped) |
-| `server.ts` (plan/suggest) | CHECK-003 (music type), CHECK-006 (no generationConfig returned) |
-| `src/pages/Compose.tsx` | CHECK-005 (errors), CHECK-010 (apiKey), CHECK-011 (dead audioJobId), CHECK-012 (merge no audio), CHECK-013 (empty captions), CHECK-014 (history fetch), CHECK-015 (voice as slide), CHECK-023 (trimPoints naming), CHECK-024 (slideshow picker logic) |
+| `src/pages/MediaPlan.tsx` | CHECK-017 (brandContext batch), CHECK-021 (models mixed) |
+| `server.ts` (batch handler) | *(all fixed)* |
+| `server.ts` (plan/suggest) | CHECK-006 (no generationConfig returned) |
+| `src/pages/Compose.tsx` | CHECK-011 (dead audioJobId), CHECK-014 (history fetch), CHECK-023 (trimPoints naming) |
 | `src/context/*` | CHECK-018 (BrandContext not persisted) |
 | `src/pages/Research.tsx`, `VideoLab.tsx` | CHECK-019 (client-side Gemini) |
 | `AGENTS.md` + `agents.md` | CHECK-016 (two files) |

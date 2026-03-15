@@ -313,6 +313,12 @@ export default function Compose() {
   // ── Slide operations ──────────────────────────────────────────────────────
 
   function addSlideFromJob(job: MediaJob) {
+    // CHECK-015: voice/music cannot be used as slides — reject with a clear message
+    if (job.type === "voice" || job.type === "music") {
+      toast("Voice and music jobs cannot be used as slides. Use them as audio tracks instead.", "warning");
+      setPickerTarget(null);
+      return;
+    }
     const slide = jobToSlide(job);
     const next = { ...project, slides: [...project.slides, slide] };
     setProject(next);
@@ -549,6 +555,7 @@ export default function Compose() {
                 : pickerTarget === "music" ? "music"
                 : pickerTarget === "video" ? "video"
                 : pickerTarget === "watermark" ? "image"
+                : pickerTarget === "slide" ? "image"
                 : undefined
               }
               className="h-full"
