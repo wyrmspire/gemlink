@@ -51,6 +51,8 @@ export interface MediaPlanItem {
   rating?: number;
   tags?: string[];
   generationConfig: GenerationConfig;
+  batchId?: string;
+  batchIndex?: number;
 }
 
 export interface MediaPlan {
@@ -69,11 +71,12 @@ const STATUS_ORDER: MediaPlanItem["status"][] = [
   "draft", "queued", "generating", "review", "approved", "rejected",
 ];
 
+// ── L3-S4.5: Use real model names (env vars with stable fallbacks)
 const MODELS = [
-  { value: "gemini-flash-image", label: "Flash Image (Fast)" },
-  { value: "gemini-pro-image", label: "Pro Image (Quality)" },
-  { value: "veo-flash", label: "Veo Flash (Video)" },
-  { value: "gemini-tts", label: "Gemini TTS (Voice)" },
+  { value: import.meta.env.VITE_MODEL_IMAGE || "gemini-2.5-flash-preview-image", label: "Flash Image (Fast)" },
+  { value: "gemini-3-pro-image-preview", label: "Pro Image (Quality)" },
+  { value: import.meta.env.VITE_MODEL_VIDEO || "veo-2.0-generate-001", label: "Veo Video" },
+  { value: import.meta.env.VITE_MODEL_TTS || "gemini-2.5-flash-preview-tts", label: "Gemini TTS (Voice)" },
 ];
 
 const SIZES = [
@@ -104,7 +107,7 @@ function planId() {
 
 function defaultConfig(): GenerationConfig {
   return {
-    model: "gemini-flash-image",
+    model: import.meta.env.VITE_MODEL_IMAGE || "gemini-2.5-flash-preview-image", // L3-S4.5: real model
     size: "1K",
     aspectRatio: "1:1",
     count: 1,
@@ -613,6 +616,7 @@ export default function MediaPlan() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           description: naturalInput,
+          apiKey: import.meta.env.VITE_GEMINI_API_KEY || undefined,
           projectContext: {
             brandName: activeProject?.brandName,
             brandDescription: activeProject?.brandDescription,
@@ -622,27 +626,75 @@ export default function MediaPlan() {
           },
         }),
       });
-      if (!res.ok) throw new Error("unavailable");
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Server error ${res.status}`);
+      }
       const data = await res.json();
       const suggested = (data.items ?? []).map((x: any) => newItem(x));
+      if (suggested.length === 0) throw new Error("AI returned an empty plan — try a more detailed description.");
       saveItems(activePlan.id, [...activePlan.items, ...suggested]);
       toast(`Added ${suggested.length} AI-suggested items.`, "success");
-    } catch {
-      const opts = naturalInput.toLowerCase();
-      const mock: MediaPlanItem[] = [
-        newItem({ type: "image", label: "Hero Banner", purpose: "Website hero", promptTemplate: `${opts} — hero banner, wide format, no text` }),
-        newItem({ type: "image", label: "Social Post #1", purpose: "Instagram feed", promptTemplate: `${opts} — bold square social post, vibrant` }),
-        newItem({ type: "image", label: "Social Post #2", purpose: "LinkedIn post", promptTemplate: `${opts} — professional LinkedIn visual` }),
-        newItem({ type: "video", label: "Intro Video", purpose: "YouTube intro", promptTemplate: `Cinematic 16:9 intro for: ${opts}` }),
-        newItem({ type: "voice", label: "Voiceover", purpose: "Ad spot", promptTemplate: `30-second voiceover for: ${opts}` }),
-      ];
-      saveItems(activePlan.id, [...activePlan.items, ...mock]);
-      toast("Plan generated with contextual suggestions (AI endpoint pending).", "info");
+      setNaturalInput("");
+    } catch (err: any) {
+      toast(err?.message || "Quick Plan failed — check your API key or try again.", "error");
     } finally {
       setSuggestLoading(false);
-      setNaturalInput("");
     }
   };
+
+  // Polling for batch generation progress
+  useEffect(() => {
+    if (!activePlan) return;
+    
+    // Find all unique active batch IDs
+    const activeBatches = new Set<string>();
+    activePlan.items.forEach(i => {
+      if (i.status === "generating" && i.batchId) {
+        activeBatches.add(i.batchId);
+      }
+    });
+
+    if (activeBatches.size === 0) return;
+
+    const interval = setInterval(() => {
+      activeBatches.forEach(async (batchId) => {
+        try {
+          const res = await fetch(`/api/media/batch/${batchId}`);
+          if (!res.ok) return;
+          const data = await res.json();
+          
+          let updatedItems = false;
+          const newItems = activePlan.items.map(item => {
+            if (item.batchId !== batchId || item.batchIndex === undefined) return item;
+            
+            const batchStatus = data.statuses[item.batchIndex];
+            const jobId = data.jobIds[item.batchIndex];
+            
+            if (batchStatus === "completed") {
+              updatedItems = true;
+              return { ...item, status: "review" as const, generatedJobIds: jobId ? [jobId] : item.generatedJobIds };
+            } else if (batchStatus === "failed") {
+              updatedItems = true;
+              return { ...item, status: "rejected" as const };
+            }
+            return item;
+          });
+
+          if (updatedItems) {
+            saveItems(activePlan.id, newItems);
+            if (data.complete) {
+              toast(`Batch generation complete!`, "success");
+            }
+          }
+        } catch (err) {
+          console.error(`Failed to poll batch ${batchId}:`, err);
+        }
+      });
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [activePlan, saveItems, toast]);
 
   // W4: Boardroom Plan handoff — stores description in sessionStorage and navigates to /boardroom.
   // Boardroom.tsx picks up 'boardroom-plan-handoff' on mount and pre-fills MEDIA_STRATEGY_TEMPLATE.
@@ -691,19 +743,23 @@ export default function MediaPlan() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           items: draftItems.map((i) => ({
-            id: i.id,
             type: i.type,
-            prompt: i.promptTemplate,
-            ...i.generationConfig,
+            body: {
+              prompt: i.promptTemplate,
+              ...i.generationConfig,
+            }
           })),
         }),
       });
       if (!res.ok) throw new Error("unavailable");
       const data = await res.json();
+      
       const updated = activePlan.items.map((item) => {
-        const result = data.results?.find((r: any) => r.id === item.id);
-        if (!result) return item;
-        return { ...item, status: "generating" as const, generatedJobIds: [result.jobId] };
+        const draftIdx = draftItems.findIndex(d => d.id === item.id);
+        if (draftIdx !== -1) {
+          return { ...item, status: "generating" as const, batchId: data.batchId, batchIndex: draftIdx };
+        }
+        return item;
       });
       saveItems(activePlan.id, updated);
       toast(`Batch started — ${draftItems.length} items queued.`, "success");

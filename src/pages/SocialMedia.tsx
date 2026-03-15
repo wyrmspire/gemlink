@@ -21,7 +21,7 @@ export default function SocialMedia() {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [images, setImages] = useState<string[]>([]);
-  const [model, setModel] = useState("gemini-3.1-flash-image-preview");
+  const [model, setModel] = useState(import.meta.env.VITE_MODEL_IMAGE || "gemini-2.5-flash-preview-image"); // ── L3-S4.5: use env var, not hardcoded string
   const [size, setSize] = useState("1K");
   const [aspectRatio, setAspectRatio] = useState("");
   const [count, setCount] = useState(1);

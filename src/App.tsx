@@ -28,6 +28,7 @@ const Collections = lazy(() => import("./pages/Collections"));
 const Present     = lazy(() => import("./pages/Present"));
 const Briefs      = lazy(() => import("./pages/Briefs"));
 const Compose     = lazy(() => import("./pages/Compose"));
+const Settings    = lazy(() => import("./pages/Settings")); // ── Added by Lane 3 ──
 
 // ── Loading fallback ─────────────────────────────────────────────────────────
 // Shown while the page chunk is downloading. Matches the app's dark theme.
@@ -96,6 +97,7 @@ export default function App() {
                     <Route path="present/:collectionId" element={<Present />} />
                     <Route path="briefs" element={<Briefs />} />
                     <Route path="compose" element={<Compose />} />
+                    <Route path="settings" element={<Settings />} /> {/* ── Added by Lane 3 (Sprint 4.5) */}
                   </Route>
                 </Routes>
               </Suspense>

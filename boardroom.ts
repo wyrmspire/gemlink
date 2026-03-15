@@ -1,6 +1,8 @@
 import fs from "fs/promises";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
+// ── L2-S4.5: Model migration ──────────────────────────────────────
+import { models } from "./config.ts";
 
 export type BoardroomSessionStatus = "pending" | "completed" | "failed";
 export type BoardroomParticipantProvider = "gemini";
@@ -180,7 +182,7 @@ const MAX_SEATS = 5;
 const MAX_ROUNDS = 5;
 const MAX_BOARDROOM_API_CALLS = 40;   // hard ceiling; actual max is ~32
 const GEMINI_CALL_TIMEOUT_MS = 120_000; // 2 minutes per Gemini call
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_MODEL = models.boardroom; // L2-S4.5: was "gemini-2.5-flash"
 const DEFAULT_DEPTH: BoardroomThoughtDepth = "standard";
 const DEFAULT_ROUNDS = 5;
 const boardroomRoot = path.join(process.cwd(), "jobs", "boardroom");

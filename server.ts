@@ -9,6 +9,9 @@ import { startBoardroomSessionAsync, listBoardroomSessions, readBoardroomSession
 import { mediaJobQueries, collectionQueries, collectionItemQueries, strategyArtifactQueries, getActiveArtifacts, composeJobQueries, type MediaJobRow, type StrategyArtifactRow, type ArtifactType, type ComposeJobRow } from "./src/db.ts";
 import type { SlideInput as ComposeSlideInput } from "./compose.ts";
 import { loadTemplates, getTemplate, type ComposeTemplate } from "./templates.ts";
+// ── L1-S4.5 + L2-S4.5: Centralized config import ───────────────────────────
+import { models, defaults as cfgDefaultsTop, features as cfgFeaturesTop, server as serverConfig, app as cfgAppTop } from "./config.ts";
+
 
 // ── W1 (L5): FFmpeg availability state — populated on server start ─────────────
 let _serverFfmpegAvailable = false;
@@ -87,10 +90,11 @@ const jobsDir = path.join(process.cwd(), "jobs");
 // bound. NEVER use an open-ended `while (true)` or `while (!condition)` loop
 // without a maximum attempt counter. If you add a new loop, add a MAX guard.
 // Current limits:
-//   • Video polling: MAX_VIDEO_POLL_ATTEMPTS (360 × 10 s = ~60 min)
+//   • Video polling: serverConfig.maxVideoPollAttempts (from config.ts, default 360 × 10 s = ~60 min)
 //   • Batch retry on 429: max 3 retries with exponential backoff (see GenerationQueue)
 //   • Boardroom: bounded by MAX_ROUNDS (5) × MAX_SEATS (5), see boardroom.ts
-const MAX_VIDEO_POLL_ATTEMPTS = 360; // 360 × 10 s = ~60 minutes max wait
+// MAX_VIDEO_POLL_ATTEMPTS replaced with serverConfig.maxVideoPollAttempts (from config.ts)
+// L2-S4.5: Use serverConfig.maxVideoPollAttempts everywhere this was used.
 const jobTypeDirs: Record<MediaType, string> = {
   image: "images",
   video: "videos",
@@ -354,6 +358,27 @@ async function startServer() {
   // ── W3: Load style database on startup + serve via API ─────────────────────
   await loadStyleDatabase();
 
+  // ── L1-S4.5 Settings definitions (hoisted) ─────────────────────────────────
+  const SETTINGS_FILE = path.join(process.cwd(), "data", "settings.json");
+  let runtimeSettings: { models?: Record<string, string>; defaults?: Record<string, unknown>; features?: Record<string, boolean> } = {};
+  
+  try {
+    const raw = await fs.readFile(SETTINGS_FILE, "utf8");
+    runtimeSettings = JSON.parse(raw);
+    console.log("[settings] Loaded runtime overrides from data/settings.json");
+  } catch {
+  }
+  
+  function getMergedModels(): Record<string, string> {
+    return { ...models, ...(runtimeSettings.models ?? {}) };
+  }
+  function getMergedDefaults(): Record<string, unknown> {
+    return { ...cfgDefaultsTop, ...(runtimeSettings.defaults ?? {}) };
+  }
+  function getMergedFeatures(): Record<string, boolean> {
+    return { ...cfgFeaturesTop, ...(runtimeSettings.features ?? {}) };
+  }
+
   api.get("/style-db", async (_req, res) => {
     try {
       const db = await loadStyleDatabase();
@@ -376,7 +401,7 @@ async function startServer() {
         id: jobId,
         type: "image",
         prompt,
-        model: model || "gemini-3.1-flash-image-preview",
+        model: model || getMergedModels().image,
         size: size || "1K",
         aspectRatio: aspectRatio || "1:1",
         brandContext,
@@ -438,7 +463,7 @@ async function startServer() {
       const { prompt, model, resolution, aspectRatio, brandContext, projectId, apiKey, imageBytes, mimeType } = req.body;
       const key = requireApiKey(apiKey);
       const ai = new GoogleGenAI({ apiKey: key });
-      const selectedModel = model || "veo-3.1-fast-generate-preview";
+      const selectedModel = model || getMergedModels().video;
 
       const operation = imageBytes && mimeType
         ? await ai.models.generateVideos({
@@ -485,7 +510,7 @@ async function startServer() {
           // never reports done. Fails the job after MAX_VIDEO_POLL_ATTEMPTS.
           while (!currentOp.done) {
             attempts += 1;
-            if (attempts > MAX_VIDEO_POLL_ATTEMPTS) {
+            if (attempts > serverConfig.maxVideoPollAttempts) {
               await patchManifest("video", jobId, (current) => ({
                 ...current,
                 status: "failed",
@@ -496,7 +521,7 @@ async function startServer() {
             }
             await patchManifest("video", jobId, (current) => ({
               ...current,
-              logs: appendLog(current, `Polling provider status (attempt ${attempts}/${MAX_VIDEO_POLL_ATTEMPTS})...`),
+              logs: appendLog(current, `Polling provider status (attempt ${attempts}/${serverConfig.maxVideoPollAttempts})...`),
             }));
             await new Promise((resolve) => setTimeout(resolve, 10000));
             currentOp = await ai.operations.getVideosOperation({ operation: currentOp });
@@ -571,7 +596,7 @@ async function startServer() {
       await writeManifest(manifest);
 
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-tts",
+        model: getMergedModels().tts,
         contents: [{ parts: [{ text }] }],
         config: {
           responseModalities: ["AUDIO"],
@@ -722,7 +747,7 @@ async function startServer() {
         : "";
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: getMergedModels().creative,
         contents: context + "Research query: " + query,
         config: {
           tools: [{ googleSearch: {} }],
@@ -757,7 +782,7 @@ async function startServer() {
         : "";
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
+        model: getMergedModels().multimodal,
         contents: context + "Deep analysis query: " + query,
         config: {
           thinkingConfig: { thinkingLevel: "HIGH" as any },
@@ -786,7 +811,7 @@ async function startServer() {
       const ai = new GoogleGenAI({ apiKey: key });
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
+        model: getMergedModels().multimodal,
         contents: {
           parts: [
             {
@@ -824,7 +849,7 @@ async function startServer() {
       if (type === "image" && filePath) {
         const imgData = await fs.readFile(filePath);
         const resp = await ai.models.generateContent({
-          model: "gemini-2.5-flash-preview-04-17",
+          model: getMergedModels().multimodal,
           contents: {
             parts: [
               { inlineData: { data: imgData.toString("base64"), mimeType: "image/png" } },
@@ -837,7 +862,7 @@ async function startServer() {
         if (m) tags = JSON.parse(m[0]);
       } else if (promptText) {
         const resp = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
+          model: getMergedModels().text,
           contents: `Given this ${type} generation prompt: "${promptText.slice(0, 300)}", return a JSON array of short tags (content type, style, platform/purpose). Respond ONLY with a valid JSON array of strings.`,
         });
         const txt = resp.text?.trim() ?? "[]";
@@ -919,7 +944,7 @@ async function startServer() {
       if (type === "image") {
         const { prompt, model, size, brandContext, projectId } = body as any;
         const manifest: JobManifest = {
-          id: jobId, type: "image", prompt, model: model ?? "gemini-3.1-flash-image-preview",
+          id: jobId, type: "image", prompt, model: model ?? getMergedModels().image,
           size: size ?? "1K", brandContext, projectId,
           createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
           status: "pending", outputs: [],
@@ -960,7 +985,7 @@ async function startServer() {
         };
         await writeManifest(manifest);
         const resp = await ai.models.generateContent({
-          model: "gemini-2.5-flash-preview-tts", contents: [{ parts: [{ text }] }],
+          model: getMergedModels().tts, contents: [{ parts: [{ text }] }],
           config: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } },
         });
         const inlineAudio = resp.candidates?.[0]?.content?.parts?.[0]?.inlineData;
@@ -989,7 +1014,7 @@ async function startServer() {
 
       if (type === "video") {
         const { prompt, model, resolution, aspectRatio, brandContext, projectId } = body as any;
-        const selectedModel = model ?? "veo-3.1-fast-generate-preview";
+        const selectedModel = model ?? getMergedModels().video;
         const operation = await ai.models.generateVideos({ model: selectedModel, prompt, config: { numberOfVideos: 1, resolution, aspectRatio } });
         const operationName = (operation as any)?.name ?? null;
         const manifest: JobManifest = {
@@ -1006,11 +1031,11 @@ async function startServer() {
             // single-video endpoint. Never loop forever waiting for provider.
             while (!op.done) {
               a++;
-              if (a > MAX_VIDEO_POLL_ATTEMPTS) {
+              if (a > serverConfig.maxVideoPollAttempts) {
                 await patchManifest("video", jobId, (c) => ({ ...c, status: "failed", error: `Batch video polling timed out after ${a} attempts.`, logs: appendLog(c, `SAFETY: Polling aborted after ${a} attempts.`) }));
                 return;
               }
-              await patchManifest("video", jobId, (c) => ({ ...c, logs: appendLog(c, `Polling attempt ${a}/${MAX_VIDEO_POLL_ATTEMPTS}...`) }));
+              await patchManifest("video", jobId, (c) => ({ ...c, logs: appendLog(c, `Polling attempt ${a}/${serverConfig.maxVideoPollAttempts}...`) }));
               await new Promise((r) => setTimeout(r, 10000));
               op = await ai.operations.getVideosOperation({ operation: op });
             }
@@ -1071,7 +1096,7 @@ async function startServer() {
           contents = `Score this ${jobType}. Prompt/Text: "${purposeCtx}". ${brandCtx}\nReturn ONLY valid JSON matching: ${scoreSchema}`;
         }
 
-        const response = await ai.models.generateContent({ model: "gemini-2.5-flash-preview-04-17", contents });
+        const response = await ai.models.generateContent({ model: jobType === "image" ? getMergedModels().multimodal : getMergedModels().text, contents });
         const txt = response.text?.trim() ?? "{}";
         const m = txt.match(/\{[\s\S]*\}/);
         const scoreData = m ? JSON.parse(m[0]) as MediaScore : null;
@@ -1161,7 +1186,7 @@ async function startServer() {
       ].filter(Boolean).join(" ");
 
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-04-17",
+        model: getMergedModels().text,
         contents: `${systemPrompt}\n\nProject description: "${description}"`,
         config: {
           responseMimeType: "application/json",
@@ -1304,7 +1329,7 @@ async function startServer() {
       ].join("\n");
 
       const outlineResp = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-04-17",
+        model: getMergedModels().text,
         contents: outlinePrompt,
         config: { responseMimeType: "application/json" } as any,
       });
@@ -1334,7 +1359,7 @@ async function startServer() {
         ].join("\n");
 
         const gradeResp = await ai.models.generateContent({
-          model: "gemini-2.5-flash-preview-04-17",
+          model: getMergedModels().text,
           contents: gradePrompt,
           config: { responseMimeType: "application/json" } as any,
         });
@@ -1355,7 +1380,7 @@ async function startServer() {
         ].join("\n");
 
         const refineResp = await ai.models.generateContent({
-          model: "gemini-2.5-flash-preview-04-17",
+          model: getMergedModels().text,
           contents: refinePrompt,
           config: { responseMimeType: "application/json" } as any,
         });
@@ -1382,7 +1407,7 @@ async function startServer() {
       ].join("\n");
 
       const promptResp = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-04-17",
+        model: getMergedModels().text,
         contents: promptGenPrompt,
         config: { responseMimeType: "application/json" } as any,
       });
@@ -1421,7 +1446,7 @@ async function startServer() {
       ].join("\n");
 
       const gradeResp = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-04-17",
+        model: getMergedModels().text,
         contents: promptGradePrompt,
         config: { responseMimeType: "application/json" } as any,
       });
@@ -1476,19 +1501,19 @@ async function startServer() {
       const fullContext = `${brandCtx}\n${platCtx}\n${purpCtx}${artifactCtx}`;
 
       const s1 = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: getMergedModels().creative,
         contents: `You are a creative director writing image generation prompts. Expand this rough idea into a detailed, vivid prompt.\n${fullContext}\nBase idea: "${basePrompt}"\nRespond with ONLY the expanded prompt, no preamble.`,
       });
       const expanded = s1.text?.trim() ?? basePrompt;
 
       const s2 = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: getMergedModels().creative,
         contents: `Refine this image generation prompt for brand alignment and platform fit. Add specific details about lighting, composition, color palette, and mood.\n${fullContext}\nPrompt: "${expanded}"\nRespond with ONLY the refined prompt.`,
       });
       const refined = s2.text?.trim() ?? expanded;
 
       const s3 = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: getMergedModels().creative,
         contents: `Convert this creative brief into a final generation-ready image prompt. Add technical quality descriptors (high resolution, sharp focus, professional photography) and a negative prompt suffix.\nBrief: "${refined}"\nRespond with ONLY the final prompt.`,
       });
       const final = s3.text?.trim() ?? refined;
@@ -1509,7 +1534,7 @@ async function startServer() {
       const key = requireApiKey(apiKey);
       const ai = new GoogleGenAI({ apiKey: key });
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: getMergedModels().creative,
         contents: `Generate ${count} distinct stylistic variants of this image prompt. Explore different visual styles: photorealistic, illustrated/vector, abstract, typographic, cinematic.\nBase prompt: "${expandedPrompt}"\nReturn ONLY a valid JSON object: { "variants": [ { "style": "...", "prompt": "..." } ] }`,
       });
       const txt = response.text?.trim() ?? "{}";
@@ -1560,7 +1585,7 @@ async function startServer() {
         contents = `Score this ${jobType}. Prompt/Text: "${promptText}". ${brandCtx} Purpose: "${purposeCtx}".\nReturn ONLY valid JSON matching: ${scoreSchema}`;
       }
 
-      const response = await ai.models.generateContent({ model: "gemini-2.5-flash-preview-04-17", contents });
+      const response = await ai.models.generateContent({ model: jobType === "image" ? getMergedModels().multimodal : getMergedModels().text, contents });
       const txt = response.text?.trim() ?? "{}";
       const m = txt.match(/\{[\s\S]*\}/);
       const scoreData = m ? JSON.parse(m[0]) as MediaScore : null;
@@ -1902,7 +1927,7 @@ async function startServer() {
       ].filter(Boolean).join("\n");
 
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-04-17",
+        model: getMergedModels().text,
         contents: prompt,
       });
 
@@ -2058,7 +2083,7 @@ async function startServer() {
         .join(" ");
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: getMergedModels().creative,
         contents: `${systemPrompt}\n\nCustomer message: "${Body}"\n\nYour SMS reply:`,
       });
 
@@ -2199,7 +2224,7 @@ async function startServer() {
 
         const ai = new GoogleGenAI({ apiKey });
         const metaResp = await ai.models.generateContent({
-          model: "gemini-2.5-flash",
+          model: getMergedModels().boardroom,
           contents: `Given this boardroom session result about "${session.topic}", return only JSON with shape: { "title": "...", "summary": "...", "tags": ["..."] }. title: 5-8 words. summary: 2-3 sentences. tags: 4-6 strategic keywords.\n\nSession result:\n${convergence}`,
         });
         try {
@@ -2654,7 +2679,7 @@ async function startServer() {
 
       try {
         const aiRes = await ai.models.generateContent({
-          model: "gemini-2.5-flash",
+          model: getMergedModels().text,
           contents: promptText,
         });
         const raw = aiRes.text?.trim() ?? "{}";
@@ -2824,7 +2849,94 @@ async function startServer() {
     }
   });
 
+  // ── L1-S4.5: Settings API (W2 + W4) ─────────────────────────────────────────
+  // GET /api/settings  — returns current config (no API key)
+  // PUT /api/settings  — runtime overrides saved to data/settings.json
+  // POST /api/settings/test-model — verifies a model responds
+
+  api.get("/settings", (_req, res) => {
+    res.json({
+      models: getMergedModels(),
+      defaults: getMergedDefaults(),
+      features: getMergedFeatures(),
+      server: { port: serverConfig.port },
+      ffmpeg: _serverFfmpegAvailable,
+      ffmpegVersion: _serverFfmpegVersion ?? null,
+      version: cfgAppTop.version,
+    });
+  });
+
+  api.put("/settings", async (req, res) => {
+    try {
+      const { models: m, defaults: d, features: f } = req.body as {
+        models?: Record<string, string>;
+        defaults?: Record<string, unknown>;
+        features?: Record<string, boolean>;
+      };
+
+      // Deep-merge incoming values into runtimeSettings
+      if (m) runtimeSettings.models = { ...(runtimeSettings.models ?? {}), ...m };
+      if (d) runtimeSettings.defaults = { ...(runtimeSettings.defaults ?? {}), ...d };
+      if (f) runtimeSettings.features = { ...(runtimeSettings.features ?? {}), ...f };
+
+      // Persist to disk
+      await fs.mkdir(path.dirname(SETTINGS_FILE), { recursive: true });
+      await fs.writeFile(SETTINGS_FILE, JSON.stringify(runtimeSettings, null, 2));
+
+      res.json({
+        ok: true,
+        models: getMergedModels(),
+        defaults: getMergedDefaults(),
+        features: getMergedFeatures(),
+      });
+    } catch (err: any) {
+      console.error("[settings] PUT error:", err);
+      res.status(500).json({ ok: false, error: err.message || "Failed to save settings" });
+    }
+  });
+
+  // W4: Test whether a given model is accessible and responsive
+  api.post("/settings/test-model", async (req, res) => {
+    const { model, apiKey } = req.body as { model?: string; apiKey?: string };
+    if (!model) {
+      return res.status(400).json({ ok: false, error: "model is required" });
+    }
+    let key: string;
+    try {
+      key = requireApiKey(apiKey);
+    } catch {
+      return res.status(400).json({ ok: false, model, error: "No API key available" });
+    }
+
+    const start = Date.now();
+    try {
+      const ai = new GoogleGenAI({ apiKey: key });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10_000);
+
+      const response = await ai.models.generateContent({
+        model,
+        contents: "Respond with only the word: OK",
+      });
+      clearTimeout(timeout);
+
+      const text = response.text?.trim() ?? "";
+      const responseTime = Date.now() - start;
+      res.json({ ok: true, model, responseTime, response: text });
+    } catch (err: any) {
+      const responseTime = Date.now() - start;
+      const isTimeout = err?.name === "AbortError" || responseTime >= 9900;
+      res.json({
+        ok: false,
+        model,
+        responseTime,
+        error: isTimeout ? "Timed out after 10s" : (err?.message || "Model call failed"),
+      });
+    }
+  });
+
   app.use("/api", api);
+
 
 
   if (process.env.NODE_ENV !== "production") {

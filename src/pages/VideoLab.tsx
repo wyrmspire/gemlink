@@ -72,7 +72,7 @@ export default function VideoLab() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: fullPrompt,
-          model: "veo-3.1-fast-generate-preview",
+          model: import.meta.env.VITE_MODEL_VIDEO || "veo-2.0-generate-001", // ── L3-S4.5: use env var
           resolution,
           aspectRatio,
           brandContext: brand,

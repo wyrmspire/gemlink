@@ -1,0 +1,27 @@
+{
+  "models": {
+    "text": "gemini-2.5-flash",
+    "multimodal": "gemini-2.5-flash",
+    "image": "gemini-2.5-flash-preview-image",
+    "video": "veo-2.0-generate-001",
+    "tts": "gemini-2.5-flash-preview-tts",
+    "creative": "gemini-2.5-flash",
+    "boardroom": "gemini-2.5-flash"
+  },
+  "defaults": {
+    "imageCount": 1,
+    "aspectRatio": "1:1",
+    "imageSize": "1K",
+    "videoResolution": "720p",
+    "videoAspectRatio": "16:9",
+    "voice": "Kore",
+    "captionStyle": "clean"
+  },
+  "features": {
+    "autoScore": true,
+    "autoTag": true,
+    "autoSavePlans": true,
+    "confirmBeforeGenerate": true,
+    "kenBurnsDefault": true
+  }
+}

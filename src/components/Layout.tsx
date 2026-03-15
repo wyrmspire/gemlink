@@ -9,6 +9,7 @@ import {
   Search,
   PhoneCall,
   Settings,
+  Settings2,
   Library as LibraryIcon,
   Menu,
   X,
@@ -46,6 +47,8 @@ const navigation = [
   { name: "Media Library", href: "/library", icon: LibraryIcon },
   { name: "Collections", href: "/collections", icon: FolderOpen },
   { name: "Strategy Briefs", href: "/briefs", icon: FileStack },
+  // ── Added by Lane 3 (Sprint 4.5) ──
+  { name: "Settings", href: "/settings", icon: Settings2 },
 ];
 
 function ProjectSwitcher() {
