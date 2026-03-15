@@ -113,61 +113,33 @@
 **Focus**: `/compose` page, media picker, storyboard view
 **Owner**: `src/pages/Compose.tsx` (new), `src/components/MediaPickerPanel.tsx` (new)
 
-### W1. Media Picker Panel (P0) 🟡
+### W1. Media Picker Panel (P0) ✅
 - **Files**: `src/components/MediaPickerPanel.tsx` (new)
 - **What**: Reusable panel for browsing Library items.
-  - Fetches from `GET /api/media/history?projectId=`
+  - Fetches from `GET /api/media/history`
   - Filter tabs: All | Images | Videos | Voice
   - Search within results (prompt text, tags)
   - Thumbnail grid with type icon overlay
   - Click or drag to select; callback `onSelect(job)`
   - Loading skeleton, empty state
   - Used by Compose page and potentially Collections
+- **Done**: Implemented with 3-col thumbnail grid, type badges, pulsing skeleton, empty state, refresh button. Fetches all history (no projectId filter) matching Library.tsx behavior so media always shows.
 
-### W2. Slide Timeline / Storyboard View (P0) 🟡
+### W2. Slide Timeline / Storyboard View (P0) ✅
 - **Files**: `src/components/SlideTimeline.tsx` (new)
-- **What**: Horizontal storyboard showing slides in order.
-  - Each slide card: thumbnail, duration badge, transition indicator
-  - Drag-to-reorder via `@dnd-kit` (already installed)
-  - Click slide → expand to show per-slide settings:
-    - Duration slider (1–10s, default 3s)
-    - Transition picker dropdown
-    - Ken Burns toggle
-    - Optional text overlay input
-  - "+" button to add slide from MediaPicker
-  - Delete button per slide
-  - Visual transition connector between slides (e.g., arrow with transition name)
+- **Done**: Horizontal scrollable row with @dnd-kit/sortable drag-to-reorder, 100×80px thumbnail cards with duration badge + transition arrow connector. Click to expand per-slide settings (duration slider, TransitionPicker, Ken Burns toggle, text overlay input + position selector). Empty state with Add button.
 
-### W3. Compose Page — Layout & State (P0) 🟡
-- **Files**: `src/pages/Compose.tsx` (new), `src/App.tsx`
-- **What**: Main `/compose` page with mode tabs.
-  - 3 mode tabs: **Slideshow** | **Merge** | **Captions Only**
-  - Left panel: `<MediaPickerPanel />` (collapsible on mobile)
-  - Center: mode-specific editor area
-    - Slideshow: `<SlideTimeline />` + voiceover picker + caption editor
-    - Merge: video picker + audio picker + preview
-    - Captions Only: video picker + caption text/style editor
-  - Bottom: output config (aspect ratio, resolution) + **Preview** + **Render** buttons
-  - State: `ComposeProject` object with slides[], voiceJobId, captionConfig, outputConfig
-  - Per-project localStorage persistence
-  - Register lazy route in `App.tsx`, add sidebar nav item in `Layout.tsx`
+### W3. Compose Page — Layout & State (P0) ✅
+- **Files**: `src/pages/Compose.tsx` (new), `src/App.tsx`, `src/components/Layout.tsx`
+- **Done**: 3-mode tabs (Slideshow/Merge/Captions Only), collapsible media panel (220px, animated), per-mode editor area, bottom bar with aspect ratio (9:16/16:9/1:1/4:5) + resolution (720p/1080p) + Preview + Render buttons. State persisted to `gemlink-compose-${projectId}`. Render calls `POST /api/media/compose` with graceful 503 fallback. Lazy route registered in App.tsx, Compose nav item added to Layout.tsx after Media Plan.
 
-### W4. Transition Picker & Caption Editor Components (P1) 🟡
+### W4. Transition Picker & Caption Editor Components (P1) ✅
 - **Files**: `src/components/TransitionPicker.tsx` (new), `src/components/CaptionEditor.tsx` (new)
-- **What**:
-  - **TransitionPicker**: dropdown with transition name + mini icon/preview per option. Options: fade, fadeblack, fadewhite, dissolve, slideright, slideleft, slideup, slidedown, circlecrop, radial, wiperight, wipeleft. `onChange(transition)` callback.
-  - **CaptionEditor**: text area for caption text, style preset selector (Clean/Bold/Boxed/Typewriter/Word-Highlight), font size slider, color picker, position toggle (top/center/bottom). Live preview strip showing styled sample text. `onChange(captionConfig)` callback.
+- **Done**: TransitionPicker — styled `<select>` with 12 FFmpeg xfade options, description subtitle. CaptionEditor — textarea, 5 style preset buttons (Clean/Bold Outline/Boxed/Typewriter/Word Highlight), font size slider (24–72), color swatches + hex input + native color picker, top/center/bottom position toggle, live preview strip showing approximate CSS rendering.
 
-### W5. CSS-Based Composition Preview (P1) 🟡
+### W5. CSS-Based Composition Preview (P1) ✅
 - **Files**: `src/components/ComposePreview.tsx` (new)
-- **What**: In-browser approximate preview before server render.
-  - Shows slides in sequence using CSS transitions (opacity, transform)
-  - Plays voiceover audio via `<audio>` element synced to slide timing
-  - Caption text overlay with approximate styling (matches ASS presets)
-  - Playback controls: play/pause, restart, progress bar
-  - Aspect ratio frame matching output config (9:16, 16:9, 1:1)
-  - "This is an approximate preview — final render uses FFmpeg" disclaimer
-  - NOT pixel-perfect — goal is quick feedback loop before committing to render
+- **Done**: Aspect-ratio-framed player (9:16/16:9/1:1/4:5) with CSS transitions mapped from FFmpeg filter names (fade, slide, wipe, etc.). Play/pause/restart controls, progress bar, slide indicator dots, Ken Burns keyframe animation, caption overlay with style-appropriate CSS approximating ASS presets. Audio element for voiceover sync. Slide count/elapsed time display. "Approximate preview" disclaimer.
 
 ---
 
