@@ -52,15 +52,11 @@ interface Job {
   templateName?: string;
   sourceDescription?: string;
   composeConfig?: Record<string, unknown>;
-  // compose-specific metadata
   duration?: number;
-  slideCount?: number;
-  templateName?: string;
 }
 
 type SortMode = "newest" | "highest";
 type FilterType = "all" | "image" | "video" | "voice" | "compose";
-type TypeFilter = "all" | "image" | "video" | "compose";
 
 export default function Library() {
   const { toast } = useToast();
@@ -74,8 +70,6 @@ export default function Library() {
   const [sortMode, setSortMode] = useState<SortMode>("newest");
   const [filterType, setFilterType] = useState<FilterType>("all");
   const [savingInsights, setSavingInsights] = useState(false);
-  // W5 (L3): type filter
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
 
   const fetchHistory = useCallback(async (silent = false) => {
     if (silent) {
@@ -107,13 +101,15 @@ export default function Library() {
     return () => window.clearInterval(interval);
   }, [jobs, fetchHistory]);
 
-  // Client-side search filter + sort
+  // Client-side search filter + sort + type filter
   const filtered = useMemo(() => {
     let result = jobs;
-    // Type filter
+
+    // Type filter (Lane 3: includes "compose")
     if (filterType !== "all") {
       result = result.filter((j) => j.type === filterType);
     }
+
     if (search.trim()) {
       const q = search.toLowerCase();
       result = result.filter((j) =>
@@ -138,11 +134,11 @@ export default function Library() {
 
   const getIcon = (type: string) => {
     switch (type) {
-      case "image":   return <ImageIcon className="w-5 h-5 text-indigo-400" />;
-      case "video":   return <Video className="w-5 h-5 text-emerald-400" />;
-      case "voice":   return <Mic className="w-5 h-5 text-amber-400" />;
+      case "image": return <ImageIcon className="w-5 h-5 text-indigo-400" />;
+      case "video": return <Video className="w-5 h-5 text-emerald-400" />;
+      case "voice": return <Mic className="w-5 h-5 text-amber-400" />;
       case "compose": return <Film className="w-5 h-5 text-violet-400" />;
-      default:        return <Clock className="w-5 h-5 text-zinc-400" />;
+      default: return <Clock className="w-5 h-5 text-zinc-400" />;
     }
   };
 
@@ -260,6 +256,15 @@ export default function Library() {
     </div>
   );
 
+  // Filter type tabs config
+  const TYPE_TABS: { value: FilterType; label: string }[] = [
+    { value: "all", label: "All" },
+    { value: "image", label: "Images" },
+    { value: "video", label: "Videos" },
+    { value: "voice", label: "Voice" },
+    { value: "compose", label: "Composed" }, // Lane 3 W5
+  ];
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -270,7 +275,7 @@ export default function Library() {
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-white mb-2">Media Library</h1>
           <p className="text-zinc-400 text-sm md:text-base">
-            Browse your generated images, videos, and voice assets.
+            Browse your generated images, videos, voice assets, and composed videos.
           </p>
         </div>
         <button
@@ -280,7 +285,9 @@ export default function Library() {
           <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
           Refresh
         </button>
-      </d      {/* Search + Sort + Filter toolbar */}
+      </div>
+
+      {/* Search + Sort + Filter toolbar */}
       <div className="flex gap-3 mb-6 flex-wrap">
         <div className="relative flex-1 min-w-0">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
@@ -293,15 +300,10 @@ export default function Library() {
             className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-11 pr-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
           />
         </div>
-        {/* Type filter tabs */}
-        <div className="flex items-center gap-1 bg-zinc-950 border border-zinc-800 rounded-xl px-2 py-1.5 flex-wrap">
-          {([
-            { value: "all", label: "All" },
-            { value: "image", label: "Images" },
-            { value: "video", label: "Videos" },
-            { value: "voice", label: "Voice" },
-            { value: "compose", label: "Composed" },
-          ] as { value: FilterType; label: string }[]).map((tab) => (
+
+        {/* Type filter tabs — W5 (Lane 3): includes Composed */}
+        <div className="flex items-center gap-1 bg-zinc-950 border border-zinc-800 rounded-xl px-2 py-1.5">
+          {TYPE_TABS.map((tab) => (
             <button
               key={tab.value}
               id={`filter-${tab.value}`}
@@ -318,6 +320,7 @@ export default function Library() {
             </button>
           ))}
         </div>
+
         {/* Sort toggle */}
         <div className="flex items-center gap-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2">
           <SortAsc className="w-4 h-4 text-zinc-500 shrink-0" />
@@ -345,6 +348,7 @@ export default function Library() {
             ★ Highest Rated
           </button>
         </div>
+
         {/* W4 (L6): Save Scoring Insights button — only visible in Highest Rated mode */}
         {sortMode === "highest" && (
           <button
@@ -362,43 +366,6 @@ export default function Library() {
             📊 Save Scoring Insights
           </button>
         )}
-      </div>}
-      </div>
-
-      {/* W5 (L3): Type filter tabs — All | Images | Videos | Voice | Compose */}
-      <div id="library-type-filter" className="flex gap-1.5 mb-6 flex-wrap">
-        {([
-          { key: "all",     label: "All",     icon: null },
-          { key: "image",   label: "Images",  icon: <ImageIcon className="w-3.5 h-3.5" /> },
-          { key: "video",   label: "Videos",  icon: <Video className="w-3.5 h-3.5" /> },
-          { key: "voice",   label: "Voice",   icon: <Mic className="w-3.5 h-3.5" /> },
-          { key: "compose", label: "Compose", icon: <Film className="w-3.5 h-3.5" /> },
-        ] as { key: TypeFilter; label: string; icon: React.ReactNode }[]).map(({ key, label, icon }) => (
-          <button
-            key={key}
-            id={`filter-${key}`}
-            onClick={() => setTypeFilter(key)}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${
-              typeFilter === key
-                ? key === "compose"
-                  ? "bg-violet-600/20 border-violet-500/40 text-violet-300"
-                  : key === "image"
-                  ? "bg-indigo-600/20 border-indigo-500/40 text-indigo-300"
-                  : key === "video"
-                  ? "bg-emerald-600/20 border-emerald-500/40 text-emerald-300"
-                  : key === "voice"
-                  ? "bg-amber-600/20 border-amber-500/40 text-amber-300"
-                  : "bg-zinc-700/60 border-zinc-600 text-white"
-                : "bg-zinc-950 border-zinc-800 text-zinc-500 hover:text-zinc-200 hover:border-zinc-600"
-            }`}
-          >
-            {icon}
-            {label}
-            <span className="ml-0.5 text-zinc-600 text-[10px]">
-              ({key === "all" ? jobs.length : jobs.filter((j) => j.type === key).length})
-            </span>
-          </button>
-        ))}
       </div>
 
       {loading ? (
@@ -434,10 +401,12 @@ export default function Library() {
         <div className="text-center py-16 bg-zinc-950 border border-zinc-800 rounded-2xl">
           <ImageIcon className="w-12 h-12 text-zinc-600 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-white mb-2">
-            {search ? "No results found" : "No media yet"}
+            {search || filterType !== "all" ? "No results found" : "No media yet"}
           </h3>
           <p className="text-zinc-400">
-            {search ? "Try a different search term." : "Your generated assets will appear here."}
+            {search || filterType !== "all"
+              ? "Try a different search term or filter."
+              : "Your generated assets will appear here."}
           </p>
         </div>
       ) : (
@@ -479,6 +448,15 @@ export default function Library() {
                       {scoreBadge(job.score)}
                     </div>
                   )}
+
+                  {/* Compose type indicator (top-left corner) */}
+                  {job.type === "compose" && (
+                    <div className="absolute top-2 left-2">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-violet-600/80 text-white backdrop-blur-sm">
+                        <Film className="w-2.5 h-2.5" /> Composed
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Info */}
@@ -491,7 +469,7 @@ export default function Library() {
                     <span className="ml-auto">{getStatusPill(job)}</span>
                   </div>
 
-                  {/* Compose-specific badges */}
+                  {/* Compose-specific badges (W5 Lane 3) */}
                   {job.type === "compose" && (
                     <div className="flex items-center gap-2 flex-wrap">
                       {job.slideCount && (
@@ -503,6 +481,9 @@ export default function Library() {
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-indigo-500/15 text-indigo-300 border border-indigo-500/20">
                           {job.templateName}
                         </span>
+                      )}
+                      {job.duration && (
+                        <span className="text-xs text-zinc-500">{job.duration.toFixed(1)}s</span>
                       )}
                     </div>
                   )}
@@ -540,6 +521,8 @@ export default function Library() {
                       )}
                       Copy Prompt
                     </button>
+
+                    {/* W5 (Lane 3): Compose jobs get Re-edit instead of Regenerate */}
                     {job.type === "compose" ? (
                       <button
                         id={`re-edit-${job.id}`}
@@ -549,7 +532,7 @@ export default function Library() {
                           }
                           navigate("/compose");
                         }}
-                        title="Re-edit composition"
+                        title="Re-edit this composition"
                         className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-violet-700/50 text-xs text-violet-400 hover:text-white hover:border-violet-500 transition-colors"
                       >
                         <ExternalLink className="w-3.5 h-3.5" />

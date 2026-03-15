@@ -14,7 +14,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "ci": "bash scripts/ci.sh"
+    "ci": "bash scripts/ci.sh",
+    "compose:check": "ffmpeg -version && ffprobe -version && echo 'FFmpeg OK'"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
