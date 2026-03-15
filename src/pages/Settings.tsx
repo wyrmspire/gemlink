@@ -75,7 +75,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   models: {
     text:       import.meta.env.VITE_MODEL_TEXT       || "gemini-2.5-flash",
     multimodal: import.meta.env.VITE_MODEL_MULTIMODAL || "gemini-2.5-flash",
-    image:      import.meta.env.VITE_MODEL_IMAGE      || "gemini-2.5-flash-preview-image",
+    image:      import.meta.env.VITE_MODEL_IMAGE      || "imagen-3.0-generate-002",
     video:      import.meta.env.VITE_MODEL_VIDEO      || "veo-2.0-generate-001",
     tts:        import.meta.env.VITE_MODEL_TTS        || "gemini-2.5-flash-preview-tts",
     creative:   import.meta.env.VITE_MODEL_CREATIVE   || "gemini-2.5-flash",

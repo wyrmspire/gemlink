@@ -227,6 +227,16 @@ describe("CaptionEditor", () => {
     });
   });
 
+  it("shows timing toggles (sentence, word)", async () => {
+    await smokeTest(
+      <CaptionEditor value={DEFAULT_CAPTION_CONFIG} onChange={() => {}} />
+    );
+    await waitFor(() => {
+      expect(screen.getByText(/sentence-level/i)).toBeInTheDocument();
+      expect(screen.getByText(/word-level/i)).toBeInTheDocument();
+    });
+  });
+
   it("shows position toggles (top, center, bottom)", async () => {
     await smokeTest(
       <CaptionEditor value={DEFAULT_CAPTION_CONFIG} onChange={() => {}} />

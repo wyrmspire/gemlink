@@ -102,6 +102,9 @@ export interface SlideshowOptions {
   height?: number;            // output height (default 1920 = 9:16)
   fps?: number;               // default 30
   transitionDuration?: number;// seconds, default 0.5
+  audioTracks?: AudioTrackInput[];
+  watermarkPath?: string;
+  watermarkOpacity?: number;
 }
 
 export interface ASSOptions {
@@ -157,6 +160,12 @@ async function fileSize(filePath: string): Promise<number> {
   } catch {
     return 0;
   }
+}
+
+/** Check if a file is an image based on extension (simple helper) */
+function isImageFile(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  return [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"].includes(ext);
 }
 
 // ── W1: probeMedia ────────────────────────────────────────────────────────────
@@ -227,8 +236,14 @@ export async function mergeVideoAudio(
   }
 
   // Watermark is the last input
+  let wmIndex = -1;
   if (opts.watermarkPath) {
-    args.push("-i", opts.watermarkPath);
+    wmIndex = 1 + audioTracks.length; // Video = 0, Audio = 1..N, watermark = N+1
+    if (isImageFile(opts.watermarkPath)) {
+      args.push("-loop", "1", "-i", opts.watermarkPath);
+    } else {
+      args.push("-i", opts.watermarkPath);
+    }
   }
 
   let videoOutObj = "0:v:0";
@@ -237,12 +252,11 @@ export async function mergeVideoAudio(
   // Apply watermark to video
   if (opts.watermarkPath) {
     requiresVideoEncode = true;
-    const wmIndex = 1 + audioTracks.length; // Video = 0, Audio = 1..N, watermark = N+1
     const opacity = opts.watermarkOpacity ?? 1;
     if (opacity < 1) {
-      filterGraphParts.push(`[${wmIndex}:v]format=rgba,colorchannelmixer=aa=${opacity}[wm];[0:v:0][wm]overlay=W-w-20:H-h-20[vout]`);
+      filterGraphParts.push(`[${wmIndex}:v]format=rgba,colorchannelmixer=aa=${opacity}[wm];[0:v:0][wm]overlay=W-w-20:H-h-20:shortest=1[vout]`);
     } else {
-      filterGraphParts.push(`[0:v:0][${wmIndex}:v]overlay=W-w-20:H-h-20[vout]`);
+      filterGraphParts.push(`[0:v:0][${wmIndex}:v]overlay=W-w-20:H-h-20:shortest=1[vout]`);
     }
     videoOutObj = "vout";
   }
@@ -267,8 +281,7 @@ export async function mergeVideoAudio(
         }
     }
     
-    // Mix them. The default behavior is to use `duration=longest`.
-    // The -shortest flag ensures the final output matches the shortest stream (the video if trimPoints are used).
+    // Mix them.
     if (audioTracks.length === 1 && audioFilters.length === 0) {
        audioOutObj = "1:a:0";
     } else {
@@ -283,13 +296,13 @@ export async function mergeVideoAudio(
     args.push("-filter_complex", filterGraphParts.join(";"));
   }
 
-  args.push("-map", `[${videoOutObj}]`.replace(/\[(\d+:[av]:\d+)\]/g, "$1")); // Safe unwrap if mapping direct stream e.g. "0:v:0" vs "[vout]"
+  args.push("-map", videoOutObj.includes("vout") ? "[vout]" : "0:v:0");
   if (audioTracks.length > 0) {
-    args.push("-map", `[${audioOutObj}]`.replace(/\[(\d+:[av]:\d+)\]/g, "$1"));
+    args.push("-map", audioOutObj.includes("aout") ? "[aout]" : "1:a:0");
   }
 
   // Set codecs
-  if (requiresVideoEncode) {
+  if (requiresVideoEncode || filterGraphParts.length > 0) {
     args.push("-c:v", "libx264", "-pix_fmt", "yuv420p");
   } else {
     args.push("-c:v", "copy");
@@ -300,6 +313,7 @@ export async function mergeVideoAudio(
   args.push("-shortest", outputPath);
 
   try {
+    console.log(`[compose] mergeVideoAudio: ffmpeg ${args.join(" ")}`);
     await execFileAsync("ffmpeg", args);
   } catch (err: any) {
     throw new Error(`mergeVideoAudio failed: ${err.stderr || err.message}`);
@@ -343,6 +357,21 @@ export async function createSlideshow(
 
   for (const slide of slides) {
     args.push("-loop", "1", "-i", slide.imagePath);
+  }
+
+  const audioTracks = opts.audioTracks || [];
+  for (const track of audioTracks) {
+    args.push("-i", track.audioPath);
+  }
+
+  let wmIndex = -1;
+  if (opts.watermarkPath) {
+    wmIndex = slides.length + audioTracks.length;
+    if (isImageFile(opts.watermarkPath)) {
+      args.push("-loop", "1", "-i", opts.watermarkPath);
+    } else {
+      args.push("-i", opts.watermarkPath);
+    }
   }
 
   // Build filtergraph
@@ -390,10 +419,55 @@ export async function createSlideshow(
     }
   }
 
+  // Audio mix for slideshow
+  let audioOutObj = "";
+  if (audioTracks.length > 0) {
+    const audioFilters: string[] = [];
+    const amixInputs: string[] = [];
+    for (let i = 0; i < audioTracks.length; i++) {
+      const idx = slides.length + i;
+      const trackStr = `[${idx}:a:0]`;
+      const vol = audioTracks[i].volume ?? 1.0;
+      if (vol !== 1.0) {
+        audioFilters.push(`${trackStr}volume=${vol}[a${i}]`);
+        amixInputs.push(`[a${i}]`);
+      } else {
+        amixInputs.push(trackStr);
+      }
+    }
+    if (audioTracks.length === 1 && audioFilters.length === 0) {
+      audioOutObj = `[${slides.length}:a:0]`;
+    } else {
+      const mixSourceInputs = amixInputs.join("");
+      const amixFilter = `${mixSourceInputs}amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2[aout]`;
+      audioFilters.push(amixFilter);
+      filterParts.push(audioFilters.join(";"));
+      audioOutObj = "[aout]";
+    }
+  }
+
+  let finalVideoLabel = "vout";
+
+  // Watermark for slideshow
+  if (opts.watermarkPath) {
+    const opacity = opts.watermarkOpacity ?? 1;
+    const wmFilter = opacity < 1
+      ? `[${wmIndex}:v]format=rgba,colorchannelmixer=aa=${opacity}[wm];[vout][wm]overlay=W-w-20:H-h-20:shortest=1[vw]`
+      : `[vout][${wmIndex}:v]overlay=W-w-20:H-h-20:shortest=1[vw]`;
+    filterParts.push(wmFilter);
+    finalVideoLabel = "vw";
+  }
+
   args.push("-filter_complex", filterParts.join(";"));
-  args.push("-map", "[vout]");
+  args.push("-map", `[${finalVideoLabel}]`);
+  if (audioOutObj) {
+    args.push("-map", audioOutObj);
+  }
   args.push("-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", String(fps));
-  args.push(outputPath);
+  if (audioOutObj) {
+    args.push("-c:a", "aac");
+  }
+  args.push("-shortest", outputPath);
 
   try {
     await execFileAsync("ffmpeg", args, { maxBuffer: 100 * 1024 * 1024 });

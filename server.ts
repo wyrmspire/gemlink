@@ -1018,7 +1018,7 @@ async function startServer() {
       if (type === "image") {
         const { prompt, model, size, brandContext, projectId } = body as any;
         const manifest: JobManifest = {
-          id: jobId, type: "image", prompt, model: model ?? getMergedModels().image,
+          id: jobId, type: "image", prompt, model: model || getMergedModels().image || "imagen-3.0-generate-002",
           size: size ?? "1K", brandContext, projectId,
           createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
           status: "pending", outputs: [],
@@ -2487,7 +2487,11 @@ async function startServer() {
       status: "processing",
       title,
       inputConfig: JSON.stringify(body),
+      audioTracks: body.audioTracks ? JSON.stringify(body.audioTracks) : null,
+      trimPoints: body.trimPoints ? JSON.stringify(body.trimPoints) : null,
+      watermarkJobId: (body.watermarkJobId as string) ?? null,
       outputPath: null,
+      outputs: JSON.stringify([]),
       duration: null,
       createdAt: now,
       updatedAt: now,
@@ -2510,6 +2514,56 @@ async function startServer() {
       try {
         let result: { outputPath: string; duration: number; size: number } | null = null;
 
+        // ── Resolve Common Assets (Audio & Watermark) ───────────────────────
+        const resolvedAudioTracks: import("./compose.ts").AudioTrackInput[] = [];
+        if (Array.isArray(body.audioTracks) && body.audioTracks.length > 0) {
+          for (const t of body.audioTracks as Array<{ jobId?: string; path?: string; volume?: number }>) {
+            let ap = "";
+            if (t.path) {
+              ap = t.path;
+            } else if (t.jobId) {
+              let manifest;
+              try {
+                manifest = await readManifest("voice", t.jobId);
+              } catch {
+                try {
+                  manifest = await readManifest("audio" as any, t.jobId);
+                } catch {
+                  manifest = await readManifest("video", t.jobId); 
+                }
+              }
+              const relOut = manifest.outputs[0];
+              if (!relOut) throw new Error(`audioTrack jobId ${t.jobId} has no outputs`);
+              ap = path.join(process.cwd(), relOut.replace(/^\//, ""));
+            } else {
+              continue;
+            }
+            resolvedAudioTracks.push({ audioPath: ap, volume: t.volume });
+          }
+        } else if (body.audioJobId || body.audioPath) {
+          // legacy single track fallback
+          let audioPath: string;
+          if (body.audioPath) {
+            audioPath = body.audioPath as string;
+          } else {
+            const manifest = await readManifest("voice", body.audioJobId as string);
+            const relOut = manifest.outputs[0];
+            if (!relOut) throw new Error(`audioJobId ${body.audioJobId} has no outputs`);
+            audioPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
+          }
+          resolvedAudioTracks.push({ audioPath });
+        }
+
+        let watermarkPath: string | undefined;
+        if (body.watermarkPath) {
+          watermarkPath = body.watermarkPath as string;
+        } else if (body.watermarkJobId) {
+          const manifest = await readManifest("image", body.watermarkJobId as string);
+          const relOut = manifest.outputs[0];
+          if (!relOut) throw new Error(`watermarkJobId ${body.watermarkJobId} has no outputs`);
+          watermarkPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
+        }
+
         if (type === "merge") {
           // Resolve video path
           let videoPath: string;
@@ -2523,61 +2577,6 @@ async function startServer() {
             const relOut = manifest.outputs[0];
             if (!relOut) throw new Error(`videoJobId ${body.videoJobId} has no outputs`);
             videoPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
-          }
-
-          // Resolve multiple audio paths
-          const resolvedAudioTracks: import("./compose.ts").AudioTrackInput[] = [];
-          if (Array.isArray(body.audioTracks) && body.audioTracks.length > 0) {
-            for (const t of body.audioTracks as Array<{ jobId?: string; path?: string; volume?: number }>) {
-              let ap = "";
-              if (t.path) {
-                ap = t.path;
-              } else if (t.jobId) {
-                // Try voice then audio
-                let manifest;
-                try {
-                  manifest = await readManifest("voice", t.jobId);
-                } catch {
-                  try {
-                    manifest = await readManifest("audio" as any, t.jobId);
-                  } catch {
-                    manifest = await readManifest("video", t.jobId); // fallback
-                  }
-                }
-                const relOut = manifest.outputs[0];
-                if (!relOut) throw new Error(`audioTrack jobId ${t.jobId} has no outputs`);
-                ap = path.join(process.cwd(), relOut.replace(/^\//, ""));
-              } else {
-                continue;
-              }
-              resolvedAudioTracks.push({ audioPath: ap, volume: t.volume });
-            }
-          } else {
-            // legacy single track fallback
-            let audioPath: string;
-            if (body.audioPath) {
-              audioPath = body.audioPath as string;
-            } else {
-              const manifest = await readManifest(
-                "voice",
-                body.audioJobId as string
-              );
-              const relOut = manifest.outputs[0];
-              if (!relOut) throw new Error(`audioJobId ${body.audioJobId} has no outputs`);
-              audioPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
-            }
-            resolvedAudioTracks.push({ audioPath });
-          }
-
-          // Resolve watermark
-          let watermarkPath: string | undefined;
-          if (body.watermarkPath) {
-            watermarkPath = body.watermarkPath as string;
-          } else if (body.watermarkJobId) {
-            const manifest = await readManifest("image", body.watermarkJobId as string);
-            const relOut = manifest.outputs[0];
-            if (!relOut) throw new Error(`watermarkJobId ${body.watermarkJobId} has no outputs`);
-            watermarkPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
           }
 
           // Resolve trim points
@@ -2641,6 +2640,9 @@ async function startServer() {
             width: ow,
             height: oh,
             fps: (outputCfg.fps as number) ?? 30,
+            audioTracks: resolvedAudioTracks,
+            watermarkPath,
+            watermarkOpacity: (body.watermarkOpacity as number) ?? 1.0,
           });
 
         } else if (type === "caption") {

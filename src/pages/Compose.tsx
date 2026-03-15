@@ -258,6 +258,15 @@ export default function Compose() {
       title: project.title,
     };
 
+    // Build audio tracks array (Sprint 5 Multi-track support)
+    const audioTracks: Array<{ jobId: string; volume: number }> = [];
+    if (project.voiceJobId) {
+      audioTracks.push({ jobId: project.voiceJobId, volume: project.voiceVolume ?? 1.0 });
+    }
+    if (project.musicJobId) {
+      audioTracks.push({ jobId: project.musicJobId, volume: project.musicVolume ?? 0.15 });
+    }
+
     if (project.mode === "slideshow") {
       body.slides = project.slides.map((s) => ({
         jobId: s.jobId,
@@ -266,12 +275,25 @@ export default function Compose() {
         kenBurns: s.kenBurns,
         textOverlay: s.textOverlay,
       }));
-      if (project.voiceJobId) body.voiceJobId = project.voiceJobId;
+      if (audioTracks.length > 0) body.audioTracks = audioTracks;
     } else if (project.mode === "merge") {
       body.videoJobId = project.videoJobId;
-      body.audioJobId = project.audioJobId ?? project.voiceJobId;
+      if (audioTracks.length > 0) body.audioTracks = audioTracks;
+      
+      if (project.trimPoints?.start !== undefined || project.trimPoints?.end !== undefined) {
+        body.trimPoints = {
+          inPoint: project.trimPoints.start ?? 0,
+          outPoint: project.trimPoints.end ?? 0,
+        };
+      }
     } else {
       body.videoJobId = project.videoJobId;
+    }
+
+    // Global Watermark
+    if (project.watermarkJobId) {
+      body.watermarkJobId = project.watermarkJobId;
+      body.watermarkOpacity = project.watermarkOpacity ?? 1.0;
     }
 
     if (project.captionConfig?.text) {
@@ -281,6 +303,7 @@ export default function Compose() {
         fontSize: project.captionConfig.fontSize,
         color: project.captionConfig.color,
         position: project.captionConfig.position,
+        timing: project.captionConfig.timing, // W3: sentence vs word timing
       };
     }
 

@@ -112,7 +112,7 @@ function planId() {
 
 function defaultConfig(): GenerationConfig {
   return {
-    model: import.meta.env.VITE_MODEL_IMAGE || "gemini-2.5-flash-preview-image", // L3-S4.5: real model
+    model: import.meta.env.VITE_MODEL_IMAGE || "imagen-3.0-generate-002", // L3-S4.5: real model
     size: "1K",
     aspectRatio: "1:1",
     count: 1,

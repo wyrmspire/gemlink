@@ -168,15 +168,29 @@ db.exec(/* sql */ `
     status       TEXT    NOT NULL CHECK(status IN ('pending', 'processing', 'done', 'failed')),
     title        TEXT,
     inputConfig  TEXT    NOT NULL DEFAULT '{}',  -- JSON ComposeRequest snapshot
+    audioTracks  TEXT,                           -- JSON array of AudioTrackInput
+    trimPoints   TEXT,                           -- JSON object: { inPoint, outPoint }
+    watermarkJobId TEXT,                        -- reference image jobId
     outputPath   TEXT,
+    outputs      TEXT    NOT NULL DEFAULT '[]',  -- JSON array of output paths
     duration     REAL,
     createdAt    TEXT    NOT NULL,
     updatedAt    TEXT    NOT NULL
   );
 
+  -- Migration for existing compose_jobs table (Tier 2)
+  -- Wrap in try-catch blocks via application logic or use a specific pragma check if needed,
+  -- but since better-sqlite3 exec() doesn't allow catching individual errors in one multi-statement call,
+  -- we'll split the alter calls into separate exec calls below the main bootstrap.
   CREATE INDEX IF NOT EXISTS idx_compose_jobs_project ON compose_jobs(projectId);
   CREATE INDEX IF NOT EXISTS idx_compose_jobs_status  ON compose_jobs(status);
 `);
+
+// ── Migration logic for existing installations ──────────────────────────────
+["audioTracks", "trimPoints", "watermarkJobId"].forEach(col => {
+  try { db.exec(`ALTER TABLE compose_jobs ADD COLUMN ${col} TEXT`); } catch {}
+});
+try { db.exec(`ALTER TABLE compose_jobs ADD COLUMN outputs TEXT NOT NULL DEFAULT '[]'`); } catch {}
 
 // ---------------------------------------------------------------------------
 // TypeScript types (shared by all lanes that import db.ts)
@@ -254,7 +268,14 @@ export interface ComposeJobRow {
   title: string | null;
   /** JSON-encoded ComposeRequest snapshot */
   inputConfig: string;
+  /** JSON-encoded AudioTrackInput[] */
+  audioTracks: string | null;
+  /** JSON-encoded trimPoints object */
+  trimPoints: string | null;
+  watermarkJobId: string | null;
   outputPath: string | null;
+  /** JSON-encoded string[] */
+  outputs: string;
   duration: number | null;
   createdAt: string;
   updatedAt: string;
@@ -546,9 +567,9 @@ export function getActiveArtifacts(projectId: string): StrategyArtifactRow[] {
 
 const _insertComposeJob = db.prepare<ComposeJobRow>(/* sql */ `
   INSERT OR REPLACE INTO compose_jobs
-    (id, projectId, type, status, title, inputConfig, outputPath, duration, createdAt, updatedAt)
+    (id, projectId, type, status, title, inputConfig, audioTracks, trimPoints, watermarkJobId, outputPath, outputs, duration, createdAt, updatedAt)
   VALUES
-    (@id, @projectId, @type, @status, @title, @inputConfig, @outputPath, @duration, @createdAt, @updatedAt)
+    (@id, @projectId, @type, @status, @title, @inputConfig, @audioTracks, @trimPoints, @watermarkJobId, @outputPath, @outputs, @duration, @createdAt, @updatedAt)
 `);
 
 const _getComposeJob = db.prepare<{ id: string }>(
@@ -563,12 +584,14 @@ const _updateComposeJobStatus = db.prepare<{
   id: string;
   status: string;
   outputPath: string | null;
+  outputs: string;
   duration: number | null;
   updatedAt: string;
 }>(/* sql */ `
   UPDATE compose_jobs
   SET status     = @status,
       outputPath = @outputPath,
+      outputs    = @outputs,
       duration   = @duration,
       updatedAt  = @updatedAt
   WHERE id = @id
@@ -584,6 +607,7 @@ export const composeJobQueries = {
     id: string;
     status: ComposeJobRow["status"];
     outputPath?: string | null;
+    outputs?: string[];
     duration?: number | null;
     updatedAt?: string;
   }) =>
@@ -591,6 +615,7 @@ export const composeJobQueries = {
       id: opts.id,
       status: opts.status,
       outputPath: opts.outputPath ?? null,
+      outputs: JSON.stringify(opts.outputs ?? (opts.outputPath ? [opts.outputPath] : [])),
       duration: opts.duration ?? null,
       updatedAt: opts.updatedAt ?? new Date().toISOString(),
     }),

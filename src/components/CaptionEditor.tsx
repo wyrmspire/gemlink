@@ -8,6 +8,7 @@ export interface CaptionConfig {
   fontSize: number;
   color: string;
   position: "top" | "center" | "bottom";
+  timing: "sentence" | "word";
 }
 
 export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
@@ -16,6 +17,7 @@ export const DEFAULT_CAPTION_CONFIG: CaptionConfig = {
   fontSize: 48,
   color: "#ffffff",
   position: "bottom",
+  timing: "sentence",
 };
 
 interface CaptionEditorProps {
@@ -212,6 +214,26 @@ export default function CaptionEditor({ value, onChange, className = "" }: Capti
                 className="w-20 bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1 text-xs text-white font-mono focus:outline-none focus:ring-1 focus:ring-indigo-500"
               />
             </div>
+          </div>
+        </div>
+
+        {/* Timing */}
+        <div>
+          <label className="block text-xs uppercase tracking-wider text-zinc-500 mb-2">Timing</label>
+          <div className="flex gap-2">
+            {(["sentence", "word"] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => patch({ timing: t })}
+                className={`flex-1 py-1.5 rounded-xl border text-[10px] font-medium capitalize transition-colors ${
+                  value.timing === t
+                    ? "bg-amber-600/20 border-amber-500/60 text-amber-300"
+                    : "border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-white bg-zinc-900"
+                }`}
+              >
+                {t === "sentence" ? "Sentence-Level" : "Word-Level (Viral)"}
+              </button>
+            ))}
           </div>
         </div>
 
