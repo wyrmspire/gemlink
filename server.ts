@@ -441,10 +441,56 @@ async function startServer() {
     }
   });
 
+  // ── L3-S7 (W2): Rate Limiting Middleware ─────────────────────────────────────
+  interface RateTracker { count: number; resetAt: number; }
+  const rateTrackers = new Map<string, RateTracker>();
 
-  api.post("/media/image", async (req, res) => {
+  function rateLimitMiddleware(type: keyof typeof rateLimits) {
+    return (req: any, res: any, next: any) => {
+      const limit = rateLimits[type] || 60;
+      const now = Date.now();
+      
+      let tracker = rateTrackers.get(type);
+      if (!tracker || tracker.resetAt <= now) {
+        tracker = { count: 0, resetAt: now + 60000 };
+        rateTrackers.set(type, tracker);
+      }
+
+      const reqId = req.headers["x-request-id"] || `req_${Date.now()}`;
+      res.setHeader("X-Request-Id", reqId as string);
+
+      if (tracker.count >= limit) {
+        res.setHeader("X-RateLimit-Limit", limit.toString());
+        res.setHeader("X-RateLimit-Remaining", "0");
+        res.setHeader("X-RateLimit-Reset", Math.floor(tracker.resetAt / 1000).toString());
+        res.setHeader("Retry-After", Math.ceil((tracker.resetAt - now) / 1000).toString());
+        return res.status(429).json({ error: `Rate limit exceeded for ${type}. Try again later.` });
+      }
+
+      tracker.count++;
+      res.setHeader("X-RateLimit-Limit", limit.toString());
+      res.setHeader("X-RateLimit-Remaining", (limit - tracker.count).toString());
+      res.setHeader("X-RateLimit-Reset", Math.floor(tracker.resetAt / 1000).toString());
+      next();
+    };
+  }
+
+
+  api.post("/media/image", rateLimitMiddleware("image"), async (req, res) => {
     try {
+      // ── L2-S7 (W3): Idempotency wrapper (image) ──
+      const idempotencyKey = req.headers["idempotency-key"] as string | undefined;
+      if (idempotencyKey) {
+        const cached = idempotencyQueries.get(`${idempotencyKey}-image`);
+        if (cached) return res.status(200).json(cached);
+      }
+
       const { prompt, model, size, aspectRatio, count, brandContext, projectId, apiKey } = req.body;
+      // ── L2-S7 (W4): Dry-Run Mode (image) ──
+      const dryRun = req.headers["x-dry-run"] || req.body["dry-run"];
+      if (dryRun) {
+        return res.status(200).json({ valid: true, estimatedCredits: 1, model: model || getMergedModels().image });
+      }
       const key = requireApiKey(apiKey);
       const ai = new GoogleGenAI({ apiKey: key });
 
@@ -503,6 +549,7 @@ async function startServer() {
         void autoTagMedia("image", jobId, path.join(getJobDir("image", jobId), "output_0.png"), key, prompt);
       }
 
+      if (idempotencyKey) idempotencyQueries.insert(`${idempotencyKey}-image`, finalManifest);
       res.json(finalManifest);
     } catch (error: any) {
       console.error("Image Generation Error:", error);
@@ -510,9 +557,21 @@ async function startServer() {
     }
   });
 
-  api.post("/media/video", async (req, res) => {
+  api.post("/media/video", rateLimitMiddleware("video"), async (req, res) => {
     try {
+      // ── L2-S7 (W3): Idempotency wrapper (video) ──
+      const idempotencyKey = req.headers["idempotency-key"] as string | undefined;
+      if (idempotencyKey) {
+        const cached = idempotencyQueries.get(`${idempotencyKey}-video`);
+        if (cached) return res.status(200).json(cached);
+      }
+
       const { prompt, model, resolution, aspectRatio, brandContext, projectId, apiKey, imageBytes, mimeType } = req.body;
+      // ── L2-S7 (W4): Dry-Run Mode (video) ──
+      const dryRun = req.headers["x-dry-run"] || req.body["dry-run"];
+      if (dryRun) {
+        return res.status(200).json({ valid: true, estimatedCredits: 1, model: model || getMergedModels().video });
+      }
       const key = requireApiKey(apiKey);
       const ai = new GoogleGenAI({ apiKey: key });
       const selectedModel = model || getMergedModels().video;
@@ -618,6 +677,7 @@ async function startServer() {
         }
       })();
 
+      if (idempotencyKey) idempotencyQueries.insert(`${idempotencyKey}-video`, manifest);
       res.status(202).json(manifest);
     } catch (error: any) {
       console.error("Video Generation Error:", error);
@@ -625,9 +685,21 @@ async function startServer() {
     }
   });
 
-  api.post("/media/voice", async (req, res) => {
+  api.post("/media/voice", rateLimitMiddleware("voice"), async (req, res) => {
     try {
+      // ── L2-S7 (W3): Idempotency wrapper (voice) ──
+      const idempotencyKey = req.headers["idempotency-key"] as string | undefined;
+      if (idempotencyKey) {
+        const cached = idempotencyQueries.get(`${idempotencyKey}-voice`);
+        if (cached) return res.status(200).json(cached);
+      }
+
       const { text, voice, brandContext, projectId, apiKey } = req.body;
+      // ── L2-S7 (W4): Dry-Run Mode (voice) ──
+      const dryRun = req.headers["x-dry-run"] || req.body["dry-run"];
+      if (dryRun) {
+        return res.status(200).json({ valid: true, estimatedCredits: 1, model: getMergedModels().tts });
+      }
       const key = requireApiKey(apiKey);
       const ai = new GoogleGenAI({ apiKey: key });
       const jobId = createJobId();
@@ -704,6 +776,7 @@ async function startServer() {
         void autoTagMedia("voice", jobId, "", key, text);
       }
 
+      if (idempotencyKey) idempotencyQueries.insert(`${idempotencyKey}-voice`, finalManifest);
       res.json(finalManifest);
     } catch (error: any) {
       console.error("Voice Generation Error:", error);
@@ -711,9 +784,21 @@ async function startServer() {
     }
   });
 
-  api.post("/media/music", async (req, res) => {
+  api.post("/media/music", rateLimitMiddleware("music"), async (req, res) => {
     try {
+      // ── L2-S7 (W3): Idempotency wrapper (music) ──
+      const idempotencyKey = req.headers["idempotency-key"] as string | undefined;
+      if (idempotencyKey) {
+        const cached = idempotencyQueries.get(`${idempotencyKey}-music`);
+        if (cached) return res.status(200).json(cached);
+      }
+
       const { prompt, model, duration, brandContext, projectId, apiKey } = req.body;
+      // ── L2-S7 (W4): Dry-Run Mode (music) ──
+      const dryRun = req.headers["x-dry-run"] || req.body["dry-run"];
+      if (dryRun) {
+        return res.status(200).json({ valid: true, estimatedCredits: 1, model: model || getMergedModels().music });
+      }
       const key = requireApiKey(apiKey);
       const ai = new GoogleGenAI({ apiKey: key });
       const jobId = createJobId();
@@ -757,6 +842,7 @@ async function startServer() {
         }
       })();
 
+      if (idempotencyKey) idempotencyQueries.insert(`${idempotencyKey}-music`, manifest);
       res.status(202).json(manifest);
     } catch (error: any) {
       console.error("Music Generation Error:", error);
@@ -813,6 +899,12 @@ async function startServer() {
   // C1: Async session creation — returns 202 immediately; client polls GET /boardroom/sessions/:id for progress.
   api.post("/boardroom/sessions", async (req, res) => {
     try {
+      // ── L2-S7 (W4): Dry-Run Mode (boardroom) ──
+      const dryRun = req.headers["x-dry-run"] || req.body["dry-run"];
+      if (dryRun) {
+        return res.status(200).json({ valid: true, estimatedCalls: 32, seats: req.body?.seats || [] });
+      }
+
       const session = await startBoardroomSessionAsync(req.body || {});
       res.status(202).json(session);
     } catch (error: any) {

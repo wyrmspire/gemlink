@@ -2,7 +2,7 @@
   "models": {
     "text": "gemini-2.5-flash",
     "multimodal": "gemini-2.5-flash",
-    "image": "gemini-2.5-flash-preview-image",
+    "image": "gemini-2.5-flash-image",
     "video": "veo-2.0-generate-001",
     "tts": "gemini-2.5-flash-preview-tts",
     "creative": "gemini-2.5-flash",

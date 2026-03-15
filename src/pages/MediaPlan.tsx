@@ -75,7 +75,7 @@ const STATUS_ORDER: MediaPlanItem["status"][] = [
 
 // ── L3-S4.5: Use real model names (env vars with stable fallbacks)
 const MODELS = [
-  { value: import.meta.env.VITE_MODEL_IMAGE || "imagen-3", label: "Imagen 3 (Quality)" },
+  { value: import.meta.env.VITE_MODEL_IMAGE || "imagen-3.0-generate-002", label: "Imagen 3 (Quality)" },
   { value: "imagen-4", label: "Imagen 4 (Latest)" },
   { value: "gemini-2.0-flash-image", label: "Flash Image 2.0 (Fast)" },
   { value: import.meta.env.VITE_MODEL_VIDEO || "veo-2.0-generate-001", label: "Veo 2.0" },
