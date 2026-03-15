@@ -26,6 +26,10 @@ import {
   Film,
   Layers,
   Music,
+  Copy,
+  RefreshCw,
+  FolderPlus,
+  BarChart3,
 } from "lucide-react";
 import { useProject } from "../context/ProjectContext";
 import { useToast } from "../context/ToastContext";
@@ -446,6 +450,12 @@ export default function MediaPlan() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
 
+  // Single-item generation
+  const [generatingSingleId, setGeneratingSingleId] = useState<string | null>(null);
+
+  // Collect approved
+  const [collectingApproved, setCollectingApproved] = useState(false);
+
   // ── Persistence ────────────────────────────────────────────────────────────
 
   const storageKey = `${PLANS_KEY}-${activeProject?.id ?? "default"}`;
@@ -555,6 +565,27 @@ export default function MediaPlan() {
     saveItems(activePlan.id, activePlan.items.filter((i) => i.id !== itemId));
     if (expandedId === itemId) setExpandedId(null);
     setSelectedIds((s) => { const ns = new Set(s); ns.delete(itemId); return ns; });
+  }
+
+  function duplicateItem(itemId: string) {
+    if (!activePlan) return;
+    const source = activePlan.items.find((i) => i.id === itemId);
+    if (!source) return;
+    const copy = newItem({
+      ...source,
+      id: genId(),
+      label: `Copy of ${source.label}`,
+      status: "draft",
+      generatedJobIds: [],
+      batchId: undefined,
+      batchIndex: undefined,
+      error: undefined,
+    });
+    const idx = activePlan.items.findIndex((i) => i.id === itemId);
+    const next = [...activePlan.items];
+    next.splice(idx + 1, 0, copy);
+    saveItems(activePlan.id, next);
+    toast(`Duplicated "${source.label}".`, "success");
   }
 
   function patchItem(itemId: string, patch: Partial<MediaPlanItem>) {
@@ -787,7 +818,77 @@ export default function MediaPlan() {
     }
   };
 
-  // ── Auto-Compose handler (Lane 3) ─────────────────────────────────────────
+  // ── Generate single item ───────────────────────────────────────────────────
+
+  const handleGenerateSingle = async (itemId: string) => {
+    if (!activePlan) return;
+    const item = activePlan.items.find((i) => i.id === itemId);
+    if (!item || (item.status !== "draft" && item.status !== "rejected")) return;
+    setGeneratingSingleId(itemId);
+    patchItem(itemId, { status: "queued", error: undefined });
+    try {
+      const res = await fetch("/api/media/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: [{
+            type: item.type,
+            body: { prompt: item.promptTemplate, ...item.generationConfig },
+          }],
+        }),
+      });
+      if (!res.ok) throw new Error("unavailable");
+      const data = await res.json();
+      patchItem(itemId, { status: "generating", batchId: data.batchId, batchIndex: 0 });
+      toast(`Generating "${item.label}"…`, "success");
+    } catch {
+      patchItem(itemId, { status: "draft" });
+      toast("Batch endpoint not yet live. Item left in draft.", "info");
+    } finally {
+      setGeneratingSingleId(null);
+    }
+  };
+
+  // ── Collect approved items into a new collection ───────────────────────────
+
+  const handleCollectApproved = useCallback(async () => {
+    if (!activePlan || !activeProject) return;
+    const approvedJobIds = activePlan.items
+      .filter((i) => i.status === "approved" && i.generatedJobIds.length > 0)
+      .flatMap((i) => i.generatedJobIds);
+    if (approvedJobIds.length === 0) {
+      toast("No approved items with generated outputs to collect.", "warning");
+      return;
+    }
+    setCollectingApproved(true);
+    try {
+      const createRes = await fetch("/api/collections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: activeProject.id,
+          name: `${activePlan.name} — Approved`,
+        }),
+      });
+      if (!createRes.ok) throw new Error("Failed to create collection");
+      const { id: collectionId } = await createRes.json();
+      await Promise.all(
+        approvedJobIds.map((jobId) =>
+          fetch(`/api/collections/${collectionId}/items`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ jobId }),
+          })
+        )
+      );
+      toast(`Created collection "${activePlan.name} — Approved" with ${approvedJobIds.length} item${approvedJobIds.length !== 1 ? "s" : ""}.`, "success");
+      navigate("/collections");
+    } catch (err: any) {
+      toast(err.message || "Failed to collect approved items.", "error");
+    } finally {
+      setCollectingApproved(false);
+    }
+  }, [activePlan, activeProject, navigate, toast]);
 
   const handleAutoCompose = useCallback(async () => {
     if (!activePlan) return;
@@ -824,9 +925,16 @@ export default function MediaPlan() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   const draftCount = activePlan?.items.filter((i) => i.status === "draft").length ?? 0;
+  // completedCount: items with generated outputs (review | approved | generating) — used for Auto-Compose threshold
   const completedCount = activePlan?.items.filter(
     (i) => (i.status === "review" || i.status === "approved" || i.status === "generating") && i.generatedJobIds.length > 0
   ).length ?? 0;
+  const approvedCount = activePlan?.items.filter((i) => i.status === "approved").length ?? 0;
+  // progressCount: items that have been generated (review + approved), used for the progress bar only
+  const progressCount = activePlan?.items.filter(
+    (i) => i.status === "review" || i.status === "approved"
+  ).length ?? 0;
+  const totalCount = activePlan?.items.length ?? 0;
 
   return (
     <motion.div
@@ -931,6 +1039,18 @@ export default function MediaPlan() {
               </p>
             </div>
             <div className="flex gap-2 flex-wrap">
+              {/* Mobile plan selector */}
+              {plans.length > 1 && (
+                <select
+                  value={activePlanId ?? ""}
+                  onChange={(e) => { setActivePlanId(e.target.value); setSelectedIds(new Set()); }}
+                  className="lg:hidden bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {plans.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              )}
               {/* Mobile new plan */}
               <button
                 onClick={createNewPlan}
@@ -946,6 +1066,22 @@ export default function MediaPlan() {
                 <Plus className="w-4 h-4" />
                 Add Item
               </button>
+              {/* Collect Approved button: visible when ≥1 approved item with outputs */}
+              {approvedCount > 0 && (
+                <button
+                  onClick={handleCollectApproved}
+                  disabled={collectingApproved}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-sm text-white font-medium transition-colors"
+                  title={`Save ${approvedCount} approved item${approvedCount !== 1 ? "s" : ""} to a new collection`}
+                >
+                  {collectingApproved ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <FolderPlus className="w-4 h-4" />
+                  )}
+                  Collect Approved ({approvedCount})
+                </button>
+              )}
               {/* Lane 3 — Auto-Compose button: visible when ≥3 completed items */}
               {completedCount >= 3 && (
                 <button
@@ -973,6 +1109,44 @@ export default function MediaPlan() {
               </button>
             </div>
           </div>
+
+          {/* Progress overview bar */}
+          {totalCount > 0 && (
+            <div className="mb-6 bg-zinc-950 border border-zinc-800 rounded-2xl p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <BarChart3 className="w-4 h-4 text-zinc-400" />
+                <span className="text-xs font-medium text-zinc-400 uppercase tracking-widest">Plan Progress</span>
+                <span className="ml-auto text-xs text-zinc-500">{progressCount}/{totalCount} generated</span>
+              </div>
+              {/* Progress bar */}
+              <div className="h-2 bg-zinc-800 rounded-full overflow-hidden mb-3">
+                <div
+                  className="h-full bg-gradient-to-r from-indigo-600 to-emerald-500 rounded-full transition-all duration-500"
+                  style={{ width: totalCount > 0 ? `${Math.round((progressCount / totalCount) * 100)}%` : "0%" }}
+                />
+              </div>
+              {/* Status breakdown chips */}
+              <div className="flex flex-wrap gap-2">
+                {(["draft", "queued", "generating", "review", "approved", "rejected"] as const).map((s) => {
+                  const n = activePlan?.items.filter((i) => i.status === s).length ?? 0;
+                  if (n === 0) return null;
+                  const colors: Record<string, string> = {
+                    draft: "bg-zinc-700/40 text-zinc-400",
+                    queued: "bg-amber-500/15 text-amber-300",
+                    generating: "bg-indigo-500/15 text-indigo-300",
+                    review: "bg-sky-500/15 text-sky-300",
+                    approved: "bg-emerald-500/15 text-emerald-300",
+                    rejected: "bg-red-500/15 text-red-300",
+                  };
+                  return (
+                    <span key={s} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${colors[s]}`}>
+                      {n} {s}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Natural language input */}
           <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-6 mb-6">
@@ -1169,6 +1343,39 @@ export default function MediaPlan() {
                       >
                         <Settings2 className="w-4 h-4" />
                       </button>
+                      {/* Duplicate item */}
+                      <button
+                        onClick={() => duplicateItem(item.id)}
+                        title="Duplicate item"
+                        className="text-zinc-600 hover:text-zinc-300 transition-colors"
+                      >
+                        <Copy className="w-4 h-4" />
+                      </button>
+                      {/* Re-draft on rejected */}
+                      {item.status === "rejected" && (
+                        <button
+                          onClick={() => patchItem(item.id, { status: "draft", error: undefined })}
+                          title="Reset to draft so you can edit and re-queue"
+                          className="text-red-400 hover:text-amber-300 transition-colors"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                        </button>
+                      )}
+                      {/* Generate single item */}
+                      {(item.status === "draft" || item.status === "rejected") && (
+                        <button
+                          onClick={() => handleGenerateSingle(item.id)}
+                          disabled={generatingSingleId === item.id}
+                          title="Generate this item only"
+                          className="text-zinc-600 hover:text-emerald-400 disabled:opacity-50 transition-colors"
+                        >
+                          {generatingSingleId === item.id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Play className="w-4 h-4" />
+                          )}
+                        </button>
+                      )}
                       <button
                         onClick={() => setExpandedId(expandedId === item.id ? null : item.id)}
                         className="text-zinc-500 hover:text-zinc-200 transition-colors"
@@ -1340,6 +1547,7 @@ export default function MediaPlan() {
                                   <option value="image">Image</option>
                                   <option value="video">Video</option>
                                   <option value="voice">Voice</option>
+                                  <option value="music">Music</option>
                                 </select>
                               </div>
                               <div>
