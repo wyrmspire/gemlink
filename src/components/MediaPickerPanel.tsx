@@ -107,10 +107,10 @@ export default function MediaPickerPanel({
     setLoading(true);
     setError(null);
     try {
-      const url = projectId
-        ? `/api/media/history?projectId=${encodeURIComponent(projectId)}`
-        : "/api/media/history";
-      const res = await fetch(url, { cache: "no-store" });
+      // Fetch all media history without projectId filter — matches Library.tsx behavior.
+      // Server-side projectId tagging is a Lane 1 concern; filtering here would return
+      // empty results for jobs generated before the project system existed.
+      const res = await fetch("/api/media/history", { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setJobs(Array.isArray(data) ? data : []);
@@ -120,7 +120,7 @@ export default function MediaPickerPanel({
     } finally {
       setLoading(false);
     }
-  }, [projectId]);
+  }, []);
 
   useEffect(() => {
     fetchJobs();

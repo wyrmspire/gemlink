@@ -6,7 +6,7 @@ import {
   X,
   Copy,
   Check,
-  ChevronRight,
+  ChevronDown,
   FileText,
   Search,
   Loader2,
@@ -149,202 +149,221 @@ export default function ArtifactPanel() {
 
   return (
     <>
-      {/* Floating trigger button */}
+      {/* ── Top drawer trigger bar ───────────────────────────────────────── */}
+      {/* Anchored to the top of the main content pane (outside sidebar) */}
+      <div className="fixed top-0 right-0 left-64 z-40 flex justify-center pointer-events-none md:flex hidden">
+        <button
+          id="artifact-panel-toggle"
+          onClick={() => setOpen((o) => !o)}
+          className={`pointer-events-auto flex items-center gap-2 px-5 py-1.5 rounded-b-2xl text-sm font-medium transition-all shadow-lg ${
+            open
+              ? "bg-zinc-900 border border-zinc-700 border-t-0 text-white"
+              : "bg-zinc-900/90 border border-zinc-800 border-t-0 text-zinc-400 hover:text-white hover:bg-zinc-800"
+          }`}
+          title={open ? "Close artifact drawer" : "Open pinned artifacts"}
+        >
+          <Pin className={`w-3.5 h-3.5 transition-colors ${open ? "text-indigo-400" : ""}`} />
+          <span className="hidden sm:inline">Artifacts</span>
+          {pinnedCount > 0 && (
+            <span className="flex items-center justify-center w-4 h-4 rounded-full bg-indigo-600/60 text-[10px] font-bold text-white">
+              {pinnedCount}
+            </span>
+          )}
+          <ChevronDown
+            className={`w-3.5 h-3.5 transition-transform ${open ? "rotate-180" : ""}`}
+          />
+        </button>
+      </div>
+
+      {/* Mobile: keep a small floating button */}
       <button
-        id="artifact-panel-toggle"
-        onClick={() => setOpen(true)}
-        className="fixed bottom-6 right-6 z-40 flex items-center gap-2 px-4 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white shadow-2xl shadow-indigo-900/40 transition-all hover:scale-105 active:scale-95"
-        title="Open Artifact Reference Panel"
+        id="artifact-panel-toggle-mobile"
+        onClick={() => setOpen((o) => !o)}
+        className="md:hidden fixed bottom-6 right-6 z-40 flex items-center gap-2 px-3 py-2.5 rounded-2xl bg-zinc-900 border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800 transition-all"
+        title="Open artifact drawer"
       >
-        <Pin className="w-4 h-4" />
-        <span className="text-sm font-medium hidden sm:inline">Artifacts</span>
+        <Pin className="w-4 h-4 text-indigo-400" />
         {pinnedCount > 0 && (
-          <span className="flex items-center justify-center w-5 h-5 rounded-full bg-white/20 text-xs font-bold">
+          <span className="w-4 h-4 flex items-center justify-center rounded-full bg-indigo-600 text-[10px] font-bold text-white">
             {pinnedCount}
           </span>
         )}
       </button>
 
-      {/* Slide-out backdrop */}
+      {/* ── Top drawer panel ─────────────────────────────────────────────── */}
       <AnimatePresence>
         {open && (
           <>
+            {/* Backdrop */}
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/50 z-40"
+              className="fixed inset-0 bg-black/40 z-30"
               onClick={() => setOpen(false)}
             />
+
+            {/* Drawer — slides down from the top of the main area */}
             <motion.div
-              initial={{ x: "100%" }}
-              animate={{ x: 0 }}
-              exit={{ x: "100%" }}
-              transition={{ type: "spring", bounce: 0, duration: 0.35 }}
-              className="fixed top-0 right-0 bottom-0 w-80 sm:w-96 bg-zinc-950 border-l border-zinc-800 z-50 flex flex-col shadow-2xl"
+              initial={{ y: "-100%", opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: "-100%", opacity: 0 }}
+              transition={{ type: "spring", bounce: 0.1, duration: 0.4 }}
+              className="fixed top-0 right-0 left-0 md:left-64 z-40 bg-zinc-950 border-b border-zinc-800 shadow-2xl"
+              style={{ maxHeight: "70vh" }}
             >
-              {/* Header */}
-              <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800 shrink-0">
+              {/* Drawer header */}
+              <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-800">
                 <div className="flex items-center gap-2">
                   <Pin className="w-4 h-4 text-indigo-400" />
-                  <h2 className="text-base font-semibold text-white">
-                    Pinned Artifacts
-                  </h2>
+                  <h2 className="text-sm font-semibold text-white">Pinned Artifacts</h2>
                   {pinnedCount > 0 && (
                     <span className="px-2 py-0.5 rounded-full bg-indigo-600/20 text-indigo-300 text-xs font-medium">
                       {pinnedCount}
                     </span>
                   )}
                 </div>
-                <button
-                  onClick={() => setOpen(false)}
-                  className="text-zinc-500 hover:text-zinc-200 transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
 
-              {/* Search */}
-              <div className="px-4 py-3 border-b border-zinc-800/60 shrink-0">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
-                  <input
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Search artifacts…"
-                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg pl-9 pr-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
+                <div className="flex items-center gap-3">
+                  {/* Search */}
+                  <div className="relative hidden sm:block">
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
+                    <input
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      placeholder="Search…"
+                      className="w-48 bg-zinc-900 border border-zinc-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <a
+                    href="/briefs"
+                    className="text-xs text-zinc-500 hover:text-indigo-300 transition-colors hidden sm:inline"
+                    onClick={() => setOpen(false)}
+                  >
+                    Manage →
+                  </a>
+                  <button
+                    onClick={() => setOpen(false)}
+                    className="text-zinc-500 hover:text-white transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
 
-              {/* List */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {/* Artifact cards — horizontal scroll strip */}
+              <div className="overflow-y-auto" style={{ maxHeight: "calc(70vh - 52px)" }}>
                 {loading ? (
-                  <div className="flex items-center justify-center py-12">
-                    <Loader2 className="w-6 h-6 text-indigo-400 animate-spin" />
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-5 h-5 text-indigo-400 animate-spin" />
                   </div>
                 ) : filtered.length === 0 ? (
-                  <div className="text-center py-12">
-                    <FileText className="w-10 h-10 text-zinc-700 mx-auto mb-3" />
-                    <p className="text-sm font-medium text-zinc-400 mb-1">
+                  <div className="text-center py-10">
+                    <FileText className="w-8 h-8 text-zinc-700 mx-auto mb-2" />
+                    <p className="text-sm text-zinc-400">
                       {search ? "No matches" : "No pinned artifacts"}
                     </p>
-                    <p className="text-xs text-zinc-600">
+                    <p className="text-xs text-zinc-600 mt-1">
                       {search
                         ? "Try a different search term."
                         : "Pin artifacts in the Briefs page to reference them here."}
                     </p>
+                    <a
+                      href="/briefs"
+                      className="inline-block mt-3 text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                      onClick={() => setOpen(false)}
+                    >
+                      Go to Briefs →
+                    </a>
                   </div>
                 ) : (
-                  filtered.map((artifact) => (
-                    <div
-                      key={artifact.id}
-                      className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden"
-                    >
-                      <div className="p-3">
-                        <div className="flex items-start gap-2 mb-2">
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5 mb-1 flex-wrap">
-                              <span
-                                className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-xs font-medium border ${TYPE_COLORS[artifact.type]}`}
-                              >
-                                {TYPE_LABELS[artifact.type]}
-                              </span>
-                            </div>
-                            <p className="text-sm font-medium text-white truncate">
-                              {artifact.title}
-                            </p>
+                  <div className="flex gap-3 p-4 overflow-x-auto pb-4">
+                    {filtered.map((artifact) => (
+                      <div
+                        key={artifact.id}
+                        className="shrink-0 w-64 bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden flex flex-col"
+                      >
+                        <div className="p-3 flex-1">
+                          {/* Type badge + pin */}
+                          <div className="flex items-center justify-between mb-2">
+                            <span
+                              className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium border ${TYPE_COLORS[artifact.type]}`}
+                            >
+                              {TYPE_LABELS[artifact.type]}
+                            </span>
+                            <button
+                              onClick={() => togglePin(artifact)}
+                              title={artifact.pinned ? "Unpin" : "Pin"}
+                              className="text-zinc-500 hover:text-amber-400 transition-colors"
+                            >
+                              {artifact.pinned ? (
+                                <Pin className="w-3.5 h-3.5 text-amber-400" />
+                              ) : (
+                                <PinOff className="w-3.5 h-3.5" />
+                              )}
+                            </button>
                           </div>
-                          <button
-                            onClick={() => togglePin(artifact)}
-                            title={artifact.pinned ? "Unpin" : "Pin"}
-                            className="shrink-0 text-zinc-500 hover:text-amber-400 transition-colors mt-0.5"
+
+                          {/* Title */}
+                          <p className="text-xs font-semibold text-white mb-1 line-clamp-1">
+                            {artifact.title}
+                          </p>
+
+                          {/* Summary */}
+                          <p
+                            className={`text-[11px] text-zinc-400 leading-relaxed ${
+                              expandedId === artifact.id ? "" : "line-clamp-3"
+                            }`}
                           >
-                            {artifact.pinned ? (
-                              <Pin className="w-4 h-4 text-amber-400" />
-                            ) : (
-                              <PinOff className="w-4 h-4" />
-                            )}
-                          </button>
+                            {expandedId === artifact.id ? artifact.content : artifact.summary}
+                          </p>
+
+                          {/* Tags */}
+                          {artifact.tags.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              {artifact.tags.slice(0, 3).map((tag) => (
+                                <span
+                                  key={tag}
+                                  className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-600 text-[10px] border border-zinc-700"
+                                >
+                                  {tag}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
 
-                        <p className="text-xs text-zinc-400 line-clamp-2 mb-2">
-                          {artifact.summary}
-                        </p>
-
-                        {/* Tags */}
-                        {artifact.tags.length > 0 && (
-                          <div className="flex flex-wrap gap-1 mb-2">
-                            {artifact.tags.slice(0, 4).map((tag) => (
-                              <span
-                                key={tag}
-                                className="px-1.5 py-0.5 rounded-md bg-zinc-800 text-zinc-500 text-xs border border-zinc-700"
-                              >
-                                {tag}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-
                         {/* Actions */}
-                        <div className="flex items-center gap-2">
+                        <div className="flex border-t border-zinc-800">
                           <button
                             onClick={() => useInPrompt(artifact)}
-                            className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-indigo-600/15 border border-indigo-500/20 text-indigo-300 text-xs hover:bg-indigo-600/25 transition-colors"
+                            className="flex-1 flex items-center justify-center gap-1 py-2 text-[11px] text-indigo-400 hover:bg-indigo-600/10 transition-colors"
                           >
                             {copied === artifact.id ? (
-                              <><Check className="w-3.5 h-3.5" /> Copied!</>
+                              <><Check className="w-3 h-3" /> Copied</>
                             ) : (
-                              <><Copy className="w-3.5 h-3.5" /> Use in prompt</>
+                              <><Copy className="w-3 h-3" /> Copy</>
                             )}
                           </button>
+                          <div className="w-px bg-zinc-800" />
                           <button
                             onClick={() =>
-                              setExpandedId(
-                                expandedId === artifact.id ? null : artifact.id
-                              )
+                              setExpandedId(expandedId === artifact.id ? null : artifact.id)
                             }
-                            className="flex items-center gap-1.5 py-1.5 px-2 rounded-lg border border-zinc-700 text-zinc-400 text-xs hover:text-white hover:border-zinc-500 transition-colors"
+                            className="flex-1 flex items-center justify-center gap-1 py-2 text-[11px] text-zinc-500 hover:text-white hover:bg-zinc-800/50 transition-colors"
                           >
-                            <ChevronRight
-                              className={`w-3.5 h-3.5 transition-transform ${expandedId === artifact.id ? "rotate-90" : ""}`}
+                            <ChevronDown
+                              className={`w-3 h-3 transition-transform ${
+                                expandedId === artifact.id ? "rotate-180" : ""
+                              }`}
                             />
+                            {expandedId === artifact.id ? "Less" : "More"}
                           </button>
                         </div>
                       </div>
-
-                      {/* Expanded content */}
-                      <AnimatePresence>
-                        {expandedId === artifact.id && (
-                          <motion.div
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: "auto", opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            transition={{ duration: 0.2 }}
-                            className="overflow-hidden border-t border-zinc-800"
-                          >
-                            <div className="p-3 bg-zinc-950">
-                              <p className="text-xs text-zinc-400 whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
-                                {artifact.content}
-                              </p>
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </div>
-                  ))
+                    ))}
+                  </div>
                 )}
-              </div>
-
-              {/* Footer */}
-              <div className="px-4 py-3 border-t border-zinc-800 shrink-0">
-                <a
-                  href="/briefs"
-                  className="block w-full text-center py-2 rounded-xl bg-zinc-900 border border-zinc-700 text-zinc-300 text-sm hover:bg-zinc-800 hover:text-white transition-colors"
-                  onClick={() => setOpen(false)}
-                >
-                  Manage all artifacts →
-                </a>
               </div>
             </motion.div>
           </>
