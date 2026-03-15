@@ -113,7 +113,11 @@ function SortableSlideCard({
         >
           {/* Thumbnail */}
           {slide.thumbnail ? (
-            <img src={slide.thumbnail} alt={`Slide ${index + 1}`} className="w-full h-full object-cover" />
+            slide.thumbnail.endsWith(".mp4") ? (
+              <video src={slide.thumbnail} className="w-full h-full object-cover" />
+            ) : (
+              <img src={slide.thumbnail} alt={`Slide ${index + 1}`} className="w-full h-full object-cover" />
+            )
           ) : (
             <div className="w-full h-full flex items-center justify-center bg-zinc-900">
               <TypeIcon />

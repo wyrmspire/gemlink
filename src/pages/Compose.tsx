@@ -49,11 +49,20 @@ export interface ComposeProject {
   musicJobId?: string;
   voiceVolume?: number;
   musicVolume?: number;
+  // W5: Audio fades
+  voiceFadeIn?: number;
+  voiceFadeOut?: number;
+  musicFadeIn?: number;
+  musicFadeOut?: number;
+  // W3: Voice duration for mismatch warning
+  voiceDuration?: number;
   videoJobId?: string;
   audioJobId?: string;
   trimPoints?: { start?: number; end?: number };
   watermarkJobId?: string;
   watermarkOpacity?: number;
+  // W2: Watermark position
+  watermarkPosition?: string;
   captionConfig?: CaptionConfig;
   outputConfig: OutputConfig;
 }
@@ -82,7 +91,7 @@ function jobToSlide(job: MediaJob): Slide {
   return {
     id: genId(),
     jobId: job.id,
-    thumbnail: job.type === "image" ? (thumb ?? null) : null,
+    thumbnail: thumb,
     jobType: job.type,
     duration: 3,
     transition: "fade",
@@ -396,11 +405,24 @@ export default function Compose() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   async function handleRender() {
+    // W6/CHECK-012: Validate merge mode has at least one audio track
+    if (project.mode === "merge" && !project.voiceJobId && !project.musicJobId) {
+      toast("Merge mode requires at least one audio track (voiceover or music).", "warning");
+      return;
+    }
+    // W6/CHECK-013: Validate captions mode has caption text
+    if (project.mode === "captions" && (!project.captionConfig?.text || !project.captionConfig.text.trim())) {
+      toast("Captions mode requires caption text. Add text in the captions section.", "warning");
+      return;
+    }
+
     setRendering(true);
     setRenderJobId(null);
 
     // Build the request body following the ComposeRequest API spec in editor.md
     const body: Record<string, unknown> = {
+      // W1/CHECK-010: include apiKey so compose endpoint works when server env var is absent
+      apiKey: import.meta.env.VITE_GEMINI_API_KEY || undefined,
       type: project.mode === "captions" ? "caption" : project.mode,
       output: {
         aspectRatio: project.outputConfig.aspectRatio,
@@ -412,12 +434,22 @@ export default function Compose() {
     };
 
     // Build audio tracks array (Sprint 5 Multi-track support)
-    const audioTracks: Array<{ jobId: string; volume: number }> = [];
+    const audioTracks: Array<{ jobId: string; volume: number; fadeIn?: number; fadeOut?: number }> = [];
     if (project.voiceJobId) {
-      audioTracks.push({ jobId: project.voiceJobId, volume: project.voiceVolume ?? 1.0 });
+      audioTracks.push({
+        jobId: project.voiceJobId,
+        volume: project.voiceVolume ?? 1.0,
+        fadeIn: project.voiceFadeIn,
+        fadeOut: project.voiceFadeOut,
+      });
     }
     if (project.musicJobId) {
-      audioTracks.push({ jobId: project.musicJobId, volume: project.musicVolume ?? 0.15 });
+      audioTracks.push({
+        jobId: project.musicJobId,
+        volume: project.musicVolume ?? 0.15,
+        fadeIn: project.musicFadeIn,
+        fadeOut: project.musicFadeOut,
+      });
     }
 
     if (project.mode === "slideshow") {
@@ -426,6 +458,7 @@ export default function Compose() {
         duration: s.duration,
         transition: s.transition,
         kenBurns: s.kenBurns,
+        kenBurnsDirection: s.kenBurnsDirection,
         textOverlay: s.textOverlay,
       }));
       if (audioTracks.length > 0) body.audioTracks = audioTracks;
@@ -447,6 +480,7 @@ export default function Compose() {
     if (project.watermarkJobId) {
       body.watermarkJobId = project.watermarkJobId;
       body.watermarkOpacity = project.watermarkOpacity ?? 1.0;
+      body.watermarkPosition = project.watermarkPosition ?? "bottom-right";
     }
 
     if (project.captionConfig?.text) {
@@ -471,13 +505,17 @@ export default function Compose() {
         toast("Render engine not ready — FFmpeg may not be installed on the server.", "warning");
         return;
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // W5/SOP-4: Read real error body instead of throwing generic message
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || `Compose failed (HTTP ${res.status})`);
+      }
 
       const data = await res.json();
       setRenderJobId(data.composeId ?? data.jobId ?? "unknown");
       toast("🎬 Render started! Check the Library when done.", "success");
-    } catch {
-      toast("Render endpoint not yet live. Build the compose engine in Lane 1.", "info");
+    } catch (err: any) {
+      toast(err?.message || "Compose render failed — check server logs.", "error");
     } finally {
       setRendering(false);
     }
@@ -621,10 +659,31 @@ export default function Compose() {
                       </select>
                     </div>
                   )}
-                  <span className="text-xs text-zinc-500 ml-auto">
-                    {project.slides.length} slide{project.slides.length !== 1 ? "s" : ""} ·{" "}
-                    {project.slides.reduce((s, sl) => s + sl.duration, 0).toFixed(1)}s
-                  </span>
+                  {/* W3: Duration warning */}
+                  {(() => {
+                    const slideTotalDur = project.slides.reduce((s, sl) => s + sl.duration, 0);
+                    const voiceDur = project.voiceDuration;
+                    const mismatch = voiceDur !== undefined && Math.abs(slideTotalDur - voiceDur) > 2;
+                    return (
+                      <div className="flex items-center gap-2 ml-auto">
+                        {mismatch && (
+                          <div
+                            className="flex items-center gap-1 text-amber-400"
+                            title={`Slides: ${slideTotalDur.toFixed(1)}s | Voice: ${voiceDur!.toFixed(1)}s — mismatch of ${Math.abs(slideTotalDur - voiceDur!).toFixed(1)}s. Adjust slide durations or add more slides.`}
+                          >
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            <span className="text-[10px] hidden sm:inline">
+                              {slideTotalDur.toFixed(1)}s slides · {voiceDur!.toFixed(1)}s voice
+                            </span>
+                          </div>
+                        )}
+                        <span className="text-xs text-zinc-500">
+                          {project.slides.length} slide{project.slides.length !== 1 ? "s" : ""} ·{" "}
+                          {slideTotalDur.toFixed(1)}s
+                        </span>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* ── Visual Track (Slides) ─────────────────────────────── */}
@@ -650,50 +709,82 @@ export default function Compose() {
                     <span className="text-[10px] uppercase tracking-wider text-zinc-600 font-medium">Voiceover Track</span>
                   </div>
                   {project.voiceJobId ? (
-                    <div className="flex items-center gap-3 bg-amber-500/5 border border-amber-500/20 rounded-xl px-3 py-2">
-                      <Mic className="w-4 h-4 text-amber-400 shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        {audioUrls[project.voiceJobId] ? (
-                          <audio
-                            controls
-                            src={audioUrls[project.voiceJobId]}
-                            className="w-full h-7"
-                            style={{ colorScheme: "dark" }}
+                    <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl px-3 py-2 space-y-2">
+                      <div className="flex items-center gap-3">
+                        <Mic className="w-4 h-4 text-amber-400 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          {audioUrls[project.voiceJobId] ? (
+                            <audio
+                              controls
+                              src={audioUrls[project.voiceJobId]}
+                              className="w-full h-7"
+                              style={{ colorScheme: "dark" }}
+                              onLoadedMetadata={(e) => {
+                                const dur = (e.target as HTMLAudioElement).duration;
+                                if (isFinite(dur)) patch({ voiceDuration: dur });
+                              }}
+                            />
+                          ) : (
+                            <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                              Loading audio…
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-[10px] text-zinc-500">Vol</span>
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            value={project.voiceVolume ?? 1}
+                            onChange={(e) => patch({ voiceVolume: parseFloat(e.target.value) })}
+                            className="w-16 h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
                           />
-                        ) : (
-                          <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
-                            <RefreshCw className="w-3 h-3 animate-spin" />
-                            Loading audio…
-                          </div>
-                        )}
+                          <span className="text-[10px] text-zinc-400 w-7 text-right">
+                            {Math.round((project.voiceVolume ?? 1) * 100)}%
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => setPickerTarget("voice")}
+                          className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-zinc-600"
+                        >
+                          Swap
+                        </button>
+                        <button
+                          onClick={() => patch({ voiceJobId: undefined, voiceDuration: undefined })}
+                          className="text-[10px] text-zinc-500 hover:text-red-400 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-red-500/40"
+                        >
+                          ✕
+                        </button>
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className="text-[10px] text-zinc-500">Vol</span>
-                        <input
-                          type="range"
-                          min="0"
-                          max="1"
-                          step="0.05"
-                          value={project.voiceVolume ?? 1}
-                          onChange={(e) => patch({ voiceVolume: parseFloat(e.target.value) })}
-                          className="w-16 h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
-                        />
-                        <span className="text-[10px] text-zinc-400 w-7 text-right">
-                          {Math.round((project.voiceVolume ?? 1) * 100)}%
-                        </span>
+                      {/* W5: Voice fade controls */}
+                      <div className="flex items-center gap-3 pl-7 text-[10px] text-zinc-500">
+                        <span>Fade:</span>
+                        <label className="flex items-center gap-1">
+                          In
+                          <input
+                            type="number"
+                            min={0} max={10} step={0.5}
+                            value={project.voiceFadeIn ?? 0}
+                            onChange={(e) => patch({ voiceFadeIn: parseFloat(e.target.value) || 0 })}
+                            className="w-12 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-white text-[10px] focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                          />
+                          s
+                        </label>
+                        <label className="flex items-center gap-1">
+                          Out
+                          <input
+                            type="number"
+                            min={0} max={10} step={0.5}
+                            value={project.voiceFadeOut ?? 0}
+                            onChange={(e) => patch({ voiceFadeOut: parseFloat(e.target.value) || 0 })}
+                            className="w-12 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-white text-[10px] focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                          />
+                          s
+                        </label>
                       </div>
-                      <button
-                        onClick={() => setPickerTarget("voice")}
-                        className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-zinc-600"
-                      >
-                        Swap
-                      </button>
-                      <button
-                        onClick={() => patch({ voiceJobId: undefined })}
-                        className="text-[10px] text-zinc-500 hover:text-red-400 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-red-500/40"
-                      >
-                        ✕
-                      </button>
                     </div>
                   ) : (
                     <button
@@ -713,50 +804,78 @@ export default function Compose() {
                     <span className="text-[10px] uppercase tracking-wider text-zinc-600 font-medium">Music Track</span>
                   </div>
                   {project.musicJobId ? (
-                    <div className="flex items-center gap-3 bg-emerald-500/5 border border-emerald-500/20 rounded-xl px-3 py-2">
-                      <Music className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        {audioUrls[project.musicJobId] ? (
-                          <audio
-                            controls
-                            src={audioUrls[project.musicJobId]}
-                            className="w-full h-7"
-                            style={{ colorScheme: "dark" }}
+                    <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl px-3 py-2 space-y-2">
+                      <div className="flex items-center gap-3">
+                        <Music className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          {audioUrls[project.musicJobId] ? (
+                            <audio
+                              controls
+                              src={audioUrls[project.musicJobId]}
+                              className="w-full h-7"
+                              style={{ colorScheme: "dark" }}
+                            />
+                          ) : (
+                            <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                              Loading audio…
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-[10px] text-zinc-500">Vol</span>
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            value={project.musicVolume ?? 0.15}
+                            onChange={(e) => patch({ musicVolume: parseFloat(e.target.value) })}
+                            className="w-16 h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
                           />
-                        ) : (
-                          <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
-                            <RefreshCw className="w-3 h-3 animate-spin" />
-                            Loading audio…
-                          </div>
-                        )}
+                          <span className="text-[10px] text-zinc-400 w-7 text-right">
+                            {Math.round((project.musicVolume ?? 0.15) * 100)}%
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => setPickerTarget("music")}
+                          className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-zinc-600"
+                        >
+                          Swap
+                        </button>
+                        <button
+                          onClick={() => patch({ musicJobId: undefined })}
+                          className="text-[10px] text-zinc-500 hover:text-red-400 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-red-500/40"
+                        >
+                          ✕
+                        </button>
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className="text-[10px] text-zinc-500">Vol</span>
-                        <input
-                          type="range"
-                          min="0"
-                          max="1"
-                          step="0.05"
-                          value={project.musicVolume ?? 0.15}
-                          onChange={(e) => patch({ musicVolume: parseFloat(e.target.value) })}
-                          className="w-16 h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-                        />
-                        <span className="text-[10px] text-zinc-400 w-7 text-right">
-                          {Math.round((project.musicVolume ?? 0.15) * 100)}%
-                        </span>
+                      {/* W5: Music fade controls */}
+                      <div className="flex items-center gap-3 pl-7 text-[10px] text-zinc-500">
+                        <span>Fade:</span>
+                        <label className="flex items-center gap-1">
+                          In
+                          <input
+                            type="number"
+                            min={0} max={10} step={0.5}
+                            value={project.musicFadeIn ?? 0}
+                            onChange={(e) => patch({ musicFadeIn: parseFloat(e.target.value) || 0 })}
+                            className="w-12 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-white text-[10px] focus:outline-none focus:ring-1 focus:ring-emerald-500/50"
+                          />
+                          s
+                        </label>
+                        <label className="flex items-center gap-1">
+                          Out
+                          <input
+                            type="number"
+                            min={0} max={10} step={0.5}
+                            value={project.musicFadeOut ?? 0}
+                            onChange={(e) => patch({ musicFadeOut: parseFloat(e.target.value) || 0 })}
+                            className="w-12 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-white text-[10px] focus:outline-none focus:ring-1 focus:ring-emerald-500/50"
+                          />
+                          s
+                        </label>
                       </div>
-                      <button
-                        onClick={() => setPickerTarget("music")}
-                        className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-zinc-600"
-                      >
-                        Swap
-                      </button>
-                      <button
-                        onClick={() => patch({ musicJobId: undefined })}
-                        className="text-[10px] text-zinc-500 hover:text-red-400 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-red-500/40"
-                      >
-                        ✕
-                      </button>
                     </div>
                   ) : (
                     <button
@@ -1008,25 +1127,52 @@ export default function Compose() {
                 />
               </div>
               {project.watermarkJobId && (
-                <div className="flex-1 space-y-2 flex flex-col justify-center">
-                  <label className="text-xs font-medium text-zinc-300">Opacity</label>
-                  <div className="flex items-center gap-4">
-                    <input
-                      type="range"
-                      min="0.1"
-                      max="1"
-                      step="0.05"
-                      value={project.watermarkOpacity ?? 1}
-                      onChange={(e) => patch({ watermarkOpacity: parseFloat(e.target.value) })}
-                      className="flex-1 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-                    />
-                    <span className="text-xs text-zinc-400 w-10 text-right">
-                      {Math.round((project.watermarkOpacity ?? 1) * 100)}%
-                    </span>
+                <div className="flex-1 space-y-4 flex flex-col justify-center">
+                  {/* Opacity slider */}
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-zinc-300">Opacity</label>
+                    <div className="flex items-center gap-4">
+                      <input
+                        type="range"
+                        min="0.1"
+                        max="1"
+                        step="0.05"
+                        value={project.watermarkOpacity ?? 1}
+                        onChange={(e) => patch({ watermarkOpacity: parseFloat(e.target.value) })}
+                        className="flex-1 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                      />
+                      <span className="text-xs text-zinc-400 w-10 text-right">
+                        {Math.round((project.watermarkOpacity ?? 1) * 100)}%
+                      </span>
+                    </div>
                   </div>
-                  <p className="text-[10px] text-zinc-500 mt-2">
-                    The image will be overlaid over the video based on your selected opacity.
-                  </p>
+                  {/* W2: Position picker 3×3 grid */}
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-zinc-300">Position</label>
+                    <div
+                      style={{ display: "grid", gridTemplateColumns: "repeat(3, 28px)", gap: "4px" }}
+                    >
+                      {([
+                        "top-left",    "top-center",    "top-right",
+                        "middle-left", "center",        "middle-right",
+                        "bottom-left", "bottom-center", "bottom-right",
+                      ] as const).map((pos) => (
+                        <button
+                          key={pos}
+                          onClick={() => patch({ watermarkPosition: pos })}
+                          title={pos.replace(/-/g, " ")}
+                          className={`w-7 h-7 rounded border transition-colors ${
+                            (project.watermarkPosition ?? "bottom-right") === pos
+                              ? "bg-indigo-600 border-indigo-500"
+                              : "bg-zinc-800 border-zinc-700 hover:border-zinc-500"
+                          }`}
+                        />
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-zinc-500 capitalize">
+                      {(project.watermarkPosition ?? "bottom-right").replace(/-/g, " ")}
+                    </p>
+                  </div>
                 </div>
               )}
             </div>

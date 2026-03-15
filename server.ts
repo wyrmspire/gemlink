@@ -1346,9 +1346,11 @@ async function startServer() {
           logs: [`[${new Date().toISOString()}] Batch image generation started.`],
         };
         await writeManifest(manifest);
+        // W2/CHECK-002: read aspectRatio from request body instead of hardcoding "1:1"
+        const itemAspectRatio = (body as any).aspectRatio ?? "1:1";
         const resp = await ai.models.generateContent({
           model: manifest.model!, contents: { parts: [{ text: prompt }] },
-          config: { imageConfig: { aspectRatio: "1:1", imageSize: manifest.size } },
+          config: { imageConfig: { aspectRatio: itemAspectRatio, imageSize: manifest.size } },
         });
         const outputs: string[] = [];
         const candidate = resp.candidates?.[0];
@@ -1417,7 +1419,9 @@ async function startServer() {
       }
 
       if (type === "video") {
-        const { prompt, model, resolution, aspectRatio, brandContext, projectId } = body as any;
+        const { prompt, model, aspectRatio, brandContext, projectId } = body as any;
+        // W3/CHECK-001: client sends "size" but handler read "resolution" — accept both
+        const resolution = (body as any).resolution ?? (body as any).size;
         const selectedModel = model ?? getMergedModels().video;
         const operation = await ai.models.generateVideos({ model: selectedModel, prompt, config: { numberOfVideos: 1, resolution, aspectRatio } });
         const operationName = (operation as any)?.name ?? null;
@@ -1699,7 +1703,8 @@ async function startServer() {
       const items = Array.isArray(parsed.items) ? parsed.items : [];
       const sanitised = items.map((x: any) => ({
         id: `item_${Math.random().toString(36).slice(2, 10)}`,
-        type: ["image", "video", "voice"].includes(x.type) ? x.type : "image",
+        // W4/CHECK-003: allow "music" type so AI-suggested music items aren't silently converted to "image"
+        type: ["image", "video", "voice", "music"].includes(x.type) ? x.type : "image",
         label: x.label ?? "Untitled",
         purpose: x.purpose ?? "",
         promptTemplate: x.promptTemplate ?? "",
@@ -1911,7 +1916,8 @@ async function startServer() {
       // Sanitise items
       const items = rawItems.map((x: any) => ({
         id: `item_${Math.random().toString(36).slice(2, 10)}`,
-        type: ["image", "video", "voice"].includes(x.type) ? x.type : "image",
+        // W4/CHECK-003: allow "music" type in boardroom plan sanitiser too
+        type: ["image", "video", "voice", "music"].includes(x.type) ? x.type : "image",
         label: x.label ?? "Untitled",
         purpose: x.purpose ?? "",
         promptTemplate: x.promptTemplate ?? "",

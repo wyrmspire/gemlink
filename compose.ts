@@ -68,12 +68,18 @@ export function isFFprobeAvailable(): boolean { return _ffprobeAvailable; }
 export interface AudioTrackInput {
   audioPath: string;
   volume?: number;
+  /** W5: fade in duration in seconds (default 0 = no fade) */
+  fadeIn?: number;
+  /** W5: fade out duration in seconds (default 0 = no fade) */
+  fadeOut?: number;
 }
 
 export interface MergeOptions {
   trimPoints?: { inPoint: number; outPoint: number };
   watermarkPath?: string;
   watermarkOpacity?: number;
+  /** W2: 9-position name e.g. "bottom-right", "top-left", "center" */
+  watermarkPosition?: string;
 }
 
 export interface ProbeResult {
@@ -95,6 +101,8 @@ export interface SlideInput {
   duration: number;           // seconds per slide
   transition?: string;        // e.g. "fade", "slideright", "dissolve"
   kenBurns?: boolean;
+  /** W4: Ken Burns animation direction (default "zoom-in") */
+  kenBurnsDirection?: "zoom-in" | "zoom-out" | "pan-left" | "pan-right";
 }
 
 export interface SlideshowOptions {
@@ -105,6 +113,8 @@ export interface SlideshowOptions {
   audioTracks?: AudioTrackInput[];
   watermarkPath?: string;
   watermarkOpacity?: number;
+  /** W2: 9-position name e.g. "bottom-right" */
+  watermarkPosition?: string;
 }
 
 export interface ASSOptions {
@@ -166,6 +176,27 @@ async function fileSize(filePath: string): Promise<number> {
 function isImageFile(filePath: string): boolean {
   const ext = path.extname(filePath).toLowerCase();
   return [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"].includes(ext);
+}
+
+// ── W2: Watermark position helper ────────────────────────────────────────────
+
+/**
+ * Map a 9-position name to an FFmpeg overlay coordinate expression.
+ * W = video width, H = video height, w = watermark width, h = watermark height.
+ */
+function watermarkPositionToOverlay(position?: string): string {
+  switch (position) {
+    case "top-left":      return "10:10";
+    case "top-center":    return "(W-w)/2:10";
+    case "top-right":     return "W-w-10:10";
+    case "middle-left":   return "10:(H-h)/2";
+    case "center":        return "(W-w)/2:(H-h)/2";
+    case "middle-right":  return "W-w-10:(H-h)/2";
+    case "bottom-left":   return "10:H-h-10";
+    case "bottom-center": return "(W-w)/2:H-h-10";
+    case "bottom-right":
+    default:              return "W-w-10:H-h-10";
+  }
 }
 
 // ── W1: probeMedia ────────────────────────────────────────────────────────────
@@ -253,10 +284,11 @@ export async function mergeVideoAudio(
   if (opts.watermarkPath) {
     requiresVideoEncode = true;
     const opacity = opts.watermarkOpacity ?? 1;
+    const overlayCoords = watermarkPositionToOverlay(opts.watermarkPosition);
     if (opacity < 1) {
-      filterGraphParts.push(`[${wmIndex}:v]format=rgba,colorchannelmixer=aa=${opacity}[wm];[0:v:0][wm]overlay=W-w-20:H-h-20:shortest=1[vout]`);
+      filterGraphParts.push(`[${wmIndex}:v]format=rgba,colorchannelmixer=aa=${opacity}[wm];[0:v:0][wm]overlay=${overlayCoords}:shortest=1[vout]`);
     } else {
-      filterGraphParts.push(`[0:v:0][${wmIndex}:v]overlay=W-w-20:H-h-20:shortest=1[vout]`);
+      filterGraphParts.push(`[0:v:0][${wmIndex}:v]overlay=${overlayCoords}:shortest=1[vout]`);
     }
     videoOutObj = "vout";
   }
@@ -273,12 +305,27 @@ export async function mergeVideoAudio(
     for (let i = 0; i < audioTracks.length; i++) {
         const trackStr = `[${i+1}:a:0]`;
         const vol = audioTracks[i].volume ?? 1.0;
+        const fadeIn = audioTracks[i].fadeIn ?? 0;
+        const fadeOut = audioTracks[i].fadeOut ?? 0;
+        const labelBase = `at${i}`;
+        let currentLabel = trackStr;
+
+        // Apply volume if needed
         if (vol !== 1.0) {
-          audioFilters.push(`${trackStr}volume=${vol}[a${i}]`);
-          amixInputs.push(`[a${i}]`);
-        } else {
-          amixInputs.push(trackStr);
+          audioFilters.push(`${currentLabel}volume=${vol}[${labelBase}v]`);
+          currentLabel = `[${labelBase}v]`;
         }
+
+        // W5: Apply afade in/out if requested
+        if (fadeIn > 0 || fadeOut > 0) {
+          const fadeParts: string[] = [];
+          if (fadeIn > 0)  fadeParts.push(`afade=t=in:st=0:d=${fadeIn}`);
+          if (fadeOut > 0) fadeParts.push(`afade=t=out:st=0:d=${fadeOut}`);
+          audioFilters.push(`${currentLabel}${fadeParts.join(",")}[${labelBase}f]`);
+          currentLabel = `[${labelBase}f]`;
+        }
+
+        amixInputs.push(currentLabel);
     }
     
     // Mix them.
@@ -325,9 +372,33 @@ export async function mergeVideoAudio(
 
 // ── W1: kenBurnsFilter ────────────────────────────────────────────────────────
 
-export function kenBurnsFilter(duration: number, fps = 30, w = 1080, h = 1920): string {
+/**
+ * Build an FFmpeg zoompan filter for the Ken Burns effect.
+ * W4: direction controls the animation style.
+ */
+export function kenBurnsFilter(
+  duration: number,
+  fps = 30,
+  w = 1080,
+  h = 1920,
+  direction: "zoom-in" | "zoom-out" | "pan-left" | "pan-right" = "zoom-in",
+): string {
   const totalFrames = Math.ceil(fps * duration);
-  return `zoompan=z='min(zoom+0.0015,1.5)':d=${totalFrames}:s=${w}x${h}:fps=${fps}`;
+  switch (direction) {
+    case "zoom-out":
+      // Start zoomed in at 1.5x, slowly zoom back to 1x
+      return `zoompan=z='if(eq(on,1),1.5,max(1,zoom-0.0015))':d=${totalFrames}:s=${w}x${h}:fps=${fps}`;
+    case "pan-left":
+      // Zoom stays at 1.12x, x pans left (x starts at right edge and moves left)
+      return `zoompan=z='min(zoom+0.0001,1.12)':x='iw-(iw/zoom)-(on/${totalFrames})*(iw-(iw/zoom))':d=${totalFrames}:s=${w}x${h}:fps=${fps}`;
+    case "pan-right":
+      // Zoom stays at 1.12x, x pans right (starts at 0 and increases)
+      return `zoompan=z='min(zoom+0.0001,1.12)':x='(on/${totalFrames})*(iw-(iw/zoom))':d=${totalFrames}:s=${w}x${h}:fps=${fps}`;
+    case "zoom-in":
+    default:
+      // Original: slow zoom in from 1x to 1.5x
+      return `zoompan=z='min(zoom+0.0015,1.5)':d=${totalFrames}:s=${w}x${h}:fps=${fps}`;
+  }
 }
 
 // ── W1: createSlideshow ───────────────────────────────────────────────────────
@@ -356,7 +427,11 @@ export async function createSlideshow(
   const args: string[] = ["-y"];
 
   for (const slide of slides) {
-    args.push("-loop", "1", "-i", slide.imagePath);
+    if (isImageFile(slide.imagePath)) {
+      args.push("-loop", "1", "-i", slide.imagePath);
+    } else {
+      args.push("-stream_loop", "-1", "-i", slide.imagePath);
+    }
   }
 
   const audioTracks = opts.audioTracks || [];
@@ -382,11 +457,11 @@ export async function createSlideshow(
   for (let i = 0; i < slides.length; i++) {
     const slide = slides[i];
     const dur = slide.duration;
-    const totalFrames = Math.ceil(fps * dur);
 
     if (slide.kenBurns) {
+      // W4: pass direction through to kenBurnsFilter
       filterParts.push(
-        `[${i}:v]${scaleFilter},${kenBurnsFilter(dur, fps, w, h)},` +
+        `[${i}:v]${scaleFilter},${kenBurnsFilter(dur, fps, w, h, slide.kenBurnsDirection ?? "zoom-in")},` +
         `setpts=PTS-STARTPTS,fps=${fps}[v${i}]`
       );
     } else {
@@ -428,12 +503,27 @@ export async function createSlideshow(
       const idx = slides.length + i;
       const trackStr = `[${idx}:a:0]`;
       const vol = audioTracks[i].volume ?? 1.0;
+      const fadeIn = audioTracks[i].fadeIn ?? 0;
+      const fadeOut = audioTracks[i].fadeOut ?? 0;
+      const labelBase = `sa${i}`;
+      let currentLabel = trackStr;
+
+      // Apply volume if not unity
       if (vol !== 1.0) {
-        audioFilters.push(`${trackStr}volume=${vol}[a${i}]`);
-        amixInputs.push(`[a${i}]`);
-      } else {
-        amixInputs.push(trackStr);
+        audioFilters.push(`${currentLabel}volume=${vol}[${labelBase}v]`);
+        currentLabel = `[${labelBase}v]`;
       }
+
+      // W5: Apply afade in/out if requested
+      if (fadeIn > 0 || fadeOut > 0) {
+        const fadeParts: string[] = [];
+        if (fadeIn > 0)  fadeParts.push(`afade=t=in:st=0:d=${fadeIn}`);
+        if (fadeOut > 0) fadeParts.push(`afade=t=out:st=0:d=${fadeOut}`);
+        audioFilters.push(`${currentLabel}${fadeParts.join(",")}[${labelBase}f]`);
+        currentLabel = `[${labelBase}f]`;
+      }
+
+      amixInputs.push(currentLabel);
     }
     if (audioTracks.length === 1 && audioFilters.length === 0) {
       audioOutObj = `[${slides.length}:a:0]`;
@@ -451,9 +541,10 @@ export async function createSlideshow(
   // Watermark for slideshow
   if (opts.watermarkPath) {
     const opacity = opts.watermarkOpacity ?? 1;
+    const overlayCoords = watermarkPositionToOverlay(opts.watermarkPosition);
     const wmFilter = opacity < 1
-      ? `[${wmIndex}:v]format=rgba,colorchannelmixer=aa=${opacity}[wm];[vout][wm]overlay=W-w-20:H-h-20:shortest=1[vw]`
-      : `[vout][${wmIndex}:v]overlay=W-w-20:H-h-20:shortest=1[vw]`;
+      ? `[${wmIndex}:v]format=rgba,colorchannelmixer=aa=${opacity}[wm];[vout][wm]overlay=${overlayCoords}:shortest=1[vw]`
+      : `[vout][${wmIndex}:v]overlay=${overlayCoords}:shortest=1[vw]`;
     filterParts.push(wmFilter);
     finalVideoLabel = "vw";
   }

@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { X, ChevronLeft, ChevronRight, Star, Calendar, Download } from "lucide-react";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 interface MediaScore {
   brandAlignment: number;
@@ -32,6 +33,10 @@ interface MediaLightboxProps {
 }
 
 export default function MediaLightbox({ job, onClose, onNext, onPrev }: MediaLightboxProps) {
+  // W4: Focus trap keeps Tab/Shift+Tab within the lightbox
+  const containerRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(containerRef, !!job);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -62,6 +67,10 @@ export default function MediaLightbox({ job, onClose, onNext, onPrev }: MediaLig
         />
         
         <motion.div
+          ref={containerRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Media lightbox preview"
           initial={{ opacity: 0, scale: 0.95, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 20 }}
@@ -72,6 +81,7 @@ export default function MediaLightbox({ job, onClose, onNext, onPrev }: MediaLig
             {onPrev && (
               <button
                 onClick={(e) => { e.stopPropagation(); onPrev(); }}
+                aria-label="Previous media item"
                 className="absolute left-4 z-20 p-2 rounded-full bg-zinc-900/50 hover:bg-zinc-800 text-white transition-colors"
               >
                 <ChevronLeft className="w-6 h-6" />
@@ -93,6 +103,7 @@ export default function MediaLightbox({ job, onClose, onNext, onPrev }: MediaLig
             {onNext && (
               <button
                 onClick={(e) => { e.stopPropagation(); onNext(); }}
+                aria-label="Next media item"
                 className="absolute right-4 z-20 p-2 rounded-full bg-zinc-900/50 hover:bg-zinc-800 text-white transition-colors"
                 >
                 <ChevronRight className="w-6 h-6" />

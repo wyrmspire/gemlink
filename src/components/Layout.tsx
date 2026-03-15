@@ -31,6 +31,9 @@ import ErrorBoundary from "./ErrorBoundary";
 import ToastContainer from "./Toast";
 import ArtifactPanel from "./ArtifactPanel";
 import { useProject } from "../context/ProjectContext";
+// ── Added by Lane 5 (Sprint 9 W1, W2) ──────────────────────────────────────────
+import CommandPalette from "./CommandPalette";
+import Breadcrumbs from "./Breadcrumbs";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -53,6 +56,8 @@ const navigation = [
   { name: "Strategy Briefs", href: "/briefs", icon: FileStack },
   // ── Added by Lane 3 (Sprint 4.5) ──
   { name: "Settings", href: "/settings", icon: Settings2 },
+  // ── Added by Lane 4 (Sprint 9) ──
+  { name: "Presentation Mode", href: "/collections", icon: Presentation },
 ];
 
 function ProjectSwitcher() {
@@ -215,6 +220,20 @@ export default function Layout() {
 
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  // ── Added by Lane 5 (Sprint 9 W1) — CommandPalette state ──────────────────
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+
+  // Cmd+K / Ctrl+K global shortcut
+  useEffect(() => {
+    function handleGlobalKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setIsPaletteOpen((prev) => !prev);
+      }
+    }
+    window.addEventListener("keydown", handleGlobalKey);
+    return () => window.removeEventListener("keydown", handleGlobalKey);
+  }, []);
 
   const closeMenu = () => setIsMobileMenuOpen(false);
 
@@ -244,11 +263,17 @@ export default function Layout() {
 
   return (
     <div className="flex h-screen bg-zinc-950 text-zinc-50 font-sans overflow-hidden">
+      {/* Added by Lane 5 (W1): Global Command Palette */}
+      <CommandPalette open={isPaletteOpen} onClose={() => setIsPaletteOpen(false)} />
+
       {/* Mobile Header */}
       <div className="md:hidden fixed top-0 left-0 right-0 h-16 bg-zinc-950 border-b border-zinc-800 flex items-center justify-between px-4 z-50">
         <h1 className="text-lg font-semibold tracking-tight">Agent Workspace</h1>
         <button
           onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+          aria-label={isMobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+          aria-expanded={isMobileMenuOpen}
+          aria-controls="mobile-sidebar"
           className="p-2 text-zinc-400 hover:text-white"
         >
           {isMobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
@@ -256,15 +281,24 @@ export default function Layout() {
       </div>
 
       {/* Sidebar (Desktop) */}
-      <div className="hidden md:flex w-64 border-r border-zinc-800 bg-zinc-950 flex-col h-full">
-        <div className="h-16 flex items-center px-6 border-b border-zinc-800 shrink-0">
-          <h1 className="text-lg font-semibold tracking-tight">Agent Workspace</h1>
+      <div className="hidden md:flex w-64 border-r border-zinc-800 bg-zinc-950 flex-col h-full" role="navigation" aria-label="Main navigation">
+        {/* Added by Lane 5 (W1): Cmd+K hint in header */}
+        <div className="h-16 flex items-center px-6 border-b border-zinc-800 shrink-0 gap-3">
+          <h1 className="text-lg font-semibold tracking-tight flex-1">Agent Workspace</h1>
+          <button
+            onClick={() => setIsPaletteOpen(true)}
+            aria-label="Open command palette (Cmd+K)"
+            title="Open command palette (Cmd+K)"
+            className="flex items-center gap-1 px-2 py-1 rounded-md bg-zinc-800 border border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors text-[10px] font-mono shrink-0"
+          >
+            <span>⌘K</span>
+          </button>
         </div>
         {/* Project switcher */}
         <div className="pt-3">
           <ProjectSwitcher />
         </div>
-        <nav className="flex-1 overflow-y-auto py-2 px-3 space-y-1">
+        <nav className="flex-1 overflow-y-auto py-2 px-3 space-y-1" aria-label="Page links">
           <NavLinks />
         </nav>
         {/* ── W2 (Lane 5): Global Job Indicator ── */}
@@ -301,7 +335,9 @@ export default function Layout() {
       </AnimatePresence>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto bg-zinc-900 pt-16 md:pt-0 h-full">
+      <main className="flex-1 overflow-y-auto bg-zinc-900 pt-16 md:pt-0 h-full" id="main-content" role="main">
+        {/* Added by Lane 5 (W2): Breadcrumbs auto-generated from route */}
+        <Breadcrumbs />
         <ErrorBoundary>
           <Outlet />
         </ErrorBoundary>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence, Reorder } from "motion/react";
 import {
   Loader2,
@@ -30,6 +30,12 @@ import {
   RefreshCw,
   FolderPlus,
   BarChart3,
+  Download,
+  Upload,
+  LayoutTemplate,
+  Filter,
+  ChevronRight,
+  Timer,
 } from "lucide-react";
 import { useProject } from "../context/ProjectContext";
 import { useToast } from "../context/ToastContext";
@@ -108,6 +114,242 @@ const ASPECT_RATIOS = [
   { value: "21:9", label: "21:9 Ultra-wide" },
 ];
 
+// ─── W1: Item Presets ──────────────────────────────────────────────────────
+
+interface ItemPreset {
+  label: string;
+  type: MediaPlanItem["type"];
+  aspectRatio?: string;
+  purpose: string;
+  promptTemplate: string;
+}
+
+const ITEM_PRESETS: ItemPreset[] = [
+  {
+    label: "Hero Image",
+    type: "image",
+    aspectRatio: "16:9",
+    purpose: "Website hero / landing page",
+    promptTemplate: "A stunning hero image for a modern brand website. Cinematic composition, vibrant yet professional.",
+  },
+  {
+    label: "Instagram Post",
+    type: "image",
+    aspectRatio: "1:1",
+    purpose: "Instagram feed post",
+    promptTemplate: "Square format Instagram post image. Eye-catching, on-brand colours, clean composition.",
+  },
+  {
+    label: "Instagram Story",
+    type: "image",
+    aspectRatio: "9:16",
+    purpose: "Instagram / TikTok Story",
+    promptTemplate: "Vertical story format. Bold typography space at top and bottom, vivid visuals in middle.",
+  },
+  {
+    label: "YouTube Thumbnail",
+    type: "image",
+    aspectRatio: "16:9",
+    purpose: "YouTube video thumbnail",
+    promptTemplate: "High-contrast YouTube thumbnail. Bold subject, expressive face, minimal background, bright accents.",
+  },
+  {
+    label: "YouTube Intro Video",
+    type: "video",
+    aspectRatio: "16:9",
+    purpose: "YouTube channel intro clip",
+    promptTemplate: "A short dynamic brand intro video. Logo reveal, energetic pacing, cinematic quality.",
+  },
+  {
+    label: "Product Showcase",
+    type: "image",
+    aspectRatio: "4:5",
+    purpose: "Product spotlight image",
+    promptTemplate: "Clean product photography style. Soft studio lighting, minimal background, premium feel.",
+  },
+  {
+    label: "Voiceover Script",
+    type: "voice",
+    purpose: "Narration / voiceover",
+    promptTemplate: "Welcome to [brand]. We help you [value proposition]. Let's get started.",
+  },
+  {
+    label: "Background Music",
+    type: "music",
+    purpose: "Ambient background track",
+    promptTemplate: "Uplifting and energetic background music with a modern corporate feel. Steady beat, no lyrics.",
+  },
+];
+
+// ─── W2: Plan Templates ─────────────────────────────────────────────────────
+
+interface PlanTemplate {
+  name: string;
+  description: string;
+  items: Array<Omit<ItemPreset, "label"> & { label: string }>;
+}
+
+const PLAN_TEMPLATES: PlanTemplate[] = [
+  {
+    name: "YouTube Launch Package",
+    description: "Hero image, channel intro video, 3 thumbnails, background music",
+    items: [
+      {
+        label: "Channel Hero Image",
+        type: "image",
+        aspectRatio: "16:9",
+        purpose: "YouTube channel art banner",
+        promptTemplate: "Professional YouTube channel banner. Brand name prominent, matching brand colours, modern design.",
+      },
+      {
+        label: "Channel Intro Video",
+        type: "video",
+        aspectRatio: "16:9",
+        purpose: "5-second channel intro animation",
+        promptTemplate: "Short punchy channel intro. Brand logo reveal with dramatic flair, cinematic transitions.",
+      },
+      {
+        label: "Thumbnail #1",
+        type: "image",
+        aspectRatio: "16:9",
+        purpose: "YouTube video thumbnail",
+        promptTemplate: "Bold YouTube thumbnail. High-contrast subject, expressive, clear message, bright colours.",
+      },
+      {
+        label: "Thumbnail #2",
+        type: "image",
+        aspectRatio: "16:9",
+        purpose: "YouTube video thumbnail variant",
+        promptTemplate: "Eye-catching YouTube thumbnail. Different angle or style from Thumbnail #1 for A/B testing.",
+      },
+      {
+        label: "Thumbnail #3",
+        type: "image",
+        aspectRatio: "16:9",
+        purpose: "YouTube video thumbnail variant",
+        promptTemplate: "Minimalist YouTube thumbnail. Clean design, typography focused, brand-aligned.",
+      },
+      {
+        label: "Background Music",
+        type: "music",
+        purpose: "Background track for videos",
+        promptTemplate: "Uplifting background music for a YouTube channel. Energetic, modern, no vocals.",
+      },
+    ],
+  },
+  {
+    name: "Instagram Week",
+    description: "7 varied Instagram posts for a full week of content",
+    items: [
+      {
+        label: "Monday Post",
+        type: "image",
+        aspectRatio: "1:1",
+        purpose: "Monday Instagram feed post",
+        promptTemplate: "Motivational Monday image. Bold, inspiring composition, on-brand colour palette.",
+      },
+      {
+        label: "Tuesday Post",
+        type: "image",
+        aspectRatio: "4:5",
+        purpose: "Tuesday Instagram feed post",
+        promptTemplate: "Educational Tuesday post. Clean infographic style, easy to read, brand colours.",
+      },
+      {
+        label: "Wednesday Story",
+        type: "image",
+        aspectRatio: "9:16",
+        purpose: "Mid-week Instagram Story",
+        promptTemplate: "Vertical story format for Wednesday. Poll-friendly layout, engaging visual, minimal text area.",
+      },
+      {
+        label: "Thursday Post",
+        type: "image",
+        aspectRatio: "1:1",
+        purpose: "Thursday Instagram feed post",
+        promptTemplate: "Behind-the-scenes Thursday image. Candid and authentic feel, warm tones.",
+      },
+      {
+        label: "Friday Post",
+        type: "image",
+        aspectRatio: "4:5",
+        purpose: "Friday Instagram feed post",
+        promptTemplate: "TGIF Friday celebration image. Fun, energetic, vibrant colours.",
+      },
+      {
+        label: "Weekend Story",
+        type: "image",
+        aspectRatio: "9:16",
+        purpose: "Weekend Instagram Story",
+        promptTemplate: "Weekend lifestyle vertical story. Relaxed, aspirational, brand-adjacent aesthetic.",
+      },
+      {
+        label: "Sunday Post",
+        type: "image",
+        aspectRatio: "1:1",
+        purpose: "Sunday Instagram feed post",
+        promptTemplate: "Reflective Sunday post. Calm, elegant composition, soft colour palette.",
+      },
+    ],
+  },
+  {
+    name: "Product Launch Kit",
+    description: "Hero, 3 product shots, voiceover, promo video",
+    items: [
+      {
+        label: "Hero Image",
+        type: "image",
+        aspectRatio: "16:9",
+        purpose: "Website / landing page hero",
+        promptTemplate: "Dramatic product launch hero image. Premium product photography, dark moody background, spotlight lighting.",
+      },
+      {
+        label: "Product Shot A",
+        type: "image",
+        aspectRatio: "1:1",
+        purpose: "Square product image for social",
+        promptTemplate: "Clean product shot on white background. Studio quality, professional lighting, no shadows.",
+      },
+      {
+        label: "Product Shot B",
+        type: "image",
+        aspectRatio: "4:5",
+        purpose: "Portrait product image for Instagram",
+        promptTemplate: "Lifestyle product photography. Product in real-world context, aspirational setting.",
+      },
+      {
+        label: "Product Shot C",
+        type: "image",
+        aspectRatio: "9:16",
+        purpose: "Story / Reels product image",
+        promptTemplate: "Vertical format product showcase. Vibrant background, bold text space at bottom.",
+      },
+      {
+        label: "Product Voiceover",
+        type: "voice",
+        purpose: "Product promo narration",
+        promptTemplate: "Introducing [Product Name] — the [solution] that [benefit]. Available now.",
+      },
+      {
+        label: "Promo Video",
+        type: "video",
+        aspectRatio: "16:9",
+        purpose: "Product promo video clip",
+        promptTemplate: "High-energy product reveal video. Dynamic cuts, brand-matching colour grade, modern motion.",
+      },
+    ],
+  },
+];
+
+// ─── W5: Time estimate helper ────────────────────────────────────────────────
+
+function itemTimeBadge(type: MediaPlanItem["type"]): string {
+  if (type === "video") return "~4 min";
+  if (type === "voice") return "~3s";
+  if (type === "music") return "~30s";
+  return "~5s"; // image
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function genId() {
@@ -118,10 +360,16 @@ function planId() {
   return `plan_${Math.random().toString(36).slice(2, 10)}_${Date.now()}`;
 }
 
-function defaultConfig(): GenerationConfig {
+function defaultConfig(type: MediaPlanItem["type"] = "image"): GenerationConfig {
   return {
-    model: import.meta.env.VITE_MODEL_IMAGE || "gemini-3-pro-image-preview",
-    size: "1K",
+    model: type === "video"
+      ? (import.meta.env.VITE_MODEL_VIDEO || "veo-3.1-generate-preview")
+      : type === "music"
+      ? (import.meta.env.VITE_MODEL_MUSIC || "lyria-realtime-exp")
+      : type === "voice"
+      ? (import.meta.env.VITE_MODEL_TTS || "gemini-2.5-flash-preview-tts")
+      : (import.meta.env.VITE_MODEL_IMAGE || "gemini-3-pro-image-preview"),
+    size: type === "video" ? "1080p" : "1K",
     aspectRatio: "1:1",
     count: 1,
     negativePrompt: "",
@@ -131,15 +379,16 @@ function defaultConfig(): GenerationConfig {
 }
 
 function newItem(overrides: Partial<MediaPlanItem> = {}): MediaPlanItem {
+  const type = overrides.type || "image";
   return {
     id: genId(),
-    type: "image",
+    type,
     label: "New Asset",
     purpose: "",
     promptTemplate: "",
     status: "draft",
     generatedJobIds: [],
-    generationConfig: defaultConfig(),
+    generationConfig: defaultConfig(type),
     ...overrides,
   };
 }
@@ -191,14 +440,17 @@ function GenerationPreviewModal({ plan, onClose, onStart }: PreviewModalProps) {
   const images = approvedItems.filter((i) => i.type === "image");
   const videos = approvedItems.filter((i) => i.type === "video");
   const voices = approvedItems.filter((i) => i.type === "voice");
+  // W8/CHECK-007: count music items and include in estimates
+  const musics = approvedItems.filter((i) => i.type === "music");
 
   const totalImages = images.reduce((s, i) => s + i.generationConfig.count, 0);
   const totalVideos = videos.reduce((s, i) => s + i.generationConfig.count, 0);
   const totalVoices = voices.reduce((s, i) => s + i.generationConfig.count, 0);
+  const totalMusics = musics.reduce((s, i) => s + i.generationConfig.count, 0);
 
   const estimatedSeconds =
-    totalImages * 5 + totalVideos * 240 + totalVoices * 3;
-  const totalCalls = totalImages + totalVideos + totalVoices;
+    totalImages * 5 + totalVideos * 240 + totalVoices * 3 + totalMusics * 30;
+  const totalCalls = totalImages + totalVideos + totalVoices + totalMusics;
 
   const ratioBreakdown = ASPECT_RATIOS.map((ar) => ({
     label: ar.label,
@@ -212,8 +464,11 @@ function GenerationPreviewModal({ plan, onClose, onStart }: PreviewModalProps) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" role="presentation">
       <motion.div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Generation preview — review items before starting batch"
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
@@ -257,6 +512,15 @@ function GenerationPreviewModal({ plan, onClose, onStart }: PreviewModalProps) {
                   <span className="text-zinc-300">{voices.length} voice clip{voices.length > 1 ? "s" : ""}</span>
                   <span className="text-zinc-500">→ {totalVoices} generation{totalVoices > 1 ? "s" : ""}</span>
                   <span className="ml-auto text-zinc-500 text-xs">{fmtTime(totalVoices * 3)}</span>
+                </div>
+              )}
+              {/* W8/CHECK-007: music count + time estimate */}
+              {musics.length > 0 && (
+                <div className="flex items-center gap-3 text-sm">
+                  <Music className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span className="text-zinc-300">{musics.length} music track{musics.length > 1 ? "s" : ""}</span>
+                  <span className="text-zinc-500">→ {totalMusics} generation{totalMusics > 1 ? "s" : ""}</span>
+                  <span className="ml-auto text-zinc-500 text-xs">{fmtTime(totalMusics * 30)}</span>
                 </div>
               )}
               <div className="border-t border-zinc-800 pt-2 flex items-center justify-between text-sm">
@@ -456,6 +720,21 @@ export default function MediaPlan() {
   // Collect approved
   const [collectingApproved, setCollectingApproved] = useState(false);
 
+  // ── Lane 3 additions ────────────────────────────────────────────────────────
+
+  // W1: preset dropdown open
+  const [showPresetMenu, setShowPresetMenu] = useState(false);
+
+  // W2: plan template modal
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+
+  // W3: import file ref
+  const importFileRef = useRef<HTMLInputElement>(null);
+
+  // W4: filter state
+  const [filterType, setFilterType] = useState<"" | MediaPlanItem["type"]>("");
+  const [filterStatus, setFilterStatus] = useState<"" | MediaPlanItem["status"]>("");
+
   // ── Persistence ────────────────────────────────────────────────────────────
 
   const storageKey = `${PLANS_KEY}-${activeProject?.id ?? "default"}`;
@@ -558,6 +837,90 @@ export default function MediaPlan() {
     const item = newItem();
     saveItems(activePlan.id, [...activePlan.items, item]);
     setExpandedId(item.id);
+  }
+
+  // W1: Add item from preset
+  function addItemFromPreset(preset: ItemPreset) {
+    if (!activePlan) return;
+    const item = newItem({
+      label: preset.label,
+      type: preset.type,
+      purpose: preset.purpose,
+      promptTemplate: preset.promptTemplate,
+      generationConfig: {
+        ...defaultConfig(preset.type),
+        aspectRatio: preset.aspectRatio ?? "1:1",
+      },
+    });
+    saveItems(activePlan.id, [...activePlan.items, item]);
+    setExpandedId(item.id);
+    setShowPresetMenu(false);
+    toast(`Added "${preset.label}" preset.`, "success");
+  }
+
+  // W2: Load plan template
+  function loadPlanTemplate(template: PlanTemplate) {
+    if (!activePlan) return;
+    const items = template.items.map((t) =>
+      newItem({
+        label: t.label,
+        type: t.type,
+        purpose: t.purpose,
+        promptTemplate: t.promptTemplate,
+        generationConfig: {
+          ...defaultConfig(t.type),
+          aspectRatio: t.aspectRatio ?? "1:1",
+        },
+      })
+    );
+    saveItems(activePlan.id, [...activePlan.items, ...items]);
+    setShowTemplateModal(false);
+    toast(`Loaded "${template.name}" — added ${items.length} items.`, "success");
+  }
+
+  // W3: Export plan as JSON
+  function exportPlan() {
+    if (!activePlan) return;
+    const json = JSON.stringify(activePlan, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${activePlan.name.replace(/[^a-z0-9]/gi, "_")}.gemlink-plan.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast(`Exported "${activePlan.name}" as JSON.`, "success");
+  }
+
+  // W3: Import plan from JSON file
+  function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed: MediaPlan = JSON.parse(ev.target?.result as string);
+        if (!parsed.id || !Array.isArray(parsed.items)) throw new Error("Invalid plan file.");
+        // Give it a new ID to avoid collisions
+        const imported: MediaPlan = {
+          ...parsed,
+          id: planId(),
+          name: `${parsed.name} (Imported)`,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          items: parsed.items.map((i) => ({ ...i, id: genId() })),
+        };
+        const next = [imported, ...plans];
+        updatePlans(next);
+        setActivePlanId(imported.id);
+        toast(`Imported "${parsed.name}" with ${imported.items.length} items.`, "success");
+      } catch (err: any) {
+        toast(err.message || "Failed to import plan. Make sure it's a valid Gemlink plan JSON.", "error");
+      }
+    };
+    reader.readAsText(file);
+    // Reset input so same file can be re-imported
+    e.target.value = "";
   }
 
   function removeItem(itemId: string) {
@@ -689,11 +1052,16 @@ export default function MediaPlan() {
     }
   };
 
+  // W7/CHECK-008: Use a ref to always hold the latest activePlan in the polling callback,
+  // preventing stale closure issues when saveItems re-renders the component.
+  const activePlanRef = useRef(activePlan);
+  useEffect(() => { activePlanRef.current = activePlan; });
+
   // Polling for batch generation progress
   useEffect(() => {
     if (!activePlan) return;
     
-    // Find all unique active batch IDs
+    // Find all unique active batch IDs from the current plan snapshot
     const activeBatches = new Set<string>();
     activePlan.items.forEach(i => {
       if (i.status === "generating" && i.batchId) {
@@ -704,6 +1072,10 @@ export default function MediaPlan() {
     if (activeBatches.size === 0) return;
 
     const interval = setInterval(() => {
+      // Always read from the ref so we get the latest plan state, not a stale closure
+      const currentPlan = activePlanRef.current;
+      if (!currentPlan) return;
+
       activeBatches.forEach(async (batchId) => {
         try {
           const res = await fetch(`/api/media/batch/${batchId}`);
@@ -711,7 +1083,7 @@ export default function MediaPlan() {
           const data = await res.json();
           
           let updatedItems = false;
-          const newItems = activePlan.items.map(item => {
+          const newItems = currentPlan.items.map(item => {
             if (item.batchId !== batchId || item.batchIndex === undefined) return item;
             
             const batchStatus = data.statuses[item.batchIndex];
@@ -729,19 +1101,21 @@ export default function MediaPlan() {
           });
 
           if (updatedItems) {
-            saveItems(activePlan.id, newItems);
+            saveItems(currentPlan.id, newItems);
             if (data.complete) {
               toast(`Batch generation complete!`, "success");
             }
           }
         } catch (err) {
-          console.error(`Failed to poll batch ${batchId}:`, err);
+          console.error(`[mediaplan] Failed to poll batch ${batchId}:`, err);
         }
       });
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [activePlan, saveItems, toast]);
+  // Only re-create the interval when the SET of active batch IDs changes, not on every plan update
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePlan?.id, batchRunning, saveItems, toast]);
 
   // W4: Boardroom Plan handoff — stores description in sessionStorage and navigates to /boardroom.
   // Boardroom.tsx picks up 'boardroom-plan-handoff' on mount and pre-fills MEDIA_STRATEGY_TEMPLATE.
@@ -775,6 +1149,43 @@ export default function MediaPlan() {
     }
   }, [naturalInput, activeProject, navigate, toast]);
 
+  const buildItemPayload = (i: MediaPlanItem) => {
+    const cfg = i.generationConfig;
+    if (i.type === "voice") {
+      return { type: "voice", body: { text: i.promptTemplate, voice: cfg.voice || "Kore" } };
+    }
+    if (i.type === "video") {
+      let vModel = cfg.model;
+      if (!vModel || !vModel.includes("veo")) vModel = import.meta.env.VITE_MODEL_VIDEO || "veo-3.1-generate-preview";
+      let vRes = cfg.size;
+      if (vRes !== "720p" && vRes !== "1080p") vRes = "1080p";
+      return {
+        type: "video",
+        body: {
+          prompt: i.promptTemplate,
+          model: vModel,
+          resolution: vRes,
+          size: vRes,
+          aspectRatio: cfg.aspectRatio,
+        },
+      };
+    }
+    if (i.type === "music") {
+      return { type: "music", body: { prompt: i.promptTemplate, duration: cfg.duration || 30 } };
+    }
+    return {
+      type: "image",
+      body: {
+        prompt: i.promptTemplate,
+        model: cfg.model,
+        size: cfg.size,
+        aspectRatio: cfg.aspectRatio,
+        count: cfg.count,
+        negativePrompt: cfg.negativePrompt,
+      },
+    };
+  };
+
   const handleGenerateAll = async () => {
     if (!activePlan) return;
     const draftItems = activePlan.items.filter((i) => i.status === "draft" || i.status === "approved");
@@ -791,58 +1202,22 @@ export default function MediaPlan() {
       i.status === "draft" ? { ...i, status: "queued" as const } : i
     );
     saveItems(activePlan.id, queued);
+    let res: Response | null = null;
     try {
-      const res = await fetch("/api/media/batch", {
+      res = await fetch("/api/media/batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          items: readyItems.map((i) => {
-            const cfg = i.generationConfig;
-            // Build type-specific body payloads
-            if (i.type === "voice") {
-              return {
-                type: "voice",
-                body: {
-                  text: i.promptTemplate,
-                  voice: cfg.voice || "Kore",
-                },
-              };
-            }
-            if (i.type === "video") {
-              return {
-                type: "video",
-                body: {
-                  prompt: i.promptTemplate,
-                  model: cfg.model,
-                  aspectRatio: cfg.aspectRatio,
-                },
-              };
-            }
-            if (i.type === "music") {
-              return {
-                type: "music",
-                body: {
-                  prompt: i.promptTemplate,
-                  duration: cfg.duration || 30,
-                },
-              };
-            }
-            // Default: image
-            return {
-              type: "image",
-              body: {
-                prompt: i.promptTemplate,
-                model: cfg.model,
-                size: cfg.size,
-                aspectRatio: cfg.aspectRatio,
-                count: cfg.count,
-                negativePrompt: cfg.negativePrompt,
-              },
-            };
-          }),
+          // W1/CHECK-004: include apiKey so batch endpoint can call Gemini even if server env var is absent
+          apiKey: import.meta.env.VITE_GEMINI_API_KEY || undefined,
+          items: readyItems.map(buildItemPayload),
         }),
       });
-      if (!res.ok) throw new Error("unavailable");
+      // W5/CHECK-005: Read real error body and surface it as an error toast
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || `Batch failed (HTTP ${res.status}).`);
+      }
       const data = await res.json();
       
       const updated = activePlan.items.map((item) => {
@@ -854,8 +1229,9 @@ export default function MediaPlan() {
       });
       saveItems(activePlan.id, updated);
       toast(`Batch started — ${readyItems.length} items queued.`, "success");
-    } catch {
-      toast("Batch endpoint not yet live. Items left in draft.", "info");
+    } catch (err: any) {
+      // W5/CHECK-005: show the real error, not a misleading placeholder
+      toast(err?.message || "Batch generation failed — check server logs.", "error");
       saveItems(activePlan.id, activePlan.items.map((i) => i.status === "queued" ? { ...i, status: "draft" as const } : i));
     } finally {
       setBatchRunning(false);
@@ -875,19 +1251,22 @@ export default function MediaPlan() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          items: [{
-            type: item.type,
-            body: { prompt: item.promptTemplate, ...item.generationConfig },
-          }],
+          // W1/SOP-3: include apiKey for single-item batch too
+          apiKey: import.meta.env.VITE_GEMINI_API_KEY || undefined,
+          items: [buildItemPayload(item)],
         }),
       });
-      if (!res.ok) throw new Error("unavailable");
+      // W5/SOP-4: read real error body
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || `Single generation failed (HTTP ${res.status})`);
+      }
       const data = await res.json();
       patchItem(itemId, { status: "generating", batchId: data.batchId, batchIndex: 0 });
       toast(`Generating "${item.label}"…`, "success");
-    } catch {
+    } catch (err: any) {
       patchItem(itemId, { status: "draft" });
-      toast("Batch endpoint not yet live. Item left in draft.", "info");
+      toast(err?.message || "Generation failed — check server logs.", "error");
     } finally {
       setGeneratingSingleId(null);
     }
@@ -979,6 +1358,14 @@ export default function MediaPlan() {
     (i) => i.status === "review" || i.status === "approved"
   ).length ?? 0;
   const totalCount = activePlan?.items.length ?? 0;
+
+  // W4: filtered items for the item list
+  const filteredItems = activePlan?.items.filter((i) => {
+    if (filterType && i.type !== filterType) return false;
+    if (filterStatus && i.status !== filterStatus) return false;
+    return true;
+  }) ?? [];
+  const hasActiveFilter = filterType !== "" || filterStatus !== "";
 
   return (
     <motion.div
@@ -1103,13 +1490,84 @@ export default function MediaPlan() {
                 <FolderOpen className="w-4 h-4" />
                 New Plan
               </button>
+
+              {/* W3: Export / Import */}
               <button
-                onClick={addItem}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-800 border border-zinc-700 text-sm text-zinc-200 hover:bg-zinc-700 transition-colors"
+                id="export-plan-btn"
+                onClick={exportPlan}
+                disabled={!activePlan || activePlan.items.length === 0}
+                title="Export plan as JSON"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-800 border border-zinc-700 text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 disabled:opacity-40 transition-colors"
               >
-                <Plus className="w-4 h-4" />
-                Add Item
+                <Download className="w-4 h-4" />
+                Export
               </button>
+              <label
+                htmlFor="import-plan-input"
+                title="Import plan from JSON"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-800 border border-zinc-700 text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 cursor-pointer transition-colors"
+              >
+                <Upload className="w-4 h-4" />
+                Import
+              </label>
+              <input
+                id="import-plan-input"
+                ref={importFileRef}
+                type="file"
+                accept=".json,.gemlink-plan.json"
+                className="hidden"
+                onChange={handleImportFile}
+              />
+
+              {/* W2: Plan Templates */}
+              <button
+                id="plan-templates-btn"
+                onClick={() => setShowTemplateModal(true)}
+                title="Load a plan template"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-800 border border-zinc-700 text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors"
+              >
+                <LayoutTemplate className="w-4 h-4" />
+                Templates
+              </button>
+
+              {/* W1: Add Item + Preset dropdown */}
+              <div className="relative">
+                <div className="flex items-stretch rounded-xl overflow-hidden border border-zinc-700 bg-zinc-800">
+                  <button
+                    onClick={addItem}
+                    className="flex items-center gap-2 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700 transition-colors"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Add Item
+                  </button>
+                  <button
+                    id="preset-menu-btn"
+                    onClick={() => setShowPresetMenu((v) => !v)}
+                    title="Add from preset"
+                    className="flex items-center px-2 py-2 text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700 border-l border-zinc-700 transition-colors"
+                  >
+                    <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showPresetMenu ? "rotate-180" : ""}`} />
+                  </button>
+                </div>
+                {showPresetMenu && (
+                  <div className="absolute right-0 top-full mt-1 z-30 bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl min-w-[200px] overflow-hidden">
+                    <p className="px-3 py-2 text-[10px] uppercase tracking-widest text-zinc-500 border-b border-zinc-800">Quick Presets</p>
+                    {ITEM_PRESETS.map((preset) => (
+                      <button
+                        key={preset.label}
+                        onClick={() => addItemFromPreset(preset)}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left text-zinc-200 hover:bg-indigo-600/20 transition-colors"
+                      >
+                        {preset.type === "video" && <Video className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                        {preset.type === "voice" && <Mic className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
+                        {preset.type === "music" && <Music className="w-3.5 h-3.5 text-rose-400 shrink-0" />}
+                        {preset.type === "image" && <ImageIcon className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                        <span>{preset.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               {/* Collect Approved button: visible when ≥1 approved item with outputs */}
               {approvedCount > 0 && (
                 <button
@@ -1321,9 +1779,9 @@ export default function MediaPlan() {
             </motion.div>
           )}
 
-          {/* Select all row */}
+          {/* Select all row + W4 filter bar */}
           {activePlan && activePlan.items.length > 0 && (
-            <div className="flex items-center gap-2 mb-3 px-1">
+            <div className="flex items-center gap-2 mb-3 px-1 flex-wrap">
               <button
                 onClick={selectAll}
                 className="flex items-center gap-2 text-xs text-zinc-500 hover:text-zinc-200 transition-colors"
@@ -1339,7 +1797,52 @@ export default function MediaPlan() {
                 {activePlan.items.length} item{activePlan.items.length !== 1 ? "s" : ""}
                 {" · "}{draftCount} draft
               </span>
+
+              {/* W4: Filter bar */}
+              <div className="ml-auto flex items-center gap-1.5">
+                <Filter className="w-3.5 h-3.5 text-zinc-600" />
+                <select
+                  id="filter-type-select"
+                  value={filterType}
+                  onChange={(e) => setFilterType(e.target.value as "" | MediaPlanItem["type"])}
+                  className="bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1 text-xs text-zinc-300 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                >
+                  <option value="">All types</option>
+                  <option value="image">Image</option>
+                  <option value="video">Video</option>
+                  <option value="voice">Voice</option>
+                  <option value="music">Music</option>
+                </select>
+                <select
+                  id="filter-status-select"
+                  value={filterStatus}
+                  onChange={(e) => setFilterStatus(e.target.value as "" | MediaPlanItem["status"])}
+                  className="bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1 text-xs text-zinc-300 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                >
+                  <option value="">All statuses</option>
+                  {STATUS_ORDER.map((s) => (
+                    <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>
+                  ))}
+                </select>
+                {hasActiveFilter && (
+                  <button
+                    onClick={() => { setFilterType(""); setFilterStatus(""); }}
+                    title="Clear filters"
+                    className="text-zinc-600 hover:text-zinc-300 transition-colors"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
+          )}
+          {/* Show filter summary when filters are active */}
+          {hasActiveFilter && (
+            <p className="text-xs text-indigo-400 mb-2 px-1">
+              Showing {filteredItems.length} of {totalCount} items
+              {filterType && ` · type: ${filterType}`}
+              {filterStatus && ` · status: ${filterStatus}`}
+            </p>
           )}
 
           {/* Plan items */}
@@ -1349,6 +1852,15 @@ export default function MediaPlan() {
               <p className="text-lg font-medium text-white mb-2">No plan items yet</p>
               <p className="text-sm">Describe your media needs above or click "Add Item".</p>
             </div>
+          ) : filteredItems.length === 0 ? (
+            <div className="text-center py-12 bg-zinc-950 border border-zinc-800 rounded-2xl text-zinc-500">
+              <Filter className="w-8 h-8 mx-auto mb-3 opacity-40" />
+              <p className="text-sm font-medium text-zinc-400">No items match the current filters.</p>
+              <button
+                onClick={() => { setFilterType(""); setFilterStatus(""); }}
+                className="mt-2 text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+              >Clear filters</button>
+            </div>
           ) : (
             <Reorder.Group
               axis="y"
@@ -1356,7 +1868,7 @@ export default function MediaPlan() {
               onReorder={(items) => saveItems(activePlan.id, items)}
               className="space-y-3"
             >
-              {activePlan.items.map((item) => (
+              {filteredItems.map((item) => (
                 <Reorder.Item key={item.id} value={item}>
                   <motion.div layout className={`bg-zinc-950 border rounded-2xl overflow-hidden transition-colors ${selectedIds.has(item.id) ? "border-indigo-500/40" : "border-zinc-800"}`}>
                     {/* Item header row */}
@@ -1374,6 +1886,14 @@ export default function MediaPlan() {
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-medium text-white truncate">{item.label}</span>
                           {statusPill(item.status, item.error)}
+                          {/* W5: per-item estimated time badge */}
+                          <span
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-zinc-500 bg-zinc-800/60 border border-zinc-700/50"
+                            title={`Estimated generation time for this ${item.type}`}
+                          >
+                            <Timer className="w-2.5 h-2.5" />
+                            {itemTimeBadge(item.type)}
+                          </span>
                         </div>
                         {item.purpose && (
                           <p className="text-xs text-zinc-500 mt-0.5 truncate">{item.purpose}</p>
@@ -1495,7 +2015,7 @@ export default function MediaPlan() {
                                   <div>
                                     <label className="block text-xs text-zinc-500 mb-1">Model</label>
                                     <select
-                                      value={item.generationConfig.model}
+                                      value={item.type === "video" && (!item.generationConfig.model || !item.generationConfig.model.includes("veo")) ? (import.meta.env.VITE_MODEL_VIDEO || "veo-3.1-generate-preview") : item.generationConfig.model}
                                       onChange={(e) => patchItemConfig(item.id, { model: e.target.value })}
                                       className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                     >
@@ -1504,15 +2024,15 @@ export default function MediaPlan() {
                                       ))}
                                     </select>
                                   </div>
-                                  {/* Size */}
+                                  {/* Size / Resolution */}
                                   <div>
-                                    <label className="block text-xs text-zinc-500 mb-1">Size</label>
+                                    <label className="block text-xs text-zinc-500 mb-1">{item.type === "video" ? "Resolution" : "Size"}</label>
                                     <select
-                                      value={item.generationConfig.size}
+                                      value={item.type === "video" && !["720p","1080p"].includes(item.generationConfig.size) ? "1080p" : item.generationConfig.size}
                                       onChange={(e) => patchItemConfig(item.id, { size: e.target.value })}
                                       className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                     >
-                                      {SIZES.map((s) => (
+                                      {(item.type === "video" ? [{value: "1080p", label: "1080p"}, {value: "720p", label: "720p"}] : SIZES).map((s) => (
                                         <option key={s.value} value={s.value}>{s.label}</option>
                                       ))}
                                     </select>
@@ -1691,6 +2211,74 @@ export default function MediaPlan() {
           )}
         </div>
       </div>
+
+      {/* W2: Plan Templates Modal — Added by Lane 3 */}
+      <AnimatePresence>
+        {showTemplateModal && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col"
+            >
+              <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 shrink-0">
+                <div className="flex items-center gap-2">
+                  <LayoutTemplate className="w-5 h-5 text-indigo-400" />
+                  <h2 className="text-lg font-semibold text-white">Plan Templates</h2>
+                </div>
+                <button onClick={() => setShowTemplateModal(false)} className="text-zinc-500 hover:text-zinc-200 transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-5 space-y-3">
+                <p className="text-sm text-zinc-400 mb-4">Choose a template to pre-populate your plan with a curated set of items.</p>
+                {PLAN_TEMPLATES.map((tpl) => (
+                  <div key={tpl.name} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 hover:border-zinc-600 transition-colors">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1">
+                        <p className="text-sm font-semibold text-white">{tpl.name}</p>
+                        <p className="text-xs text-zinc-400 mt-0.5">{tpl.description}</p>
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {tpl.items.map((it, idx) => (
+                            <span key={idx} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 text-zinc-400">
+                              {it.type === "image" && <ImageIcon className="w-2.5 h-2.5" />}
+                              {it.type === "video" && <Video className="w-2.5 h-2.5" />}
+                              {it.type === "voice" && <Mic className="w-2.5 h-2.5" />}
+                              {it.type === "music" && <Music className="w-2.5 h-2.5" />}
+                              {it.label}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => loadPlanTemplate(tpl)}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium transition-colors shrink-0"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5" />
+                        Use Template
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="px-6 py-4 border-t border-zinc-800 shrink-0">
+                <button
+                  onClick={() => setShowTemplateModal(false)}
+                  className="w-full px-4 py-2.5 rounded-xl border border-zinc-700 text-zinc-300 text-sm hover:bg-zinc-800 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Close preset menu on outside click — Added by Lane 3 */}
+      {showPresetMenu && (
+        <div className="fixed inset-0 z-20" onClick={() => setShowPresetMenu(false)} />
+      )}
 
       {/* Generation Preview Modal */}
       <AnimatePresence>
