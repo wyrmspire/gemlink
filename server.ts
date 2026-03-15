@@ -6,7 +6,7 @@ import twilio from "twilio";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { startBoardroomSessionAsync, listBoardroomSessions, readBoardroomSession, extractMediaBriefs, STRATEGY_ANALYSIS_TEMPLATE, extractStrategyAnalysisOutput } from "./boardroom.ts";
-import { mediaJobQueries, collectionQueries, collectionItemQueries, strategyArtifactQueries, getActiveArtifacts, composeJobQueries, type MediaJobRow, type StrategyArtifactRow, type ArtifactType, type ComposeJobRow } from "./src/db.ts";
+import { mediaJobQueries, collectionQueries, collectionItemQueries, strategyArtifactQueries, getActiveArtifacts, composeJobQueries, idempotencyQueries, type MediaJobRow, type StrategyArtifactRow, type ArtifactType, type ComposeJobRow } from "./src/db.ts";
 import type { SlideInput as ComposeSlideInput } from "./compose.ts";
 import { loadTemplates, getTemplate, type ComposeTemplate } from "./templates.ts";
 // ── L1-S4.5 + L2-S4.5: Centralized config import ───────────────────────────
@@ -44,10 +44,10 @@ async function checkFfmpegOnStartup(): Promise<void> {
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 dotenv.config();
 
-type MediaType = "image" | "video" | "voice" | "music";
-type JobStatus = "pending" | "completed" | "failed";
+export type MediaType = "image" | "video" | "voice" | "music";
+export type JobStatus = "pending" | "completed" | "failed";
 
-interface MediaScore {
+export interface MediaScore {
   brandAlignment: number;
   purposeFit: number;
   technicalQuality: number;
@@ -58,7 +58,7 @@ interface MediaScore {
   suggestions: string[];
 }
 
-interface JobManifest {
+export interface JobManifest {
   id: string;
   type: MediaType;
   createdAt: string;
@@ -259,7 +259,7 @@ interface BatchJobItem {
   body: Record<string, unknown>;
 }
 
-interface BatchState {
+export interface BatchState {
   id: string;
   createdAt: string;
   total: number;
@@ -337,6 +337,17 @@ async function loadStyleDatabase(): Promise<StyleDatabase> {
 async function startServer() {
   const app = express();
   const api = express.Router();
+
+  // ── L2-S7 (W1): Agent Identity Tracking middleware ────────────────────────
+  app.use((req, _res, next) => {
+    const agentId = req.headers["x-agent-id"];
+    const agentSession = req.headers["x-agent-session"];
+    const agentLane = req.headers["x-agent-lane"];
+    if (agentId || agentSession || agentLane) {
+      console.log(`[agent-tracking] ID:${agentId || "none"} | Session:${agentSession || "none"} | Lane:${agentLane || "none"} | ${req.method} ${req.url}`);
+    }
+    next();
+  });
 
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));

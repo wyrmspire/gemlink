@@ -647,29 +647,31 @@ export default function Boardroom() {
 
           {leftPanel === "new" ? (
           <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-5 space-y-4">
-            <div className="flex items-start justify-between gap-3">
+            <div className="flex flex-col sm:flex-row items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold text-white">Start a session</h2>
-                <p className="text-sm text-zinc-400 mt-1">The room now anchors on objective first, then moves through a visible protocol instead of free-form ping-pong.</p>
+                <p className="text-sm text-zinc-400 mt-1">The room now anchors on objective first, then moves through a visible protocol.</p>
               </div>
-              <button
-                type="button"
-                onClick={applyStrategyAnalysisTemplate}
-                title="Load Strategy Analysis template"
-                className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-300 hover:bg-violet-500/20 transition-colors"
-              >
-                <Brain className="w-3.5 h-3.5" />
-                Strategy Analysis
-              </button>
-              <button
-                type="button"
-                onClick={applyMediaStrategyTemplate}
-                title="Load Media Strategy template"
-                className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-fuchsia-500/30 bg-fuchsia-500/10 px-3 py-1.5 text-xs font-medium text-fuchsia-300 hover:bg-fuchsia-500/20 transition-colors"
-              >
-                <Wand2 className="w-3.5 h-3.5" />
-                Media Strategy
-              </button>
+              <div className="flex flex-col gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={applyMediaStrategyTemplate}
+                  title="Load Media Strategy template"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-fuchsia-500/30 bg-fuchsia-500/10 px-3 py-1.5 text-xs font-medium text-fuchsia-300 hover:bg-fuchsia-500/20 transition-colors w-full justify-start"
+                >
+                  <Wand2 className="w-3.5 h-3.5" />
+                  Media Strategy
+                </button>
+                <button
+                  type="button"
+                  onClick={applyStrategyAnalysisTemplate}
+                  title="Load Strategy Analysis template"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-300 hover:bg-violet-500/20 transition-colors w-full justify-start"
+                >
+                  <Brain className="w-3.5 h-3.5" />
+                  Strategy Analysis
+                </button>
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -1128,20 +1130,20 @@ export default function Boardroom() {
                         <h3 className="text-lg font-semibold text-white">{perspective.participantName}</h3>
                         <p className="text-sm text-zinc-300 mt-2">{perspective.stance}</p>
 
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 text-sm">
-                          <div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-3 gap-4 mt-4 text-sm">
+                          <div className="min-w-[200px]">
                             <h4 className="font-medium text-red-300 mb-2">Risks</h4>
                             <ul className="space-y-1 text-zinc-300 list-disc pl-5">
                               {perspective.risks.map((item, index) => <li key={`risk-${index}`}>{item}</li>)}
                             </ul>
                           </div>
-                          <div>
+                          <div className="min-w-[200px]">
                             <h4 className="font-medium text-emerald-300 mb-2">Opportunities</h4>
                             <ul className="space-y-1 text-zinc-300 list-disc pl-5">
                               {perspective.opportunities.map((item, index) => <li key={`opportunity-${index}`}>{item}</li>)}
                             </ul>
                           </div>
-                          <div>
+                          <div className="min-w-[200px]">
                             <h4 className="font-medium text-indigo-300 mb-2">Recommendations</h4>
                             <ul className="space-y-1 text-zinc-300 list-disc pl-5">
                               {perspective.recommendations.map((item, index) => <li key={`recommendation-${index}`}>{item}</li>)}

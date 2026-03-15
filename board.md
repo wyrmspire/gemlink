@@ -75,9 +75,10 @@
 **Focus**: Features that make the API predictable and safe for agents to use.
 **Owns**: `server.ts`, core middleware
 
-### W1. Agent Identity Tracking (P1) ⬜
+### W1. Agent Identity Tracking (P1) ✅
 - **Files**: `server.ts`
 - **What**: Implement suggestion #9. Add middleware to parse `X-Agent-Id`, `X-Agent-Session`, and `X-Agent-Lane` headers, recording them in console logs for traceability.
+- **Done**: Added middleware before the main parsers to log `x-agent-id`, `x-agent-session`, and `x-agent-lane` headers.
 
 ### W2. Capabilities Endpoint (P0) ⬜
 - **Depends**: L1:W1
@@ -99,16 +100,16 @@
 **Focus**: Exposing live status, streams, and constraints to agents organically.
 **Owns**: Streaming components, rate limiting features
 
-### W1. Real-Time Streams (SSE) (P0) ⬜
+### W1. Real-Time Streams (SSE) (P0) 🟡
 - **Depends**: L1:W1
 - **Files**: `routes/boardroom.ts`, `routes/media.ts`, `routes/compose.ts`
 - **What**: Implement suggestion #4. Add standard SSE stream endpoints for boardroom sessions and long-running media/compose jobs to replace polling loops.
 
-### W2. Rate Limit Headers (P0) ⬜
+### W2. Rate Limit Headers (P0) 🟡
 - **Files**: `routes/media.ts` (or auth/middleware)
 - **What**: Implement suggestion #3. Return standard `X-RateLimit-*` headers exposing current capacity. Add `Retry-After` headers to any 429 status endpoints.
 
-### W3. Queue Status & Job Cancellation (P1) ⬜
+### W3. Queue Status & Job Cancellation (P1) 🟡
 - **Files**: `routes/media.ts`
 - **What**: Implement suggestions #8 and #12. Create `GET /api/queue` to show running vs pending queued jobs, and add cancellation endpoints (`POST /api/media/job/:type/:id/cancel`).
 

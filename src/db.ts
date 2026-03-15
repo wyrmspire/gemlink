@@ -183,7 +183,13 @@ db.exec(/* sql */ `
   -- but since better-sqlite3 exec() doesn't allow catching individual errors in one multi-statement call,
   -- we'll split the alter calls into separate exec calls below the main bootstrap.
   CREATE INDEX IF NOT EXISTS idx_compose_jobs_project ON compose_jobs(projectId);
-  CREATE INDEX IF NOT EXISTS idx_compose_jobs_status  ON compose_jobs(status);
+  -- ── Idempotency Keys ──────────────────────────────────────────────────────
+  -- Cache successful generation responses to prevent duplication on retry.
+  CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key       TEXT PRIMARY KEY,
+    response  TEXT NOT NULL,
+    createdAt TEXT NOT NULL
+  );
 `);
 
 // ── Migration logic for existing installations ──────────────────────────────
@@ -619,4 +625,43 @@ export const composeJobQueries = {
       duration: opts.duration ?? null,
       updatedAt: opts.updatedAt ?? new Date().toISOString(),
     }),
+};
+
+// ── L2-S7 (W3): Idempotency ──────────────────────────────────────────────────
+export interface IdempotencyRow {
+  key: string;
+  response: string;
+  createdAt: string;
+}
+
+const _insertIdempotency = db.prepare<IdempotencyRow>(`
+  INSERT OR IGNORE INTO idempotency_keys (key, response, createdAt)
+  VALUES (@key, @response, @createdAt)
+`);
+
+const _getIdempotency = db.prepare<{ key: string }>(
+  "SELECT * FROM idempotency_keys WHERE key = @key"
+);
+
+export const idempotencyQueries = {
+  insert: (key: string, response: unknown) =>
+    _insertIdempotency.run({
+      key,
+      response: JSON.stringify(response),
+      createdAt: new Date().toISOString(),
+    }),
+  get: (key: string): unknown | undefined => {
+    const row = _getIdempotency.get({ key }) as IdempotencyRow | undefined;
+    if (!row) return undefined;
+    
+    // 24h TTL check
+    const ageMs = Date.now() - new Date(row.createdAt).getTime();
+    if (ageMs > 24 * 60 * 60 * 1000) return undefined;
+    
+    try {
+      return JSON.parse(row.response);
+    } catch {
+      return undefined;
+    }
+  },
 };
