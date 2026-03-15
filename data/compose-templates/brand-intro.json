@@ -1,0 +1,17 @@
+{
+  "id": "brand-intro",
+  "name": "Brand Intro",
+  "description": "Logo reveal → key brand images → tagline → CTA closing. Perfect for YouTube intros and brand reveal videos.",
+  "aspectRatio": "16:9",
+  "slides": [
+    { "slot": "image", "duration": 3, "transition": "fadein", "kenBurns": false, "label": "Logo Reveal" },
+    { "slot": "image", "duration": 4, "transition": "dissolve", "kenBurns": true, "label": "Brand Image 1" },
+    { "slot": "image", "duration": 4, "transition": "smoothleft", "kenBurns": true, "label": "Brand Image 2" },
+    { "slot": "image", "duration": 4, "transition": "smoothleft", "kenBurns": true, "label": "Brand Image 3" },
+    { "slot": "image", "duration": 3, "transition": "fadein", "kenBurns": false, "label": "Tagline Slide" },
+    { "slot": "image", "duration": 4, "transition": "fadein", "kenBurns": false, "label": "CTA / Website" }
+  ],
+  "audio": { "type": "background-music", "required": false },
+  "captions": { "style": "clean", "timing": "sentence", "position": "bottom" },
+  "tags": ["widescreen", "brand", "youtube", "intro", "professional", "reveal", "logo"]
+}

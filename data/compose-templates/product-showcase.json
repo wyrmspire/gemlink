@@ -1,0 +1,16 @@
+{
+  "id": "product-showcase",
+  "name": "Product Showcase",
+  "description": "Hero image → 3 feature highlights → CTA closing slide. Perfect for Instagram and e-commerce social posts.",
+  "aspectRatio": "1:1",
+  "slides": [
+    { "slot": "image", "duration": 4, "transition": "fadewhite", "kenBurns": true, "label": "Hero Shot" },
+    { "slot": "image", "duration": 3, "transition": "slideright", "kenBurns": false, "label": "Feature 1" },
+    { "slot": "image", "duration": 3, "transition": "slideleft", "kenBurns": false, "label": "Feature 2" },
+    { "slot": "image", "duration": 3, "transition": "slideright", "kenBurns": false, "label": "Feature 3" },
+    { "slot": "image", "duration": 3, "transition": "fadein", "kenBurns": false, "label": "CTA / Closing" }
+  ],
+  "audio": { "type": "background-music", "required": false },
+  "captions": { "style": "bold-outline", "timing": "sentence", "position": "bottom" },
+  "tags": ["square", "product", "ecommerce", "instagram", "showcase", "cta"]
+}

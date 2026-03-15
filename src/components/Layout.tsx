@@ -17,12 +17,15 @@ import {
   FolderOpen,
   ListOrdered,
   Presentation,
+  FileStack,
+  Clapperboard,
 } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { motion, AnimatePresence } from "motion/react";
 import ErrorBoundary from "./ErrorBoundary";
 import ToastContainer from "./Toast";
+import ArtifactPanel from "./ArtifactPanel";
 import { useProject } from "../context/ProjectContext";
 
 export function cn(...inputs: ClassValue[]) {
@@ -33,6 +36,7 @@ const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Brand Setup", href: "/setup", icon: Settings },
   { name: "Media Plan", href: "/plan", icon: ListOrdered },
+  { name: "Compose", href: "/compose", icon: Clapperboard },
   { name: "Social Media Gen", href: "/social", icon: ImageIcon },
   { name: "Video Lab", href: "/video", icon: Video },
   { name: "Voice Lab", href: "/voice", icon: Mic },
@@ -41,6 +45,7 @@ const navigation = [
   { name: "Sales Agent", href: "/sales", icon: PhoneCall },
   { name: "Media Library", href: "/library", icon: LibraryIcon },
   { name: "Collections", href: "/collections", icon: FolderOpen },
+  { name: "Strategy Briefs", href: "/briefs", icon: FileStack },
 ];
 
 function ProjectSwitcher() {
@@ -246,6 +251,8 @@ export default function Layout() {
 
       {/* Global toast container */}
       <ToastContainer />
+      {/* Global artifact reference panel */}
+      <ArtifactPanel />
     </div>
   );
 }

@@ -1,0 +1,15 @@
+{
+  "id": "before-after",
+  "name": "Before / After",
+  "description": "Dramatic two-image comparison with a clean wipe transition. Ideal for transformations, renovations, or results.",
+  "aspectRatio": "1:1",
+  "slides": [
+    { "slot": "image", "duration": 1, "transition": "fadein", "kenBurns": false, "label": "Intro Frame" },
+    { "slot": "image", "duration": 4, "transition": "wiperight", "kenBurns": false, "label": "Before" },
+    { "slot": "image", "duration": 4, "transition": "wipeleft", "kenBurns": false, "label": "After" },
+    { "slot": "image", "duration": 2, "transition": "fadeblack", "kenBurns": false, "label": "Result / CTA" }
+  ],
+  "audio": { "type": "voiceover", "required": false },
+  "captions": { "style": "bold-outline", "timing": "sentence", "position": "bottom" },
+  "tags": ["square", "before-after", "transformation", "comparison", "dramatic", "results"]
+}

@@ -102,6 +102,9 @@ export default function SalesAgent() {
   const [mediaLoading, setMediaLoading] = useState(true);
   const [mediaError, setMediaError] = useState<string | null>(null);
 
+  // Pinned strategy artifacts count
+  const [pinnedArtifactCount, setPinnedArtifactCount] = useState<number | null>(null);
+
   // ---------------------------------------------------------------------------
   // Load existing config on mount
   // ---------------------------------------------------------------------------
@@ -138,6 +141,15 @@ export default function SalesAgent() {
   useEffect(() => {
     loadMedia();
   }, [loadMedia]);
+
+  // Load pinned strategy artifacts count for the active project
+  useEffect(() => {
+    if (!projectId) { setPinnedArtifactCount(null); return; }
+    fetch(`/api/artifacts?projectId=${encodeURIComponent(projectId)}&pinned=true`)
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((data: unknown[]) => setPinnedArtifactCount(Array.isArray(data) ? data.length : 0))
+      .catch(() => setPinnedArtifactCount(null));
+  }, [projectId]);
 
   // ---------------------------------------------------------------------------
   // Actions
@@ -539,6 +551,14 @@ export default function SalesAgent() {
               {mediaJobs.filter((j) => j.type === "video" && j.status === "completed").length}
             </p>
           </div>
+          {pinnedArtifactCount !== null && (
+            <div>
+              <p className="text-xs text-zinc-500 mb-0.5">Active Strategy</p>
+              <p className="text-lg font-semibold text-indigo-400">
+                {pinnedArtifactCount} strategy artifact{pinnedArtifactCount !== 1 ? "s" : ""} pinned
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </motion.div>

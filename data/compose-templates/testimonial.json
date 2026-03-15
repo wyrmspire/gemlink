@@ -1,0 +1,15 @@
+{
+  "id": "testimonial",
+  "name": "Testimonial",
+  "description": "Avatar or portrait image with animated quote overlay on a clean background. Great for social proof content.",
+  "aspectRatio": "9:16",
+  "slides": [
+    { "slot": "image", "duration": 2, "transition": "fadein", "kenBurns": false, "label": "Brand Intro" },
+    { "slot": "image", "duration": 6, "transition": "dissolve", "kenBurns": false, "label": "Customer Avatar" },
+    { "slot": "image", "duration": 4, "transition": "fadeblack", "kenBurns": false, "label": "Quote Highlight" },
+    { "slot": "image", "duration": 3, "transition": "fadein", "kenBurns": false, "label": "CTA / Logo" }
+  ],
+  "audio": { "type": "voiceover", "required": false },
+  "captions": { "style": "boxed", "timing": "sentence", "position": "center" },
+  "tags": ["vertical", "testimonial", "social-proof", "reels", "trust", "quote"]
+}

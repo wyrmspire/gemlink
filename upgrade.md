@@ -211,6 +211,485 @@ Looking at the current codebase, here's what stands between Gemlink and the "gen
 
 ---
 
+### Track K — Intelligent Media Planning Pipeline
+
+> **The media plan shouldn't be a single AI call that dumps a flat list. It should be a multi-stage deliberation process with research, grading, approval, and full generation control.**
+
+This track replaces the simple H1 "describe → suggest → generate" flow with a strategic planning system.
+
+#### K1. Multi-Stage Plan Generation (Boardroom-Style Deliberation)
+
+The current `POST /api/media/plan/suggest` is one Gemini call that returns a flat list. That's a convenience shortcut, not a strategic tool. The planning process should mirror the Boardroom's 5-phase protocol — because generating a media plan IS a strategy session.
+
+**How "Generate Media Plan" should actually work:**
+
+When the user clicks "Generate Plan," the system should spin up an **internal boardroom-like deliberation** behind the scenes — a multi-stage pipeline where each stage's output feeds the next and gets graded before proceeding:
+
+**Stage 1 — Research & Context Gathering**
+Before suggesting any media, the planner gathers intelligence:
+- Pull brand context from the active project (name, audience, voice, style keywords)
+- If the user has done R&D Lab research, pull recent research results for the project
+- If there are completed boardroom sessions, pull convergence summaries
+- Query the Style & Psychology Database (K3) for audience-appropriate visual approaches
+- Optionally run a quick grounded web search for "visual trends in [industry] 2026"
+
+Output: A **context brief** — a structured summary of everything the planner knows.
+
+**Stage 2 — Outline Generation**
+With the context brief, generate a **strategic outline** (not prompts yet):
+- Content pillar breakdown (what themes should the media cover?)
+- Platform distribution (how many assets per platform?)
+- Style direction (which visual archetypes fit this audience?)
+- Rationale for each choice (WHY this asset for this audience on this platform)
+
+Example outline:
+```
+Outline: "SaaS Launch — Remote Teams"
+├── Pillar: Product (40% of assets)
+│   ├── 2× Hero images — clean minimalist, trust-building
+│   ├── 1× Explainer video — screen-demo style
+│   └── 1× Feature highlight carousel (4 slides)
+├── Pillar: Social Proof (30%)
+│   ├── 2× Testimonial cards — warm, human, portrait-oriented
+│   └── 1× Case study visual — data-forward, dashboard aesthetic
+├── Pillar: Culture (20%)
+│   ├── 1× Team photo — candid, natural light
+│   └── 1× Behind-the-scenes reel — 9:16
+└── Pillar: Thought Leadership (10%)
+    └── 1× Industry trend infographic — bold, data-heavy
+Style direction: "Neubrutalism meets corporate warm" — bold shapes,
+warm palette (not cold blue), high contrast, human-centric
+Rationale: Target audience is SMB remote teams → they're tired of
+generic "woman-pointing-at-laptop" stock. Counter-position with
+authentic, slightly edgy, design-forward visuals.
+```
+
+**Stage 3 — Grade the Outline**
+Run the outline through a **critic pass** (separate Gemini call acting as a reviewer):
+- Completeness: "Missing any key platforms? Any audience needs unaddressed?"
+- Differentiation: "Would this look different from competitor visual territory?"
+- Balance: "Is the pillar distribution appropriate for the stated goal?"
+- Feasibility: "Can these be generated well with AI image models?"
+- Score: 1-5 per dimension + overall + specific improvement suggestions
+
+If the outline scores below a threshold (e.g., 3.5/5), automatically refine and re-grade before presenting to the user.
+
+**Stage 4 — Generate Prompt Suggestions**
+Only now generate actual prompts — informed by the full context chain:
+- Each prompt carries the style direction from Stage 2
+- Each prompt references the psychology/audience reasoning
+- Each prompt has platform-specific technical specs already applied
+- Negative prompts are auto-appended based on style archetype
+
+**Stage 5 — Grade the Suggestions**
+Before the user sees them, each prompt gets evaluated:
+- "Is this prompt specific enough to produce a distinctive result?"
+- "Does this prompt match the style direction we chose?"
+- "Will this serve its stated purpose (hero, social, pitch deck)?"
+- Rank all suggestions. Flag weak ones with improvement notes.
+- Present to user with scores visible: "Prompt quality: 4.2/5 — ⚠️ could be more specific about composition"
+
+**Stage 6 — User Approval**
+The user sees the graded plan + graded prompts. They can:
+- Approve the plan as-is
+- Edit individual items (prompts, config, purpose)
+- Reject and re-generate with feedback ("make it more playful" / "add more video")
+- Approve some items, reject others, ask for replacements
+
+Only approved items proceed to generation.
+
+**Implementation note**: This is conceptually a boardroom session, but specialized — the "seats" are: Strategist (outline), Critic (grading), Prompt Engineer (suggestions), Quality Reviewer (final grade). The UI should show the deliberation progress: "Researching... → Outlining... → Grading outline... → Writing prompts... → Grading prompts... → Ready for review."
+
+---
+
+#### K2. Per-Item Generation Config & Batch Config Editing
+
+The current MediaPlanItem has `model`, `size`, `aspectRatio` as optional fields, but there's no UI to edit them per item, and no way to change config across multiple items at once.
+
+**Per-Item Config Panel:**
+Each plan item should be expandable to reveal its full generation config:
+
+```ts
+interface MediaPlanItem {
+  // ... existing fields ...
+  
+  // Generation config (editable per-item)
+  generationConfig: {
+    model: string;           // "gemini-3.1-flash-image-preview" | "gemini-3-pro-image-preview"
+    size: string;            // "512px" | "1K" | "2K" | "4K"
+    aspectRatio: string;     // "1:1" | "4:5" | "9:16" | "16:9" | "1.91:1" | "21:9"
+    resolution?: string;     // for video: "720p" | "1080p"
+    count: number;           // how many variants to generate (1-4)
+    negativePrompt?: string; // custom negative prompt override
+    stylePreset?: string;    // reference to style database entry
+  };
+}
+```
+
+The UI for each item shows a collapsible "⚙️ Generation Settings" panel with dropdowns/inputs for model, size, aspect ratio, count, etc.
+
+**Batch Config Editing:**
+Select multiple items → apply changes to all at once. Use cases:
+
+- "Make all items 9:16" — select all, change aspect ratio
+- "Set everything to 4K" — select all, change size
+- "Generate 3 variants for each" — select all, set count to 3
+- "Append to all prompts: natural lighting, no artificial look" — batch prompt suffix
+- "Prepend brand context to all prompts" — batch prompt prefix
+- "Change all image items to Pro model" — batch model switch
+
+UI pattern: A toolbar above the plan items with:
+- Checkbox per item (+ "Select All")
+- When ≥1 selected, batch action bar appears: `[Set Aspect Ratio ▾] [Set Size ▾] [Set Model ▾] [Set Count ▾] [Edit Prompts...] [Delete Selected]`
+- "Edit Prompts..." opens a modal with options: Append text, Prepend text, Find & Replace, Apply style preset
+
+**Batch prompt transformations:**
+```
+Transformation options:
+├── Append: add text to the end of every selected prompt
+├── Prepend: add text to the beginning
+├── Find & Replace: "corporate" → "playful" across all prompts
+├── Apply Style Preset: inject style database entry into all prompts
+├── Regenerate All Prompts: re-run prompt expansion (H3) on all selected items
+│   with current brand context (useful if brand context changed)
+└── Simplify / Expand: ask AI to make all prompts shorter or more detailed
+```
+
+---
+
+#### K3. Style & Psychology Reference Database
+
+A curated, structured knowledge base that the planning pipeline (K1) consults when generating outlines and prompts. This is what makes the media plan *intelligent* rather than generic.
+
+**Visual Psychology Principles:**
+```json
+{
+  "color_psychology": {
+    "blue": { "evokes": "trust, stability, professionalism", "best_for": "B2B, finance, healthcare", "avoid_for": "food, energy brands" },
+    "orange": { "evokes": "energy, creativity, warmth", "best_for": "startups, youth audiences, food", "avoid_for": "luxury, medical" },
+    "black": { "evokes": "luxury, power, exclusivity", "best_for": "premium brands, fashion, tech", "avoid_for": "children, wellness" },
+    ...
+  },
+  "composition_psychology": {
+    "rule_of_thirds": { "effect": "natural, professional", "when": "most general-purpose imagery" },
+    "centered_symmetry": { "effect": "authority, power, formal", "when": "luxury, institutional branding" },
+    "diagonal_lines": { "effect": "dynamic, energetic, movement", "when": "sports, startups, action" },
+    "negative_space": { "effect": "premium, breathing room, clarity", "when": "minimalist brands, text-overlay-needed" },
+    ...
+  },
+  "cognitive_load": {
+    "low_entropy": { "when": "hero images, pitch decks (need text space)", "style": "clean, minimal elements" },
+    "high_entropy": { "when": "Instagram feed (stop the scroll)", "style": "detailed, contrasted, busy-but-purposeful" }
+  }
+}
+```
+
+**Audience Archetype → Style Mapping:**
+```json
+{
+  "enterprise_decision_maker": {
+    "visual_style": ["corporate minimalism", "data visualization", "clean photography"],
+    "color_tendency": ["navy", "slate", "white", "subtle gold accent"],
+    "typography": "serif or geometric sans-serif, large, authoritative",
+    "avoid": ["cartoon", "stock-photo-generic", "neon", "hand-drawn"],
+    "psychology_note": "Values credibility over creativity. Data > emotion. Needs to justify purchase to a committee."
+  },
+  "gen_z_consumer": {
+    "visual_style": ["neubrutalism", "y2k", "raw/authentic", "meme-adjacent"],
+    "color_tendency": ["high contrast", "unexpected combos", "lime/violet/orange"],
+    "typography": "variable weight, mixed case, sometimes intentionally 'ugly'",
+    "avoid": ["corporate", "polished", "stock photography", "traditional layouts"],
+    "psychology_note": "Detects and rejects inauthenticity instantly. Prefers raw over polished. Humor > authority."
+  },
+  "smb_founder": {
+    "visual_style": ["clean modern", "approachable pro", "warm tech"],
+    "color_tendency": ["warm neutrals", "green/teal accents", "avoiding corporate blue"],
+    "typography": "friendly sans-serif (Inter, Outfit), medium weight",
+    "avoid": ["enterprise-heavy", "overly playful", "generic startup gradient"],
+    "psychology_note": "Time-poor, ROI-focused. Needs to look professional without being intimidating. Authenticity matters."
+  }
+}
+```
+
+**Named Style Archetypes:**
+```json
+{
+  "corporate_minimalism": {
+    "description": "Clean white/gray space, single subject focus, geometric shapes, muted palette",
+    "works_for": ["enterprise B2B", "SaaS", "consulting"],
+    "prompt_keywords": "clean, minimal, white space, professional, geometric, muted colors, studio lighting",
+    "negative_keywords": "cluttered, busy, cartoonish, neon, hand-drawn"
+  },
+  "neubrutalism": {
+    "description": "Bold outlines, raw shapes, high contrast, intentionally 'unfinished', thick black borders",
+    "works_for": ["startups", "creative agencies", "Gen Z brands"],
+    "prompt_keywords": "bold outlines, thick black borders, raw, unfinished, high contrast, flat color blocks",
+    "negative_keywords": "gradient, smooth, polished, corporate, subtle"
+  },
+  "warm_tech": {
+    "description": "Technology meets humanity — warm lighting, natural tones, real people using tech, not cold/sterile",
+    "works_for": ["SMB SaaS", "HR tech", "collaboration tools", "health tech"],
+    "prompt_keywords": "warm lighting, natural tones, real people, human-centric, cozy workspace, golden hour",
+    "negative_keywords": "cold blue, sterile, dark, futuristic, robotic, cyber"
+  }
+}
+```
+
+**Storage**: These live as JSON files in `data/style-db/` or embedded in `server.ts`. They're injected into the planning pipeline (K1 Stage 1) as context. They're also browsable from the Media Plan UI — a "Style Guide" panel where you can explore archetypes and pin one to your project.
+
+**Future**: Let users add their own styles — "I like what Apple does" → describe it → save as a custom archetype. Or upload reference images and let Gemini describe the style, which gets saved as a new entry.
+
+---
+
+#### K4. Multi-Plan Support
+
+The Media Plan page should hold **multiple plans per project**, not just one. Plans are strategic documents — you might have:
+
+- "Q1 Social Campaign" — 20 items, Instagram + Twitter focused
+- "Investor Pitch Deck" — 8 items, all 16:9 presentation backgrounds
+- "Website Redesign Assets" — 12 items, hero, features, about page
+- "Competition Counter-Campaign" — 6 items, generated from research findings
+
+**UI changes:**
+- Sidebar (or tabs) listing all plans for the active project
+- "New Plan" button starts the K1 deliberation pipeline
+- Plans can be archived, duplicated, or deleted
+- Each plan shows: name, item count, status summary (3 draft, 5 approved, 2 generating), creation date
+- Plans persist to the SQLite `media_plans` table (schema already exists from Sprint 1)
+
+**Plan status lifecycle:**
+```
+drafting → outlined → graded → prompts_ready → partially_approved → generating → completed
+```
+
+A plan isn't just a static list — it's a living document that tracks which items have been approved, which are generating, and which are done.
+
+---
+
+#### K5. Plan → Boardroom Handoff (and Vice Versa)
+
+**"Generate Plan in Boardroom" should spin up a real deliberation.**
+
+When a user clicks "Generate Plan" from the Media Plan page, the system should:
+1. Create a **specialized boardroom session** (using the Media Strategy template from I2)
+2. The boardroom seats are configured as: **Brand Strategist**, **Audience Psychologist**, **Visual Director**, **Production Manager**
+3. The session runs the 5-phase protocol with a media-specific objective
+4. The convergence output is structured as a media plan outline
+5. The outline comes back to the Media Plan page for K1 Stage 3+ (grading, prompts, approval)
+
+This is NOT just "extract mentions of media from a normal boardroom session." It's a **purpose-built session** where the entire boardroom is focused on building the media plan.
+
+**Approval gate**: After the boardroom finishes, the user reviews the recommended plan. They can:
+- Approve → proceed to prompt generation
+- Edit → modify items before proceeding
+- Reject → send feedback back, re-run with adjusted parameters
+- The plan should NOT auto-generate media — it requires explicit user approval after each stage
+
+**Vice versa**: From a regular boardroom session, "Extract Media Briefs" (I2) creates a *draft plan* that gets sent to the Media Plan page. The user can then run it through the K1 pipeline for grading and prompt generation.
+
+---
+
+#### K6. Generation Preview & Dry Run
+
+Before hitting "Generate All" on an approved plan, the user should see a **generation preview** showing exactly what will happen:
+
+```
+Generation Preview — "Q1 Social Campaign"
+─────────────────────────────────────────
+12 items approved for generation
+
+Resource estimate:
+  • 8 images (gemini-3.1-flash, 1K) → ~40 sec total
+  • 2 videos (veo-3.1-fast, 1080p 16:9) → ~8 min total
+  • 2 voice clips (gemini-2.5-flash-tts) → ~10 sec total
+  • Estimated total: ~9 min
+  • Estimated API cost: ≈ 12 generation calls
+
+Settings overview:
+  • 6 items at 1:1 (Instagram)
+  • 4 items at 16:9 (YouTube/Pitch)
+  • 2 items at 9:16 (Stories/Reels)
+  • 3 items generating 2 variants each (6 extra generations)
+
+[Edit Settings] [Start Generation] [Cancel]
+```
+
+This preview prevents surprises — you see exactly how many API calls, what settings, and how long it'll take before committing.
+
+---
+
+### Track L — Strategy Artifacts & Referenceable Intelligence
+
+> **Every boardroom session, research result, scoring analysis, and strategy description you feed the system should become a persistent, referenceable artifact that influences everything else. The compute shouldn't be throwaway.**
+
+The core problem: right now, when you run a boardroom session, the output sits in a flat file under `jobs/boardroom/`. When you do research, it renders on screen and vanishes. When media gets scored, the score sits in a manifest. None of this accumulated intelligence is **referenceable** from other parts of the app. You can't say "use that boardroom insight about neubrutalism for Gen Z in my media plan prompts" — you'd have to copy-paste it manually.
+
+Track L makes all of this connectable.
+
+---
+
+#### L1. Strategy Artifacts Data Model
+
+A **Strategy Artifact** is a structured piece of intelligence that the system can reference. Types:
+
+```ts
+interface StrategyArtifact {
+  id: string;                 // "art_abc123"
+  projectId: string;          // linked to active project
+  type: ArtifactType;
+  title: string;              // "Gen Z Neubrutalism — from TikTok analysis"
+  summary: string;            // 2-3 sentence AI-generated summary
+  content: string;            // full text content (markdown)
+  tags: string[];             // auto-generated semantic tags
+  source: ArtifactSource;     // where it came from
+  pinned: boolean;            // if pinned, automatically injected into generation context
+  createdAt: string;
+  updatedAt: string;
+}
+
+type ArtifactType =
+  | "boardroom_insight"      // extracted from a boardroom session's convergence
+  | "research_finding"       // saved from a Research session
+  | "strategy_brief"         // user-described external strategy (L2)
+  | "style_direction"        // pinned style archetype (from K3)
+  | "scoring_analysis"       // aggregate scoring trends across media
+  | "custom";                // freeform user-written brief
+
+interface ArtifactSource {
+  type: "boardroom" | "research" | "manual" | "scoring" | "external";
+  sessionId?: string;        // if from boardroom
+  timestamp: string;
+}
+```
+
+**Storage**: SQLite table `strategy_artifacts` — same pattern as existing tables in `db.ts`. Indexed by `projectId` and `type` for fast lookups.
+
+**Key behavior**: When a Strategy Artifact is **pinned** to a project, it gets automatically injected into:
+- Media plan generation (K1 Stage 1 context gathering)
+- Prompt expansion (H3)
+- Scoring evaluation (I3 — "does this align with the strategy?")
+- Boardroom session prompts (as additional context for all seats)
+
+This is the "referenceable across the site" mechanism the user is asking about.
+
+---
+
+#### L2. Boardroom Strategy Extraction (Describe → Artifact)
+
+A new boardroom session mode: **"I saw something — help me extract the strategy."**
+
+Use case: You see a faceless YouTube channel doing something interesting, or a competitor runs a clever marketing campaign, or you read about a growth hack. You want to:
+1. **Describe** what you saw in plain language
+2. Have the AI **extract the underlying principles** (not just "they posted a video" but "they used pattern interrupts in the first 3 seconds, leveraged comment-bait CTAs, and maintained a warm-but-authoritative brand voice")
+3. **Save the extracted strategy** as a Strategy Artifact
+4. **Reference it** when generating your own media or building plans
+
+**How it works:**
+
+The boardroom gets a new template: **"Strategy Analysis"** with specialized seats:
+- **Analyst**: Breaks down the described strategy into components (hooks, formats, emotional triggers, frequency, platform-specific tactics)
+- **Psychologist**: Identifies the psychological principles at play (social proof, scarcity, authority, reciprocity, pattern interrupts)
+- **Adapter**: Translates the strategy into actionable briefs for the user's brand context (how would this work for YOUR audience?)
+- **Devil's Advocate**: Challenges assumptions ("this works for a faceless channel but your brand has a face — here's what changes")
+
+The convergence output becomes a structured Strategy Artifact with:
+- **Original description** (what the user saw)
+- **Extracted principles** (the WHY behind it)
+- **Adaptation notes** (how to apply it to your brand)
+- **Suggested media** (what to generate based on this strategy)
+- **Tags** (e.g., "faceless", "YouTube Shorts", "pattern interrupt", "Gen Z")
+
+**UI flow:**
+1. Boardroom page → "New Session" → Template: "Strategy Analysis"
+2. User describes what they saw (long-form text area, paste links if available)
+3. System runs the 4-seat boardroom analysis
+4. Output is displayed as a Strategy Artifact card with sections
+5. User can: **Save as Artifact** (persists to `strategy_artifacts` table), **Pin to Project** (auto-injected everywhere), or **Send to Plan** (creates draft media plan items from the suggested media)
+
+---
+
+#### L3. Artifact Reference Panel (Site-Wide)
+
+A side panel or modal available on **every page** that shows all Strategy Artifacts for the active project.
+
+**Access points:**
+- Floating "📌 Artifacts" button in the bottom-right (or sidebar section)
+- "Reference an artifact" button in Media Plan, Social Media Gen, Video Lab, Voice Lab
+- Auto-suggested when generating: "You have 3 pinned strategy artifacts — they're being used in this prompt"
+
+**Panel features:**
+- Lists all artifacts for the project, grouped by type
+- Pinned artifacts shown first with a ⭐ indicator
+- Quick pin/unpin toggle
+- Click to expand and read full content
+- "Use in prompt" button that appends the artifact's summary/key points to the current generation prompt
+- Search/filter across artifacts
+
+**How pinning works visually:**
+When a user has artifacts pinned, a small indicator appears on generation-related pages:
+```
+📌 2 strategy artifacts active
+├── "Gen Z Neubrutalism" (style_direction) — pinned
+└── "Faceless Channel Hook Formula" (strategy_brief) — pinned
+
+These will influence all media generation and planning.
+[Manage Artifacts]
+```
+
+---
+
+#### L4. Artifact-Influenced Generation
+
+When generating media (images, video, voice, or batch), the system checks for pinned artifacts and weaves their content into the generation pipeline:
+
+1. **Prompt expansion** (H3): Pinned artifacts' key principles are appended to the system prompt that expands the user's base prompt. E.g., if a "Faceless Channel Hook Formula" artifact is pinned, the expanded prompt might include: "Use a pattern interrupt opening, bold text overlay, 9:16 vertical framing"
+
+2. **Media plan generation** (K1): Pinned artifacts are included in the context brief (Stage 1), influencing the outline the planner produces
+
+3. **Scoring** (I3): Pinned artifacts add scoring dimensions. E.g., "Does this image align with the 'warm tech' style direction artifact?" becomes a scoring criterion
+
+4. **Boardroom sessions**: Pinned artifacts are included as background context for all seats, so the AI agents are aware of established strategies
+
+**Implementation**: A helper function `getActiveArtifacts(projectId: string): StrategyArtifact[]` that returns all pinned artifacts for a project. This gets called at every generation entry point and the results are injected into the system prompts.
+
+---
+
+#### L5. Strategy Briefs Page (`/briefs`)
+
+A new page for browsing, creating, and managing Strategy Artifacts.
+
+**Layout:**
+- **Sidebar**: Filter by artifact type (boardroom, research, strategy brief, style, custom)
+- **Main area**: Card grid showing all artifacts for the active project
+- **Each card**: Title, type badge, tags, summary preview, pin toggle, source indicator, timestamp
+- **Actions per card**: View full, Edit, Delete, Pin/Unpin, "Send to Plan"
+
+**Creating artifacts manually:**
+- "New Artifact" button opens a form:
+  - Title, Type (dropdown), Content (markdown editor)
+  - OR: "Describe a strategy" (triggers L2 boardroom analysis)
+  - OR: "Import from boardroom session" (picks a completed session and extracts insights)
+  - OR: "Import from research" (picks a saved research result)
+
+**Dashboard integration:**
+- Add a "Strategy Briefs" card to the Dashboard under the "Strategy & Organize" section
+- Shows count of artifacts + pinned count: "5 artifacts · 2 pinned"
+
+---
+
+#### L6. Auto-Artifact Generation from Existing Workflows
+
+Make artifact creation seamless and automatic where possible:
+
+- **Boardroom sessions**: After any session completes, offer "Save as Artifact" on the convergence summary. For Strategy Analysis sessions (L2), auto-save by default.
+- **Research sessions**: Add a "Save Finding" button that creates a `research_finding` artifact from the current research result.
+- **Media scoring rounds**: After batch scoring completes, generate a `scoring_analysis` artifact summarizing trends (e.g., "Your highest-scoring media uses warm lighting and centered composition — consider making this your default style direction").
+- **Style database pins** (K3): When a user pins a style archetype to their project, it creates a `style_direction` artifact automatically.
+
+This makes the artifact system feel like a natural part of the workflow rather than a separate thing to manage.
+
+---
+
 ## Recommended Implementation Sequence
 
 ### Phase 1 — Foundation (do first)
@@ -228,13 +707,23 @@ Looking at the current codebase, here's what stands between Gemlink and the "gen
 | **I3** (AI Scoring) | Surfaces the best media after a bulk run. |
 | **I1** (Research → Media) | Connects existing research capability to the new media workflow. |
 
-### Phase 3 — Polish & Output
-| Item | Why last |
+### Phase 3 — Presentation, Export & Strategy
+| Item | Why now |
 |------|---------|
 | **H4** (Prompt Variants) | Nice-to-have on top of expansion. |
 | **I2** (Boardroom → Media) | Nice-to-have once the pipeline exists. |
 | **I4** (Tags & Organization) | Polish for the Library. |
 | **J1** (Collections) | Need enough media to curate first. |
+
+### Phase 4 — Strategy Artifacts
+| Item | Why now |
+|------|---------|
+| **L1** (Strategy Artifacts Data Model) | Foundation for all L-track features. |
+| **L5** (Strategy Briefs Page) | Enables manual creation and management. |
+| **L3** (Artifact Reference Panel) | Makes artifacts accessible site-wide. |
+| **L4** (Artifact-Influenced Generation) | Core value prop: artifacts influence generation. |
+| **L2** (Boardroom Strategy Extraction) | New powerful way to create artifacts. |
+| **L6** (Auto-Artifact Generation) | Makes artifact creation seamless. |
 | **J2** (Presentation) | Depends on J1. |
 | **J3** (Bulk Export) | Depends on J1. |
 

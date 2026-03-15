@@ -1,0 +1,18 @@
+{
+  "id": "listicle",
+  "name": "Listicle",
+  "description": "Numbered slides with text overlays and background music. Perfect for '5 tips' and list-format viral content.",
+  "aspectRatio": "9:16",
+  "slides": [
+    { "slot": "image", "duration": 2, "transition": "fadein", "kenBurns": false, "label": "Hook/Title" },
+    { "slot": "image", "duration": 3, "transition": "slideright", "kenBurns": true, "label": "Point #1" },
+    { "slot": "image", "duration": 3, "transition": "slideright", "kenBurns": true, "label": "Point #2" },
+    { "slot": "image", "duration": 3, "transition": "slideright", "kenBurns": true, "label": "Point #3" },
+    { "slot": "image", "duration": 3, "transition": "slideright", "kenBurns": true, "label": "Point #4" },
+    { "slot": "image", "duration": 3, "transition": "slideright", "kenBurns": true, "label": "Point #5" },
+    { "slot": "image", "duration": 3, "transition": "fadeblack", "kenBurns": false, "label": "CTA / Follow" }
+  ],
+  "audio": { "type": "background-music", "required": false },
+  "captions": { "style": "word-highlight", "timing": "word", "position": "bottom" },
+  "tags": ["vertical", "listicle", "tiktok", "reels", "viral", "tips", "numbered"]
+}

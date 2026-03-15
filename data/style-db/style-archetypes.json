@@ -1,0 +1,112 @@
+{
+  "archetypes": {
+    "corporate_minimalism": {
+      "label": "Corporate Minimalism",
+      "description": "Clean white/gray space, single subject focus, geometric shapes, muted palette. Professional and authoritative without being cold.",
+      "works_for": ["enterprise B2B", "SaaS", "consulting", "fintech", "legal"],
+      "prompt_keywords": "clean, minimal, white space, professional, geometric, muted colors, studio lighting, sharp focus, structured",
+      "negative_keywords": "cluttered, busy, cartoonish, neon, hand-drawn, grungy, distressed",
+      "color_palette": ["#1a1a2e", "#e0e0e0", "#ffffff", "#2d3748", "#c9a84c"],
+      "reference_styles": ["Apple product photography", "McKinsey reports", "Stripe marketing"]
+    },
+    "neubrutalism": {
+      "label": "Neubrutalism",
+      "description": "Bold outlines, raw shapes, high contrast, intentionally 'unfinished', thick black borders. Playful rebellion against polished design.",
+      "works_for": ["startups", "creative agencies", "Gen Z brands", "indie products", "developer tools"],
+      "prompt_keywords": "bold outlines, thick black borders, raw, unfinished, high contrast, flat color blocks, chunky shapes, visible grid",
+      "negative_keywords": "gradient, smooth, polished, corporate, subtle, realistic, photographic",
+      "color_palette": ["#000000", "#ff6b6b", "#ffd93d", "#6bcb77", "#4d96ff"],
+      "reference_styles": ["Figma marketing", "Gumroad", "Linear if it was louder"]
+    },
+    "warm_tech": {
+      "label": "Warm Tech",
+      "description": "Technology meets humanity — warm lighting, natural tones, real people using tech, not cold/sterile. The human side of innovation.",
+      "works_for": ["SMB SaaS", "HR tech", "collaboration tools", "health tech", "edtech"],
+      "prompt_keywords": "warm lighting, natural tones, real people, human-centric, cozy workspace, golden hour, authentic, candid",
+      "negative_keywords": "cold blue, sterile, dark, futuristic, robotic, cyber, neon, artificial",
+      "color_palette": ["#f7ede2", "#f28482", "#84a59d", "#f6bd60", "#3d405b"],
+      "reference_styles": ["Notion marketing", "Slack brand", "Linear calm aesthetic"]
+    },
+    "dark_luxury": {
+      "label": "Dark Luxury",
+      "description": "Deep blacks, gold/cream accents, dramatic lighting, negative space. Exclusivity and premium positioning through visual restraint.",
+      "works_for": ["luxury brands", "premium SaaS", "fashion", "automotive", "high-end services"],
+      "prompt_keywords": "dark background, dramatic lighting, gold accent, luxury, premium, elegant, sophisticated, moody, cinematic",
+      "negative_keywords": "bright, colorful, casual, cluttered, generic, budget, cheap-looking",
+      "color_palette": ["#0a0a0a", "#1a1a1a", "#c9a84c", "#f5f0e1", "#2d2d2d"],
+      "reference_styles": ["Rolls Royce digital", "Vercel dark mode", "high-end watch campaigns"]
+    },
+    "editorial_bold": {
+      "label": "Editorial Bold",
+      "description": "Magazine-quality layouts, strong type hierarchy, curated imagery, confident whitespace. Storytelling through strategic design choices.",
+      "works_for": ["media brands", "agencies", "portfolio sites", "thought leadership", "publications"],
+      "prompt_keywords": "editorial, magazine-quality, strong typography, dramatic composition, curated, sophisticated, high fashion, art directed",
+      "negative_keywords": "template-looking, generic, safe, boring, standard grid, stock-photo-ish",
+      "color_palette": ["#1d1d1d", "#ffffff", "#ff4444", "#f5f5dc", "#333333"],
+      "reference_styles": ["Bloomberg Businessweek", "The New York Times Magazine", "Monocle"]
+    },
+    "soft_pastel": {
+      "label": "Soft Pastel / Dreamy",
+      "description": "Light, airy, pastel tones with soft gradients. Calming and approachable. Often with rounded shapes and gentle shadows.",
+      "works_for": ["wellness", "beauty", "dating apps", "children's brands", "lifestyle", "mental health"],
+      "prompt_keywords": "soft pastel colors, dreamy, light, airy, gentle gradients, rounded corners, calming, ethereal, delicate",
+      "negative_keywords": "harsh, dark, aggressive, angular, industrial, gritty, neon, bold",
+      "color_palette": ["#fce4ec", "#e1bee7", "#b3e5fc", "#c8e6c9", "#fff9c4"],
+      "reference_styles": ["Headspace app", "Calm", "Glossier branding"]
+    },
+    "retro_vintage": {
+      "label": "Retro / Vintage",
+      "description": "Nostalgic aesthetics referencing specific decades (60s-90s). Warm filters, classic typography, analog textures. Authentic and characterful.",
+      "works_for": ["food/beverage", "music/entertainment", "craft brands", "heritage brands", "thrift/vintage"],
+      "prompt_keywords": "retro, vintage, nostalgic, film grain, warm tones, old-school, classic typography, analog, faded colors, throwback",
+      "negative_keywords": "futuristic, digital, ultra-modern, clean tech, minimalist, neon, holographic",
+      "color_palette": ["#d4a373", "#ccd5ae", "#faedcd", "#e07a5f", "#3d405b"],
+      "reference_styles": ["Wes Anderson color grades", "vintage poster art", "70s-era record covers"]
+    },
+    "futuristic_tech": {
+      "label": "Futuristic / Cyber Tech",
+      "description": "Neon glows, holographic effects, dark backgrounds with bright accents. Technology-forward and cutting-edge.",
+      "works_for": ["AI companies", "gaming", "blockchain/crypto", "cybersecurity", "space tech"],
+      "prompt_keywords": "futuristic, neon glow, holographic, cyber, dark background, sci-fi, tech-forward, glass, volumetric lighting",
+      "negative_keywords": "warm, natural, organic, vintage, rustic, earthy, traditional, pastoral",
+      "color_palette": ["#0d0d0d", "#00ff88", "#7b2ff7", "#00d4ff", "#ff006e"],
+      "reference_styles": ["Cyberpunk 2077 art", "Apple Vision Pro marketing", "Blade Runner aesthetics"]
+    },
+    "organic_natural": {
+      "label": "Organic / Natural",
+      "description": "Earth tones, natural textures, botanical elements. Authentic, sustainable, and grounded. Connection to nature.",
+      "works_for": ["organic food", "sustainable fashion", "outdoor brands", "eco-tech", "natural beauty"],
+      "prompt_keywords": "natural textures, earth tones, organic, botanical, sustainable, rustic, handmade feel, authentic, unprocessed",
+      "negative_keywords": "synthetic, neon, artificial, plastic, digital, cold, sterile, futuristic",
+      "color_palette": ["#606c38", "#283618", "#fefae0", "#dda15e", "#bc6c25"],
+      "reference_styles": ["Patagonia brand", "Whole Foods aesthetics", "organic packaging design"]
+    },
+    "playful_geometric": {
+      "label": "Playful Geometric",
+      "description": "Bold shapes, primary-ish colors, Memphis-inspired patterns. Fun, accessible, and energetic without being childish.",
+      "works_for": ["edtech", "productivity apps", "co-working spaces", "consumer SaaS", "events"],
+      "prompt_keywords": "geometric shapes, playful, colorful, bold patterns, Memphis-inspired, fun, energetic, abstract shapes, dynamic layout",
+      "negative_keywords": "serious, corporate, muted, subtle, monochrome, conservative, traditional",
+      "color_palette": ["#264653", "#2a9d8f", "#e9c46a", "#f4a261", "#e76f51"],
+      "reference_styles": ["Duolingo brand", "Mailchimp illustration style", "Monday.com marketing"]
+    },
+    "data_driven": {
+      "label": "Data-Driven / Analytical",
+      "description": "Charts, graphs, and data visualization as primary visual elements. Clean, precise, and information-rich.",
+      "works_for": ["analytics platforms", "fintech", "research firms", "reporting tools", "B2B dashboards"],
+      "prompt_keywords": "data visualization, charts, clean graphs, analytical, precise, information design, dashboard aesthetic, structured data",
+      "negative_keywords": "vague, emotional, impressionistic, hand-drawn, organic, unstructured",
+      "color_palette": ["#0b132b", "#1c2541", "#3a506b", "#5bc0be", "#6fffe9"],
+      "reference_styles": ["Bloomberg Terminal aesthetics", "Tableau visualizations", "Stripe financial reports"]
+    },
+    "maximalist_eclectic": {
+      "label": "Maximalist / Eclectic",
+      "description": "More is more. Rich layering, pattern mixing, saturated colors, decorative elements. Expressive and unapologetically bold.",
+      "works_for": ["fashion", "music festivals", "cultural events", "art galleries", "Gen Z lifestyle"],
+      "prompt_keywords": "maximalist, eclectic, rich patterns, saturated colors, layered textures, decorative, ornate, bold, vibrant, mixed media",
+      "negative_keywords": "minimal, clean, simple, understated, muted, corporate, restrained",
+      "color_palette": ["#ff006e", "#8338ec", "#3a86ff", "#fb5607", "#ffbe0b"],
+      "reference_styles": ["Gucci campaigns", "Desigual branding", "art Basel marketing"]
+    }
+  }
+}

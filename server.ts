@@ -5,8 +5,38 @@ import fs from "fs/promises";
 import twilio from "twilio";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
-import { startBoardroomSessionAsync, listBoardroomSessions, readBoardroomSession, extractMediaBriefs } from "./boardroom.ts";
-import { mediaJobQueries, collectionQueries, collectionItemQueries, type MediaJobRow } from "./src/db.ts";
+import { startBoardroomSessionAsync, listBoardroomSessions, readBoardroomSession, extractMediaBriefs, STRATEGY_ANALYSIS_TEMPLATE, extractStrategyAnalysisOutput } from "./boardroom.ts";
+import { mediaJobQueries, collectionQueries, collectionItemQueries, strategyArtifactQueries, getActiveArtifacts, composeJobQueries, type MediaJobRow, type StrategyArtifactRow, type ArtifactType, type ComposeJobRow } from "./src/db.ts";
+import type { SlideInput as ComposeSlideInput } from "./compose.ts";
+import { loadTemplates, getTemplate, type ComposeTemplate } from "./templates.ts";
+
+// ── W1 (L5): FFmpeg availability state — populated on server start ─────────────
+let _serverFfmpegAvailable = false;
+let _serverFfmpegVersion: string | undefined;
+
+async function checkFfmpegOnStartup(): Promise<void> {
+  try {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
+    const [ffmpegResult] = await Promise.allSettled([
+      execFileAsync("ffmpeg", ["-version"]),
+    ]);
+    if (ffmpegResult.status === "fulfilled") {
+      _serverFfmpegAvailable = true;
+      // Extract version string from first line: "ffmpeg version X.Y.Z ..."
+      const firstLine = ffmpegResult.value.stdout.split("\n")[0] ?? "";
+      const versionMatch = firstLine.match(/ffmpeg version (\S+)/);
+      _serverFfmpegVersion = versionMatch?.[1];
+      console.log(`[health] FFmpeg available — version: ${_serverFfmpegVersion ?? "unknown"}`);
+    } else {
+      _serverFfmpegAvailable = false;
+      console.warn("[health] WARNING: ffmpeg not found. Compose features will be disabled. Run: sudo apt install ffmpeg");
+    }
+  } catch {
+    _serverFfmpegAvailable = false;
+  }
+}
 
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 dotenv.config();
@@ -276,6 +306,29 @@ async function loadBatchStates(): Promise<Map<string, BatchState>> {
   return map;
 }
 
+// ── W3: Style & Psychology Database ───────────────────────────────────────────
+
+interface StyleDatabase {
+  colorPsychology: Record<string, unknown>;
+  audienceArchetypes: Record<string, unknown>;
+  styleArchetypes: Record<string, unknown>;
+}
+
+let cachedStyleDb: StyleDatabase | null = null;
+
+async function loadStyleDatabase(): Promise<StyleDatabase> {
+  if (cachedStyleDb) return cachedStyleDb;
+  const baseDir = path.join(process.cwd(), "data", "style-db");
+  const [colorPsychology, audienceArchetypes, styleArchetypes] = await Promise.all([
+    fs.readFile(path.join(baseDir, "color-psychology.json"), "utf8").then(JSON.parse).catch(() => ({})),
+    fs.readFile(path.join(baseDir, "audience-archetypes.json"), "utf8").then(JSON.parse).catch(() => ({})),
+    fs.readFile(path.join(baseDir, "style-archetypes.json"), "utf8").then(JSON.parse).catch(() => ({})),
+  ]);
+  cachedStyleDb = { colorPsychology, audienceArchetypes, styleArchetypes };
+  console.log("[style-db] Loaded color psychology, audience archetypes, style archetypes.");
+  return cachedStyleDb;
+}
+
 async function startServer() {
   const app = express();
   const api = express.Router();
@@ -286,13 +339,35 @@ async function startServer() {
   await ensureJobDirectories();
   app.use("/jobs", express.static(jobsDir));
 
+  // W1 (L5): Check FFmpeg availability on startup
+  await checkFfmpegOnStartup();
+
   api.get("/health", (_req, res) => {
-    res.json({ status: "ok" });
+    const health: Record<string, unknown> = {
+      status: "ok",
+      ffmpeg: _serverFfmpegAvailable,
+    };
+    if (_serverFfmpegVersion) health.ffmpegVersion = _serverFfmpegVersion;
+    res.json(health);
   });
+
+  // ── W3: Load style database on startup + serve via API ─────────────────────
+  await loadStyleDatabase();
+
+  api.get("/style-db", async (_req, res) => {
+    try {
+      const db = await loadStyleDatabase();
+      res.json(db);
+    } catch (err: any) {
+      console.error("Style DB Error:", err);
+      res.status(500).json({ error: err.message ?? "Failed to load style database" });
+    }
+  });
+
 
   api.post("/media/image", async (req, res) => {
     try {
-      const { prompt, model, size, brandContext, projectId, apiKey } = req.body;
+      const { prompt, model, size, aspectRatio, count, brandContext, projectId, apiKey } = req.body;
       const key = requireApiKey(apiKey);
       const ai = new GoogleGenAI({ apiKey: key });
 
@@ -303,6 +378,7 @@ async function startServer() {
         prompt,
         model: model || "gemini-3.1-flash-image-preview",
         size: size || "1K",
+        aspectRatio: aspectRatio || "1:1",
         brandContext,
         projectId,
         createdAt: new Date().toISOString(),
@@ -318,7 +394,7 @@ async function startServer() {
         contents: { parts: [{ text: prompt }] },
         config: {
           imageConfig: {
-            aspectRatio: "1:1",
+            aspectRatio: manifest.aspectRatio || "1:1",
             imageSize: manifest.size,
           },
         },
@@ -1054,9 +1130,10 @@ async function startServer() {
     });
   });
 
-  // ── W2: Media Plan Suggest ───────────────────────────────────────────────────
+  // ── Sprint 2 W2: Media Plan Suggest (renamed to suggestQuick for Sprint 3) ──
 
   api.post("/media/plan/suggest", async (req, res) => {
+    // Fast fallback — single-call plan suggestion (kept as-is from Sprint 2)
     try {
       const { description, projectContext, apiKey } = req.body;
       if (!description) return res.status(400).json({ error: "description is required" });
@@ -1094,16 +1171,13 @@ async function startServer() {
       const txt = response.text?.trim() ?? "{}";
       let parsed: { items?: unknown[] } = {};
       try {
-        // Try strict JSON first (works when responseMimeType is honoured)
         parsed = JSON.parse(txt);
       } catch {
-        // Fallback: extract JSON block from text if the model wrapped in markdown
         const m = txt.match(/\{[\s\S]*\}/);
         if (m) { try { parsed = JSON.parse(m[0]); } catch { /* give up */ } }
       }
 
       const items = Array.isArray(parsed.items) ? parsed.items : [];
-      // Ensure each item has required fields + a fresh random id
       const sanitised = items.map((x: any) => ({
         id: `item_${Math.random().toString(36).slice(2, 10)}`,
         type: ["image", "video", "voice"].includes(x.type) ? x.type : "image",
@@ -1125,11 +1199,257 @@ async function startServer() {
     }
   });
 
-  // ── H3: Prompt Expansion (3-step chain) ─────────────────────────────────────
+  // ── W1: Multi-Stage Plan Pipeline (Track K1) ────────────────────────────────
+
+  const planProgressDir = path.join(jobsDir, "plan-progress");
+
+  async function writePlanProgress(planId: string, data: Record<string, unknown>) {
+    await fs.mkdir(planProgressDir, { recursive: true });
+    await fs.writeFile(path.join(planProgressDir, `${planId}.json`), JSON.stringify(data, null, 2));
+  }
+
+  function parseGeminiJson(text: string): any {
+    const txt = text?.trim() ?? "{}";
+    try { return JSON.parse(txt); } catch { /* fallback */ }
+    const m = txt.match(/\{[\s\S]*\}/);
+    if (m) { try { return JSON.parse(m[0]); } catch { /* give up */ } }
+    return {};
+  }
+
+  /** GET /api/media/plan/progress/:planId — poll generation progress */
+  api.get("/media/plan/progress/:planId", async (req, res) => {
+    try {
+      const filePath = path.join(planProgressDir, `${req.params.planId}.json`);
+      const data = await fs.readFile(filePath, "utf8");
+      res.set("Cache-Control", "no-store").json(JSON.parse(data));
+    } catch {
+      res.status(404).json({ error: "No progress found for this plan ID" });
+    }
+  });
+
+  /** POST /api/media/plan/generate — multi-stage plan pipeline */
+  api.post("/media/plan/generate", async (req, res) => {
+    try {
+      const { description, projectContext, projectId, apiKey } = req.body;
+      if (!description) return res.status(400).json({ error: "description is required" });
+      const key = requireApiKey(apiKey);
+      const ai = new GoogleGenAI({ apiKey: key });
+
+      const planId = `plan_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      const stages: { name: string; duration: number }[] = [];
+
+      // Build common context
+      const brandCtx = projectContext
+        ? `Brand: ${projectContext.brandName ?? ""}. Description: ${projectContext.brandDescription ?? ""}. Audience: ${projectContext.targetAudience ?? ""}. Voice: ${projectContext.brandVoice ?? ""}. Style keywords: ${(projectContext.styleKeywords ?? []).join(", ")}.`
+        : "";
+
+      // ── Stage 1: Context Gathering ─────────────────────────────────────────
+      const s1Start = Date.now();
+      await writePlanProgress(planId, { stage: "context_gathering", progress: 1, total: 5, message: "Gathering brand context and strategy artifacts..." });
+
+      let artifactContext = "";
+      if (projectId) {
+        try {
+          const pinnedArtifacts = getActiveArtifacts(projectId);
+          if (pinnedArtifacts.length > 0) {
+            artifactContext = "\n\nPinned strategy artifacts:\n" + pinnedArtifacts.map((a) =>
+              `- [${a.type}] "${a.title}": ${a.summary}`
+            ).join("\n");
+          }
+        } catch { /* no artifacts available */ }
+      }
+
+      let styleContext = "";
+      try {
+        const styleDb = await loadStyleDatabase();
+        const audience = projectContext?.targetAudience?.toLowerCase() ?? "";
+        const archetypes = (styleDb.audienceArchetypes as any)?.archetypes ?? {};
+        // Find matching audience archetype
+        for (const [key, archetype] of Object.entries(archetypes) as [string, any][]) {
+          const label = (archetype.label ?? key).toLowerCase();
+          if (audience.includes(label.split(" ")[0]) || audience.includes(key.replace(/_/g, " "))) {
+            styleContext = `\nRecommended style for audience "${archetype.label}": visual style: ${archetype.visual_style?.join(", ")}. Colors: ${archetype.color_tendency?.join(", ")}. Typography: ${archetype.typography}. Avoid: ${archetype.avoid?.join(", ")}. Psychology: ${archetype.psychology_note}`;
+            break;
+          }
+        }
+        if (!styleContext && projectContext?.styleKeywords?.length) {
+          // Match by style keywords to style archetypes
+          const styleArchetypes = (styleDb.styleArchetypes as any)?.archetypes ?? {};
+          for (const [, sa] of Object.entries(styleArchetypes) as [string, any][]) {
+            if (projectContext.styleKeywords.some((kw: string) => sa.prompt_keywords?.toLowerCase().includes(kw.toLowerCase()))) {
+              styleContext = `\nRecommended style archetype "${sa.label}": ${sa.description}. Prompt keywords: ${sa.prompt_keywords}. Avoid: ${sa.negative_keywords}.`;
+              break;
+            }
+          }
+        }
+      } catch { /* style-db not critical */ }
+
+      const contextBrief = `${brandCtx}${artifactContext}${styleContext}`;
+      stages.push({ name: "context_gathering", duration: Date.now() - s1Start });
+
+      // ── Stage 2: Outline Generation ────────────────────────────────────────
+      const s2Start = Date.now();
+      await writePlanProgress(planId, { stage: "outline_generation", progress: 2, total: 5, message: "Generating strategic media outline..." });
+
+      const outlinePrompt = [
+        "You are a strategic media planner. Generate a structured media plan OUTLINE (NOT prompts yet).",
+        "The outline should include:",
+        "- content_pillars: array of { name, percentage, description } — what themes the media should cover",
+        "- platform_distribution: array of { platform, count, rationale } — how many assets per platform",
+        "- style_direction: { name, description, rationale } — the visual approach",
+        "- total_items: number — recommended total assets",
+        `Context: ${contextBrief}`,
+        `Project description: "${description}"`,
+        'Return ONLY valid JSON: { "content_pillars": [...], "platform_distribution": [...], "style_direction": {...}, "total_items": N }',
+      ].join("\n");
+
+      const outlineResp = await ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-04-17",
+        contents: outlinePrompt,
+        config: { responseMimeType: "application/json" } as any,
+      });
+      const outline = parseGeminiJson(outlineResp.text ?? "{}");
+      stages.push({ name: "outline_generation", duration: Date.now() - s2Start });
+
+      // ── Stage 3: Outline Grading ───────────────────────────────────────────
+      const s3Start = Date.now();
+      await writePlanProgress(planId, { stage: "outline_grading", progress: 3, total: 5, message: "Grading outline quality..." });
+
+      let currentOutline = outline;
+      let outlineGrade: any = null;
+      const MAX_OUTLINE_RETRIES = 2;
+
+      for (let attempt = 0; attempt <= MAX_OUTLINE_RETRIES; attempt++) {
+        const gradePrompt = [
+          "You are a media strategy critic. Grade this media plan outline on 4 dimensions (1-5 each):",
+          "- completeness: Are all key platforms and audience needs addressed?",
+          "- differentiation: Would this stand out from competitor media?",
+          "- balance: Is the pillar distribution appropriate for the goal?",
+          "- feasibility: Can AI image/video models produce these well?",
+          "Also provide an overall score (average of all 4), specific improvements, and whether the outline passes (overall >= 3.5).",
+          `Context: ${contextBrief}`,
+          `Project: "${description}"`,
+          `Outline: ${JSON.stringify(currentOutline)}`,
+          'Return ONLY valid JSON: { "completeness": N, "differentiation": N, "balance": N, "feasibility": N, "overall": N, "improvements": ["..."], "passes": boolean }',
+        ].join("\n");
+
+        const gradeResp = await ai.models.generateContent({
+          model: "gemini-2.5-flash-preview-04-17",
+          contents: gradePrompt,
+          config: { responseMimeType: "application/json" } as any,
+        });
+        outlineGrade = parseGeminiJson(gradeResp.text ?? "{}");
+
+        if (outlineGrade.overall >= 3.5 || attempt >= MAX_OUTLINE_RETRIES) break;
+
+        // Auto-refine: ask Gemini to improve the outline based on the grading feedback
+        console.log(`[plan-generate] Outline scored ${outlineGrade.overall}/5 — refining (attempt ${attempt + 1}/${MAX_OUTLINE_RETRIES})...`);
+        await writePlanProgress(planId, { stage: "outline_refining", progress: 3, total: 5, message: `Outline scored ${outlineGrade.overall}/5 — refining...` });
+
+        const refinePrompt = [
+          "You are a media strategy planner. Improve this outline based on the critic's feedback.",
+          `Original outline: ${JSON.stringify(currentOutline)}`,
+          `Critic feedback: ${JSON.stringify(outlineGrade.improvements)}`,
+          `Context: ${contextBrief}`,
+          'Return the improved outline in the SAME JSON format: { "content_pillars": [...], "platform_distribution": [...], "style_direction": {...}, "total_items": N }',
+        ].join("\n");
+
+        const refineResp = await ai.models.generateContent({
+          model: "gemini-2.5-flash-preview-04-17",
+          contents: refinePrompt,
+          config: { responseMimeType: "application/json" } as any,
+        });
+        currentOutline = parseGeminiJson(refineResp.text ?? "{}");
+      }
+      stages.push({ name: "outline_grading", duration: Date.now() - s3Start });
+
+      // ── Stage 4: Prompt Generation ─────────────────────────────────────────
+      const s4Start = Date.now();
+      await writePlanProgress(planId, { stage: "prompt_generation", progress: 4, total: 5, message: "Generating media prompts from graded outline..." });
+
+      const promptGenPrompt = [
+        "You are an expert creative director and prompt engineer.",
+        "Based on this graded media plan outline, generate actual media plan items with detailed generation prompts.",
+        `Context: ${contextBrief}`,
+        `Outline: ${JSON.stringify(currentOutline)}`,
+        "Rules:",
+        "- Each item needs: id (item_<random8>), type (image|video|voice), label, purpose, promptTemplate, tags[]",
+        "- promptTemplate must be a detailed, vivid, generation-ready prompt with style, composition, lighting, and platform specs",
+        "- Include negative prompt guidance where appropriate (appended with 'Negative:' prefix)",
+        "- Match the number of items to the outline's total_items and pillar distribution",
+        "- Add status: 'draft', generatedJobIds: [], model: null, size: null, aspectRatio: null",
+        'Return ONLY valid JSON: { "items": [ { "id": "...", "type": "...", "label": "...", "purpose": "...", "promptTemplate": "...", "tags": [...], "status": "draft", "generatedJobIds": [], "model": null, "size": null, "aspectRatio": null } ] }',
+      ].join("\n");
+
+      const promptResp = await ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-04-17",
+        contents: promptGenPrompt,
+        config: { responseMimeType: "application/json" } as any,
+      });
+      const promptData = parseGeminiJson(promptResp.text ?? "{}");
+      const rawItems = Array.isArray(promptData.items) ? promptData.items : [];
+
+      // Sanitise items
+      const items = rawItems.map((x: any) => ({
+        id: `item_${Math.random().toString(36).slice(2, 10)}`,
+        type: ["image", "video", "voice"].includes(x.type) ? x.type : "image",
+        label: x.label ?? "Untitled",
+        purpose: x.purpose ?? "",
+        promptTemplate: x.promptTemplate ?? "",
+        model: x.model ?? null,
+        size: x.size ?? null,
+        aspectRatio: x.aspectRatio ?? null,
+        status: "draft",
+        tags: Array.isArray(x.tags) ? x.tags : [],
+        generatedJobIds: [],
+      }));
+      stages.push({ name: "prompt_generation", duration: Date.now() - s4Start });
+
+      // ── Stage 5: Prompt Grading ────────────────────────────────────────────
+      const s5Start = Date.now();
+      await writePlanProgress(planId, { stage: "prompt_grading", progress: 5, total: 5, message: "Evaluating prompt quality..." });
+
+      const promptGradePrompt = [
+        "You are a prompt quality evaluator. Score each media generation prompt on 3 criteria (1-5 each):",
+        "- specificity: Is the prompt detailed enough to produce a distinctive result?",
+        "- style_match: Does the prompt align with the project's style direction?",
+        "- purpose_fitness: Will this serve its stated purpose?",
+        "Also compute an overall score per prompt and flag weak ones (overall < 3.5) with improvement notes.",
+        `Style direction: ${JSON.stringify(currentOutline.style_direction ?? {})}`,
+        `Prompts to grade: ${JSON.stringify(items.map((item: any, i: number) => ({ index: i, label: item.label, purpose: item.purpose, prompt: item.promptTemplate })))}`,
+        'Return ONLY valid JSON: { "grades": [ { "index": N, "specificity": N, "style_match": N, "purpose_fitness": N, "overall": N, "weak": boolean, "improvement": "..." } ] }',
+      ].join("\n");
+
+      const gradeResp = await ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-04-17",
+        contents: promptGradePrompt,
+        config: { responseMimeType: "application/json" } as any,
+      });
+      const promptGrades = parseGeminiJson(gradeResp.text ?? "{}");
+      stages.push({ name: "prompt_grading", duration: Date.now() - s5Start });
+
+      // Write final progress
+      await writePlanProgress(planId, { stage: "complete", progress: 5, total: 5, message: "Plan generation complete." });
+
+      res.json({
+        planId,
+        outline: currentOutline,
+        outlineGrade,
+        items,
+        promptGrades: promptGrades.grades ?? [],
+        stages,
+      });
+    } catch (err: any) {
+      console.error("Plan Generate Error:", err);
+      res.status(500).json({ error: err.message ?? "Plan generation failed" });
+    }
+  });
+
+  // ── H3 + W4: Prompt Expansion (3-step chain + artifact injection) ────────────
 
   api.post("/media/prompt/expand", async (req, res) => {
     try {
-      const { basePrompt, purpose, projectContext, platform, apiKey } = req.body;
+      const { basePrompt, purpose, projectContext, platform, projectId, apiKey } = req.body;
       if (!basePrompt) return res.status(400).json({ error: "basePrompt is required" });
       const key = requireApiKey(apiKey);
       const ai = new GoogleGenAI({ apiKey: key });
@@ -1140,15 +1460,30 @@ async function startServer() {
       const platCtx = platform ? `Target platform: ${platform}.` : "";
       const purpCtx = `Purpose: ${purpose ?? "general"}.`;
 
+      // W4: Inject pinned strategy artifacts into the expansion context
+      let artifactCtx = "";
+      if (projectId) {
+        try {
+          const pinnedArtifacts = getActiveArtifacts(projectId);
+          if (pinnedArtifacts.length > 0) {
+            artifactCtx = "\nStrategy context from pinned artifacts:\n" + pinnedArtifacts.map((a) =>
+              `- [${a.type}] "${a.title}": ${a.summary}`
+            ).join("\n") + "\nIncorporate these strategic directions naturally into the prompt.";
+          }
+        } catch { /* artifacts not critical */ }
+      }
+
+      const fullContext = `${brandCtx}\n${platCtx}\n${purpCtx}${artifactCtx}`;
+
       const s1 = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: `You are a creative director writing image generation prompts. Expand this rough idea into a detailed, vivid prompt.\n${brandCtx}\n${platCtx}\n${purpCtx}\nBase idea: "${basePrompt}"\nRespond with ONLY the expanded prompt, no preamble.`,
+        contents: `You are a creative director writing image generation prompts. Expand this rough idea into a detailed, vivid prompt.\n${fullContext}\nBase idea: "${basePrompt}"\nRespond with ONLY the expanded prompt, no preamble.`,
       });
       const expanded = s1.text?.trim() ?? basePrompt;
 
       const s2 = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: `Refine this image generation prompt for brand alignment and platform fit. Add specific details about lighting, composition, color palette, and mood.\n${brandCtx}\n${platCtx}\nPrompt: "${expanded}"\nRespond with ONLY the refined prompt.`,
+        contents: `Refine this image generation prompt for brand alignment and platform fit. Add specific details about lighting, composition, color palette, and mood.\n${fullContext}\nPrompt: "${expanded}"\nRespond with ONLY the refined prompt.`,
       });
       const refined = s2.text?.trim() ?? expanded;
 
@@ -1420,7 +1755,205 @@ async function startServer() {
     }
   });
 
+  // ── L6: Strategy Artifacts CRUD ─────────────────────────────────────────────
+  // Supports L6 (Research Save as Artifact, Scoring Insights)
+  // and L2 (Boardroom Strategy Extraction).
+
+  function genArtifactId() {
+    return `art_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  }
+
+  const VALID_ARTIFACT_TYPES: ArtifactType[] = [
+    "boardroom_insight",
+    "research_finding",
+    "strategy_brief",
+    "style_direction",
+    "scoring_analysis",
+    "custom",
+  ];
+
+  /** POST /api/artifacts — create a new strategy artifact */
+  api.post("/artifacts", (req, res) => {
+    try {
+      const { projectId, type, title, summary, content, tags, source, pinned } = req.body;
+      if (!type || !title || !content) {
+        return res.status(400).json({ error: "type, title, and content are required" });
+      }
+      if (!VALID_ARTIFACT_TYPES.includes(type as ArtifactType)) {
+        return res.status(400).json({ error: `Invalid type. Must be one of: ${VALID_ARTIFACT_TYPES.join(", ")}` });
+      }
+      const now = new Date().toISOString();
+      const row: StrategyArtifactRow = {
+        id: genArtifactId(),
+        projectId: projectId ?? null,
+        type: type as ArtifactType,
+        title: String(title).slice(0, 200),
+        summary: String(summary ?? content.slice(0, 300)).slice(0, 500),
+        content: String(content),
+        tags: JSON.stringify(Array.isArray(tags) ? tags : []),
+        source: JSON.stringify(source ?? { type: "manual", timestamp: now }),
+        pinned: pinned ? 1 : 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      strategyArtifactQueries.insert(row);
+      res.status(201).json({ ...row, tags: JSON.parse(row.tags), source: JSON.parse(row.source), pinned: row.pinned === 1 });
+    } catch (err: any) {
+      console.error("Artifact POST error:", err);
+      res.status(500).json({ error: err.message ?? "Failed to create artifact" });
+    }
+  });
+
+  /** GET /api/artifacts?projectId=&pinned=true — list artifacts for a project */
+  api.get("/artifacts", (req, res) => {
+    try {
+      const { projectId, pinned } = req.query;
+      if (!projectId || typeof projectId !== "string") {
+        return res.status(400).json({ error: "projectId query param is required" });
+      }
+      const rows = pinned === "true"
+        ? strategyArtifactQueries.listPinned(projectId)
+        : strategyArtifactQueries.list(projectId);
+      res.json(rows.map((r) => ({
+        ...r,
+        tags: (() => { try { return JSON.parse(r.tags); } catch { return []; } })(),
+        source: (() => { try { return JSON.parse(r.source); } catch { return {}; } })(),
+        pinned: r.pinned === 1,
+      })));
+    } catch (err: any) {
+      console.error("Artifacts GET error:", err);
+      res.status(500).json({ error: err.message ?? "Failed to list artifacts" });
+    }
+  });
+
+  /** GET /api/artifacts/:id — get a single artifact */
+  api.get("/artifacts/:id", (req, res) => {
+    try {
+      const row = strategyArtifactQueries.get(req.params.id);
+      if (!row) return res.status(404).json({ error: "Artifact not found" });
+      res.json({ ...row, tags: (() => { try { return JSON.parse(row.tags); } catch { return []; } })(), source: (() => { try { return JSON.parse(row.source); } catch { return {}; } })(), pinned: row.pinned === 1 });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message ?? "Failed to get artifact" });
+    }
+  });
+
+  /** POST /api/artifacts/:id/pin — toggle pinned state */
+  api.post("/artifacts/:id/pin", (req, res) => {
+    try {
+      const row = strategyArtifactQueries.get(req.params.id);
+      if (!row) return res.status(404).json({ error: "Artifact not found" });
+      const { pinned } = req.body;
+      strategyArtifactQueries.togglePin(req.params.id, !!pinned);
+      res.json({ ok: true, pinned: !!pinned });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message ?? "Failed to toggle pin" });
+    }
+  });
+
+  /** DELETE /api/artifacts/:id — delete an artifact */
+  api.delete("/artifacts/:id", (req, res) => {
+    try {
+      const row = strategyArtifactQueries.get(req.params.id);
+      if (!row) return res.status(404).json({ error: "Artifact not found" });
+      strategyArtifactQueries.delete(req.params.id);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message ?? "Failed to delete artifact" });
+    }
+  });
+
+  // ── W4 (L6): Scoring Insights → Auto-Artifact ───────────────────────────────
+  // Reads all scored media for a project, calls Gemini to summarize visual
+  // trends, then saves the result as a scoring_analysis artifact.
+
+  api.post("/media/scoring-insights", async (req, res) => {
+    try {
+      const { projectId, apiKey } = req.body;
+      if (!projectId) return res.status(400).json({ error: "projectId is required" });
+      const key = requireApiKey(apiKey);
+      const ai = new GoogleGenAI({ apiKey: key });
+
+      // Collect all scored media for this project
+      const rows: MediaJobRow[] = mediaJobQueries.listByProject(projectId);
+      const scored = rows.filter((r) => r.scores && r.status === "completed");
+
+      if (scored.length === 0) {
+        return res.status(400).json({ error: "No scored media found for this project. Generate and score some media first." });
+      }
+
+      // Build a text summary of scores for Gemini to analyze
+      const scoreSummaries = scored.map((r) => {
+        const s = (() => { try { return JSON.parse(r.scores!); } catch { return null; } })();
+        if (!s) return null;
+        const tags = (() => { try { return JSON.parse(r.tags); } catch { return []; } })();
+        return `- Prompt: "${(r.prompt ?? (r as any).text ?? "").slice(0, 120)}" | Type: ${r.type} | Tags: ${tags.join(", ")} | Scores: brand=${s.brandAlignment ?? s.scores?.brandAlignment ?? "?"}/5, technical=${s.technicalQuality ?? s.scores?.technicalQuality ?? "?"}/5, overall=${s.overall}/5 | Reasoning: "${(s.reasoning ?? "").slice(0, 120)}"`;
+      }).filter(Boolean);
+
+      const prompt = [
+        "You are a visual media strategist analyzing AI-generated media performance data.",
+        `Below are scoring results for ${scored.length} media assets from the same project.`,
+        "Identify the top 3-5 trends that distinguish high-scoring from low-scoring media.",
+        "Be specific about visual attributes: lighting, composition, style, color, format.",
+        "Write a concise strategic brief (2-4 paragraphs) that a creative director could act on.",
+        "End with 3-5 bullet-point recommendations (use markdown bullets).",
+        "",
+        "Scored media data:",
+        ...scoreSummaries,
+      ].filter(Boolean).join("\n");
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-04-17",
+        contents: prompt,
+      });
+
+      const analysisText = response.text?.trim() ?? "No analysis generated.";
+      const summary = analysisText.slice(0, 300).replace(/\n/g, " ") + (analysisText.length > 300 ? "…" : "");
+
+      // Auto-generate tags from the top-scoring media tags
+      const allTags = scored
+        .sort((a, b) => {
+          const sa = (() => { try { return JSON.parse(a.scores!).overall ?? 0; } catch { return 0; } })();
+          const sb = (() => { try { return JSON.parse(b.scores!).overall ?? 0; } catch { return 0; } })();
+          return sb - sa;
+        })
+        .slice(0, 5)
+        .flatMap((r) => { try { return JSON.parse(r.tags) as string[]; } catch { return []; } });
+      const uniqueTags = [...new Set(allTags)].slice(0, 8);
+
+      const now = new Date().toISOString();
+      const row: StrategyArtifactRow = {
+        id: genArtifactId(),
+        projectId,
+        type: "scoring_analysis",
+        title: `Scoring Insights — ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`,
+        summary,
+        content: analysisText,
+        tags: JSON.stringify(uniqueTags),
+        source: JSON.stringify({ type: "scoring", timestamp: now, mediaCount: scored.length }),
+        pinned: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      strategyArtifactQueries.insert(row);
+
+      console.log(`[L6] Scoring insights artifact created: ${row.id} (${scored.length} media analyzed)`);
+
+      res.json({
+        ok: true,
+        artifactId: row.id,
+        title: row.title,
+        mediaAnalyzed: scored.length,
+        summary,
+        tags: uniqueTags,
+      });
+    } catch (err: any) {
+      console.error("Scoring Insights Error:", err);
+      res.status(500).json({ error: err.message ?? "Scoring insights failed" });
+    }
+  });
+
   // ── Lane 5: Twilio / Sales Agent ──
+
 
   const twilioConfigPath = path.join(jobsDir, "twilio", "config.json");
 
@@ -1541,7 +2074,758 @@ async function startServer() {
     }
   });
 
+  // ── L1/L2: Strategy Artifacts CRUD ─────────────────────────────────────────
+
+  // POST /api/artifacts — create a new strategy artifact
+  api.post("/artifacts", (req, res) => {
+    try {
+      const { projectId, type, title, summary, content, tags, source, pinned } = req.body;
+      if (!title || !type || !content) {
+        return res.status(400).json({ error: "title, type, and content are required" });
+      }
+      const VALID_TYPES = new Set(["boardroom_insight", "research_finding", "strategy_brief", "style_direction", "scoring_analysis", "custom"]);
+      if (!VALID_TYPES.has(type)) {
+        return res.status(400).json({ error: `Invalid type: ${type}. Must be one of ${[...VALID_TYPES].join(", ")}` });
+      }
+      const now = new Date().toISOString();
+      const id = `art_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const row: StrategyArtifactRow = {
+        id,
+        projectId: projectId ?? null,
+        type,
+        title: String(title).slice(0, 200),
+        summary: String(summary ?? "").slice(0, 500),
+        content: String(content),
+        tags: JSON.stringify(Array.isArray(tags) ? tags : []),
+        source: JSON.stringify(source ?? { type: "manual", timestamp: now }),
+        pinned: pinned ? 1 : 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      strategyArtifactQueries.insert(row);
+      res.status(201).json({ ...row, tags: JSON.parse(row.tags), source: JSON.parse(row.source) });
+    } catch (error: any) {
+      console.error("Artifact Create Error:", error);
+      res.status(500).json({ error: error.message || "Failed to create artifact" });
+    }
+  });
+
+  // GET /api/artifacts?projectId= — list artifacts for a project
+  api.get("/artifacts", (req, res) => {
+    try {
+      const projectId = req.query.projectId as string;
+      if (!projectId) return res.status(400).json({ error: "projectId query param is required" });
+      const rows = strategyArtifactQueries.list(projectId);
+      const parsed = rows.map((r) => ({ ...r, tags: JSON.parse(r.tags || "[]"), source: JSON.parse(r.source || "{}") }));
+      res.json(parsed);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to list artifacts" });
+    }
+  });
+
+  // GET /api/artifacts/:id — get a single artifact
+  api.get("/artifacts/:id", (req, res) => {
+    try {
+      const row = strategyArtifactQueries.get(req.params.id);
+      if (!row) return res.status(404).json({ error: "Artifact not found" });
+      res.json({ ...row, tags: JSON.parse(row.tags || "[]"), source: JSON.parse(row.source || "{}") });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to get artifact" });
+    }
+  });
+
+  // PATCH /api/artifacts/:id/pin — toggle pin state
+  api.patch("/artifacts/:id/pin", (req, res) => {
+    try {
+      const { pinned } = req.body;
+      strategyArtifactQueries.togglePin(req.params.id, Boolean(pinned));
+      const row = strategyArtifactQueries.get(req.params.id);
+      if (!row) return res.status(404).json({ error: "Artifact not found" });
+      res.json({ ...row, tags: JSON.parse(row.tags || "[]"), source: JSON.parse(row.source || "{}") });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to update artifact" });
+    }
+  });
+
+  // DELETE /api/artifacts/:id
+  api.delete("/artifacts/:id", (req, res) => {
+    try {
+      strategyArtifactQueries.delete(req.params.id);
+      res.json({ ok: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to delete artifact" });
+    }
+  });
+
+  // W2 (S3): POST /api/boardroom/sessions/:id/save-artifact
+  // Reads convergence, calls Gemini for title+summary, creates a boardroom_insight artifact.
+  // For Strategy Analysis sessions, also runs extractStrategyAnalysisOutput.
+  api.post("/boardroom/sessions/:id/save-artifact", async (req, res) => {
+    try {
+      const { projectId, apiKey: rawApiKey } = req.body;
+      const apiKey = rawApiKey || process.env.GEMINI_API_KEY;
+      const sessionId = req.params.id;
+      const session = await readBoardroomSession(sessionId);
+
+      if (session.status !== "completed") {
+        return res.status(400).json({ error: "Session must be completed to save as artifact" });
+      }
+
+      // Detect if this is a Strategy Analysis session by checking participant IDs
+      const isStrategyAnalysis = session.participants.some(
+        (p) => p.id === "analyst" || p.id === "psychologist" || p.id === "adapter" || p.id === "devils-advocate",
+      );
+
+      let title: string;
+      let summary: string;
+      let content: string;
+      let tags: string[];
+      let artifactType: StrategyArtifactRow["type"];
+
+      if (isStrategyAnalysis && apiKey) {
+        // Run structured extraction for Strategy Analysis sessions
+        const output = await extractStrategyAnalysisOutput(sessionId, apiKey);
+        title = `Strategy Analysis: ${output.tags.slice(0, 3).join(", ") || session.topic.slice(0, 50)}`;
+        summary = output.adaptationNotes || output.originalDescription;
+        content = JSON.stringify(output, null, 2);
+        tags = [...output.tags, ...output.extractedPrinciples.slice(0, 3)];
+        artifactType = "strategy_brief";
+      } else if (apiKey) {
+        // General boardroom insight — generate title+summary via Gemini
+        const convergence = [
+          session.result?.summary ?? "",
+          session.result?.nextSteps?.join(" — ") ?? "",
+        ].filter(Boolean).join("\n").slice(0, 2000);
+
+        const ai = new GoogleGenAI({ apiKey });
+        const metaResp = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: `Given this boardroom session result about "${session.topic}", return only JSON with shape: { "title": "...", "summary": "...", "tags": ["..."] }. title: 5-8 words. summary: 2-3 sentences. tags: 4-6 strategic keywords.\n\nSession result:\n${convergence}`,
+        });
+        try {
+          const raw = metaResp.text?.trim() ?? "{}";
+          const m = raw.match(/\{[\s\S]*\}/);
+          const parsed = m ? JSON.parse(m[0]) : {};
+          title = String(parsed.title || session.topic).slice(0, 200);
+          summary = String(parsed.summary || "").slice(0, 500);
+          tags = Array.isArray(parsed.tags) ? parsed.tags.map(String) : [];
+        } catch {
+          title = session.topic.slice(0, 200);
+          summary = session.result?.summary ?? "";
+          tags = [];
+        }
+        content = JSON.stringify({
+          sessionId,
+          summary: session.result?.summary ?? "",
+          nextSteps: session.result?.nextSteps ?? [],
+          perspectives: session.result?.perspectives ?? [],
+        }, null, 2);
+        artifactType = "boardroom_insight";
+      } else {
+        // Fallback without API key
+        title = session.topic.slice(0, 200);
+        summary = session.result?.summary?.slice(0, 500) ?? "";
+        tags = [];
+        content = JSON.stringify({
+          sessionId,
+          summary: session.result?.summary ?? "",
+          nextSteps: session.result?.nextSteps ?? [],
+        }, null, 2);
+        artifactType = "boardroom_insight";
+      }
+
+      const now = new Date().toISOString();
+      const id = `art_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const source = { type: "boardroom" as const, sessionId, timestamp: now };
+
+      const row: StrategyArtifactRow = {
+        id,
+        projectId: projectId ?? null,
+        type: artifactType,
+        title,
+        summary,
+        content,
+        tags: JSON.stringify(tags),
+        source: JSON.stringify(source),
+        pinned: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      strategyArtifactQueries.insert(row);
+
+      const artifact = { ...row, tags, source };
+      res.status(201).json(artifact);
+    } catch (error: any) {
+      console.error("Save Artifact Error:", error);
+      const status = error.message?.includes("not found") ? 404
+        : error.message?.includes("completed") ? 400
+        : 500;
+      res.status(status).json({ error: error.message || "Failed to save artifact" });
+    }
+  });
+
+  // ── Compose ──────────────────────────────────────────────────────────────────────────
+
+  /**
+   * POST /api/media/compose
+   * Accepts a ComposeRequest and runs the composition in the background.
+   * Returns 202 immediately with { composeId, status: "processing" }.
+   *
+   * type: "merge"      — merge a video + audio track
+   * type: "slideshow"  — create a slideshow from images
+   * type: "caption"    — burn ASS subtitles onto a video
+   */
+  api.post("/media/compose", async (req, res) => {
+    // Lazy-load compose module to avoid import-time side effects during testing
+    const compose = await import("./compose.ts");
+    await compose.waitForInit();
+
+    if (!compose.isFFmpegAvailable()) {
+      return res.status(503).json({
+        error: "FFmpeg not installed",
+        installHint: "sudo apt install ffmpeg",
+      });
+    }
+
+    const body = req.body as Record<string, unknown>;
+    const type = body.type as string | undefined;
+
+    if (!type || !["merge", "slideshow", "caption"].includes(type)) {
+      return res.status(400).json({ error: 'type must be one of "merge", "slideshow", "caption"' });
+    }
+
+    if (type === "slideshow") {
+      const slides = body.slides as unknown[] | undefined;
+      if (!slides || !Array.isArray(slides) || slides.length === 0) {
+        return res.status(400).json({ error: "slideshow requires at least one slide in the slides[] array" });
+      }
+    }
+
+    if (type === "merge") {
+      if (!body.videoJobId && !body.videoPath) {
+        return res.status(400).json({ error: "merge requires videoJobId or videoPath" });
+      }
+      if (!body.audioJobId && !body.audioPath) {
+        return res.status(400).json({ error: "merge requires audioJobId or audioPath" });
+      }
+    }
+
+    if (type === "caption") {
+      if (!body.videoJobId && !body.videoPath) {
+        return res.status(400).json({ error: "caption requires videoJobId or videoPath" });
+      }
+      if (!body.captions || typeof (body.captions as any).text !== "string") {
+        return res.status(400).json({ error: "caption requires captions.text" });
+      }
+    }
+
+    const composeId = `compose_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date().toISOString();
+    const projectId = (body.projectId as string | undefined) ?? null;
+    const title = (body.title as string | undefined) ?? null;
+
+    const outputDir = path.join(jobsDir, "compose", composeId);
+    const outputFilePath = path.join(outputDir, "output.mp4");
+    const outputUrl = `/jobs/compose/${composeId}/output.mp4`;
+
+    // Insert initial DB record
+    const jobRow: ComposeJobRow = {
+      id: composeId,
+      projectId,
+      type: type as ComposeJobRow["type"],
+      status: "processing",
+      title,
+      inputConfig: JSON.stringify(body),
+      outputPath: null,
+      duration: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    try {
+      composeJobQueries.insert(jobRow);
+    } catch (dbErr) {
+      console.error("[compose] DB insert failed:", dbErr);
+    }
+
+    // Write a manifest file so the job is discoverable via GET
+    await fs.mkdir(outputDir, { recursive: true });
+    await fs.writeFile(
+      path.join(outputDir, "manifest.json"),
+      JSON.stringify({ ...jobRow, outputs: [] }, null, 2),
+    );
+
+    // Fire-and-forget background composition
+    void (async () => {
+      try {
+        let result: { outputPath: string; duration: number; size: number } | null = null;
+
+        if (type === "merge") {
+          // Resolve video path
+          let videoPath: string;
+          if (body.videoPath) {
+            videoPath = body.videoPath as string;
+          } else {
+            const manifest = await readManifest(
+              "video",
+              body.videoJobId as string
+            );
+            const relOut = manifest.outputs[0];
+            if (!relOut) throw new Error(`videoJobId ${body.videoJobId} has no outputs`);
+            videoPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
+          }
+
+          // Resolve audio path
+          let audioPath: string;
+          if (body.audioPath) {
+            audioPath = body.audioPath as string;
+          } else {
+            const manifest = await readManifest(
+              "voice",
+              body.audioJobId as string
+            );
+            const relOut = manifest.outputs[0];
+            if (!relOut) throw new Error(`audioJobId ${body.audioJobId} has no outputs`);
+            audioPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
+          }
+
+          result = await compose.mergeVideoAudio(videoPath, audioPath, outputFilePath);
+
+        } else if (type === "slideshow") {
+          const slides = body.slides as Array<{
+            jobId?: string;
+            imagePath?: string;
+            duration?: number;
+            transition?: string;
+            kenBurns?: boolean;
+          }>;
+
+          const resolvedSlides: ComposeSlideInput[] = [];
+          for (const slide of slides) {
+            let imagePath: string;
+            if (slide.imagePath) {
+              imagePath = slide.imagePath;
+            } else if (slide.jobId) {
+              const manifest = await readManifest("image", slide.jobId);
+              const relOut = manifest.outputs[0];
+              if (!relOut) throw new Error(`jobId ${slide.jobId} has no outputs`);
+              imagePath = path.join(process.cwd(), relOut.replace(/^\//, ""));
+            } else {
+              throw new Error("Each slide must have jobId or imagePath");
+            }
+            resolvedSlides.push({
+              imagePath,
+              duration: slide.duration ?? 3,
+              transition: slide.transition ?? "fade",
+              kenBurns: slide.kenBurns ?? false,
+            });
+          }
+
+          const outputCfg = (body.output as Record<string, unknown>) ?? {};
+          const [ow, oh] = (() => {
+            const ar = (outputCfg.aspectRatio as string) ?? "16:9";
+            if (ar === "9:16") return [1080, 1920];
+            if (ar === "1:1") return [1080, 1080];
+            if (ar === "4:5") return [1080, 1350];
+            return [1920, 1080]; // 16:9 default
+          })();
+
+          result = await compose.createSlideshow(resolvedSlides, outputFilePath, {
+            width: ow,
+            height: oh,
+            fps: (outputCfg.fps as number) ?? 30,
+          });
+
+        } else if (type === "caption") {
+          // Resolve video path
+          let videoPath: string;
+          if (body.videoPath) {
+            videoPath = body.videoPath as string;
+          } else {
+            const manifest = await readManifest(
+              "video",
+              body.videoJobId as string
+            );
+            const relOut = manifest.outputs[0];
+            if (!relOut) throw new Error(`videoJobId ${body.videoJobId} has no outputs`);
+            videoPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
+          }
+
+          const captionCfg = body.captions as {
+            text: string;
+            style?: string;
+            fontSize?: number;
+            color?: string;
+            position?: "top" | "center" | "bottom";
+            timing?: "sentence" | "word";
+          };
+
+          const style = (captionCfg.style ?? "clean") as Parameters<typeof compose.generateASS>[1];
+          const assResult =
+            captionCfg.timing === "word"
+              ? await compose.generateWordLevelASS(captionCfg.text, style, 0, {
+                  fontSize: captionCfg.fontSize,
+                  fontColor: captionCfg.color,
+                  position: captionCfg.position,
+                })
+              : await compose.generateASS(captionCfg.text, style, 0, {
+                  fontSize: captionCfg.fontSize,
+                  fontColor: captionCfg.color,
+                  position: captionCfg.position,
+                });
+
+          result = await compose.burnCaptions(videoPath, assResult.assPath, outputFilePath);
+        }
+
+        if (result) {
+          composeJobQueries.updateStatus({
+            id: composeId,
+            status: "done",
+            outputPath: outputUrl,
+            duration: result.duration,
+          });
+
+          // Update manifest file
+          await fs.writeFile(
+            path.join(outputDir, "manifest.json"),
+            JSON.stringify({
+              id: composeId,
+              projectId,
+              type,
+              title,
+              status: "done",
+              inputConfig: body,
+              outputPath: outputUrl,
+              outputs: [outputUrl],
+              duration: result.duration,
+              createdAt: now,
+              updatedAt: new Date().toISOString(),
+            }, null, 2),
+          );
+
+          // Also index in media_jobs so it appears in Library
+          try {
+            mediaJobQueries.upsert({
+              id: composeId,
+              projectId,
+              type: "video",
+              status: "completed",
+              prompt: title ?? `${type} compose job`,
+              model: null,
+              size: null,
+              aspectRatio: (body.output as any)?.aspectRatio ?? null,
+              resolution: null,
+              voice: null,
+              outputs: JSON.stringify([outputUrl]),
+              tags: JSON.stringify(["compose", type]),
+              scores: null,
+              rating: null,
+              planItemId: null,
+              createdAt: now,
+              updatedAt: new Date().toISOString(),
+            });
+          } catch (dbErr) {
+            console.error("[compose] media_jobs index failed:", dbErr);
+          }
+
+          console.log(`[compose] Job ${composeId} completed — ${outputUrl}`);
+        }
+      } catch (err: any) {
+        console.error(`[compose] Job ${composeId} failed:`, err);
+        composeJobQueries.updateStatus({
+          id: composeId,
+          status: "failed",
+          outputPath: null,
+          duration: null,
+        });
+        await fs.writeFile(
+          path.join(outputDir, "manifest.json"),
+          JSON.stringify({
+            id: composeId,
+            projectId,
+            type,
+            status: "failed",
+            error: err?.message || "Unknown compose error",
+            createdAt: now,
+            updatedAt: new Date().toISOString(),
+          }, null, 2),
+        ).catch(() => {});
+      }
+    })();
+
+    res.status(202).json({ composeId, status: "processing" });
+  });
+
+  /**
+   * GET /api/media/compose/:id
+   * Poll for compose job status. Returns manifest + DB status.
+   */
+  api.get("/media/compose/:id", async (req, res) => {
+    const { id } = req.params;
+    try {
+      const job = composeJobQueries.getById(id);
+      if (job) {
+        return res.json(job);
+      }
+      // Fallback: read manifest file
+      const manifestPath = path.join(jobsDir, "compose", id, "manifest.json");
+      const raw = await fs.readFile(manifestPath, "utf8");
+      return res.json(JSON.parse(raw));
+    } catch {
+      return res.status(404).json({ error: `Compose job ${id} not found` });
+    }
+  });
+
+  // ── Lane 3: Composition Templates & Batch Compose ───────────────────────────
+
+  /**
+   * GET /api/compose/templates
+   * Returns all composition templates as a JSON array.
+   * Loaded from data/compose-templates/*.json — cached in memory.
+   */
+  api.get("/compose/templates", async (_req, res) => {
+    try {
+      const templates = await loadTemplates();
+      res.json(templates);
+    } catch (err: any) {
+      console.error("[L3] GET /compose/templates error:", err);
+      res.status(500).json({ error: err.message || "Failed to load templates" });
+    }
+  });
+
+  /**
+   * POST /api/compose/template-from-artifact
+   * Reads a strategy artifact and uses Gemini to suggest composition settings.
+   * Falls back to "faceless-explainer" defaults if Gemini is unavailable or fails.
+   *
+   * Body: { artifactId: string, projectId?: string, apiKey?: string }
+   * Returns: { template: ComposeTemplate, reasoning: string }
+   */
+  api.post("/compose/template-from-artifact", async (req, res) => {
+    try {
+      const { artifactId, projectId, apiKey: bodyKey } = req.body;
+      if (!artifactId) {
+        return res.status(400).json({ error: "artifactId is required" });
+      }
+
+      // Fetch the artifact
+      const artifacts = strategyArtifactQueries.list(projectId ?? "");
+      const artifact = artifacts.find((a: StrategyArtifactRow) => a.id === artifactId);
+      if (!artifact) {
+        return res.status(404).json({ error: "Artifact not found" });
+      }
+
+      const apiKey = bodyKey || process.env.GEMINI_API_KEY;
+      const fallbackId = "faceless-explainer";
+      const fallback = await getTemplate(fallbackId);
+      const allTemplates = await loadTemplates();
+
+      // Without API key, fall back immediately
+      if (!apiKey || allTemplates.length === 0) {
+        return res.json({
+          template: fallback ?? allTemplates[0],
+          reasoning: "API key unavailable — using default template.",
+        });
+      }
+
+      // ── Call Gemini to suggest a composition config ──────────────────────────
+      const ai = new GoogleGenAI({ apiKey });
+      const templateIds = allTemplates.map((t: ComposeTemplate) => t.id).join(", ");
+      const promptText = [
+        "You are a video composition assistant. Based on the following strategy artifact, suggest the best composition settings.",
+        "Return ONLY a JSON object with these fields:",
+        `  templateId: one of ${templateIds}`,
+        "  slideCount: number (3-8)",
+        "  slideDuration: number (1.5-6, seconds per slide)",
+        "  transitionStyle: one of fadeblack | dissolve | slideright | smoothleft | wiperight",
+        "  captionStyle: one of clean | bold-outline | boxed | typewriter | word-highlight",
+        "  aspectRatio: one of 9:16 | 16:9 | 1:1",
+        "  kenBurns: boolean",
+        "  pacing: short note (10-20 words) about pacing rationale",
+        "",
+        "Strategy Artifact:",
+        `Title: ${artifact.title}`,
+        `Summary: ${artifact.summary}`,
+        `Content: ${String(artifact.content).slice(0, 1500)}`,
+      ].join("\n");
+
+      let templateResult: ComposeTemplate | null = null;
+      let reasoning = "";
+
+      try {
+        const aiRes = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: promptText,
+        });
+        const raw = aiRes.text?.trim() ?? "{}";
+        const match = raw.match(/\{[\s\S]*\}/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          // Find the recommended template
+          const recommended = allTemplates.find((t: ComposeTemplate) => t.id === parsed.templateId);
+          if (recommended) {
+            // Build a customized copy based on AI suggestions
+            const slideCount = Math.max(2, Math.min(10, Number(parsed.slideCount) || recommended.slides.length));
+            const slideDuration = Math.max(1.5, Math.min(8, Number(parsed.slideDuration) || 3));
+
+            const customSlides = Array.from({ length: slideCount }, (_, i) => ({
+              ...((recommended.slides[i] ?? recommended.slides[recommended.slides.length - 1]) as typeof recommended.slides[0]),
+              duration: slideDuration,
+              transition: parsed.transitionStyle || recommended.slides[i]?.transition || "dissolve",
+              kenBurns: typeof parsed.kenBurns === "boolean" ? parsed.kenBurns : recommended.slides[i]?.kenBurns ?? true,
+            }));
+
+            templateResult = {
+              ...recommended,
+              id: `${recommended.id}-custom`,
+              name: `${recommended.name} (AI-tuned)`,
+              aspectRatio: (["9:16", "16:9", "1:1"].includes(parsed.aspectRatio) ? parsed.aspectRatio : recommended.aspectRatio) as ComposeTemplate["aspectRatio"],
+              slides: customSlides,
+              captions: {
+                ...recommended.captions,
+                style: (["clean","bold-outline","boxed","typewriter","word-highlight"].includes(parsed.captionStyle)
+                  ? parsed.captionStyle
+                  : recommended.captions.style) as ComposeTemplate["captions"]["style"],
+              },
+            };
+            reasoning = parsed.pacing || "Template customized based on artifact content.";
+          }
+        }
+      } catch (aiErr) {
+        console.warn("[L3] Gemini template suggestion failed, using fallback:", aiErr);
+      }
+
+      res.json({
+        template: templateResult ?? fallback ?? allTemplates[0],
+        reasoning: reasoning || "Using default template — AI suggestion unavailable.",
+      });
+    } catch (err: any) {
+      console.error("[L3] template-from-artifact error:", err);
+      res.status(500).json({ error: err.message || "Failed to build template from artifact" });
+    }
+  });
+
+  /**
+   * POST /api/media/plan/:planId/auto-compose
+   * Groups completed media plan items by tags into slideshow compositions.
+   * Images with similar tags → slideshow groups (3-5 per group).
+   * Voice items paired with related image groups.
+   *
+   * Body: { items: MediaPlanItem[] }  — items to consider (should have status approved/review/generating)
+   * Returns: { compositions: [{ title, template, slideJobIds, voiceJobId?, captionText? }] }
+   */
+  api.post("/media/plan/:planId/auto-compose", async (req, res) => {
+    try {
+      const { items } = req.body as { items: Array<{
+        id: string;
+        type: "image" | "video" | "voice";
+        label: string;
+        purpose: string;
+        tags?: string[];
+        status: string;
+        generatedJobIds: string[];
+        promptTemplate?: string;
+      }> };
+
+      if (!Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ error: "items array is required" });
+      }
+
+      // Filter to completed items with generated job IDs
+      const completedItems = items.filter(
+        (item) =>
+          (item.status === "approved" || item.status === "review" || item.status === "generating" || item.status === "done") &&
+          item.generatedJobIds.length > 0
+      );
+
+      const imageItems = completedItems.filter((i) => i.type === "image");
+      const voiceItems = completedItems.filter((i) => i.type === "voice");
+
+      if (imageItems.length === 0) {
+        return res.status(400).json({ error: "No completed image items found to compose" });
+      }
+
+      // Cluster images by overlapping tags (greedy grouping)
+      const SLIDES_PER_GROUP = 4; // target 3-5 per group
+      const groups: Array<{ items: typeof imageItems; tags: string[] }> = [];
+
+      const ungrouped = [...imageItems];
+      while (ungrouped.length > 0) {
+        const anchor = ungrouped.shift()!;
+        const anchorTags = anchor.tags ?? [];
+        const group = [anchor];
+
+        // Find items with overlapping tags
+        for (let i = ungrouped.length - 1; i >= 0 && group.length < SLIDES_PER_GROUP; i--) {
+          const candidate = ungrouped[i];
+          const candidateTags = candidate.tags ?? [];
+          const overlap = anchorTags.some((t) => candidateTags.includes(t)) ||
+            anchor.purpose === candidate.purpose;
+          if (overlap) {
+            group.push(candidate);
+            ungrouped.splice(i, 1);
+          }
+        }
+
+        // If group is too small, absorb remaining ungrouped until target size
+        while (group.length < 3 && ungrouped.length > 0) {
+          group.push(ungrouped.shift()!);
+        }
+
+        const groupTags = Array.from(new Set(group.flatMap((i) => i.tags ?? [])));
+        groups.push({ items: group, tags: groupTags });
+      }
+
+      // Load templates to pick best match per group
+      const allTemplates = await loadTemplates();
+      const facelessTemplate = await getTemplate("faceless-explainer") ?? allTemplates[0];
+
+      // Build composition suggestions
+      const compositions = await Promise.all(
+        groups.map(async (group, idx) => {
+          const slideJobIds = group.items.flatMap((i) => i.generatedJobIds);
+          const groupPurpose = group.items[0].purpose || group.items[0].label;
+
+          // Match voice item: same tags or same purpose
+          const matchedVoice = voiceItems.find((v) => {
+            const vTags = v.tags ?? [];
+            return group.tags.some((t) => vTags.includes(t)) || v.purpose === groupPurpose;
+          });
+          const voiceJobId = matchedVoice?.generatedJobIds[0];
+
+          // Pick template: listicle for numbered content, faceless-explainer otherwise
+          const isListicle = group.tags.some((t) =>
+            ["tips", "steps", "listicle", "numbered", "how-to"].includes(t)
+          );
+          const templateId = isListicle ? "listicle" : "faceless-explainer";
+          const template = await getTemplate(templateId) ?? facelessTemplate;
+
+          // Caption text from matched voice item or combined labels
+          const captionText = matchedVoice?.promptTemplate ||
+            group.items.map((i) => i.label).join(". ");
+
+          return {
+            title: groupPurpose
+              ? `${groupPurpose} (Group ${idx + 1})`
+              : `Composition ${idx + 1}`,
+            template,
+            slideJobIds,
+            voiceJobId,
+            captionText,
+            slideCount: group.items.length,
+          };
+        })
+      );
+
+      res.json({ compositions });
+    } catch (err: any) {
+      console.error("[L3] auto-compose error:", err);
+      res.status(500).json({ error: err.message || "Auto-compose failed" });
+    }
+  });
+
   app.use("/api", api);
+
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

@@ -23,6 +23,7 @@ export default function SocialMedia() {
   const [images, setImages] = useState<string[]>([]);
   const [model, setModel] = useState("gemini-3.1-flash-image-preview");
   const [size, setSize] = useState("1K");
+  const [aspectRatio, setAspectRatio] = useState("");
   const [count, setCount] = useState(1);
   const [preset, setPreset] = useState("custom");
 
@@ -31,6 +32,7 @@ export default function SocialMedia() {
     if (!p) return;
     setPreset(value);
     setSize(p.size);
+    setAspectRatio(p.aspectRatio);
   }
 
   const generateImages = async () => {
@@ -50,6 +52,7 @@ export default function SocialMedia() {
             prompt: fullPrompt,
             model,
             size,
+            aspectRatio: aspectRatio || undefined,
             brandContext: brand,
             apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY,
           }),

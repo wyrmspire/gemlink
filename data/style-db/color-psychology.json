@@ -1,0 +1,152 @@
+{
+  "colors": {
+    "blue": {
+      "evokes": "trust, stability, professionalism, calm",
+      "best_for": ["B2B", "finance", "healthcare", "technology", "corporate"],
+      "avoid_for": ["food", "energy brands", "children's products"],
+      "shades": {
+        "navy": "authority, premium, institutional",
+        "royal": "confidence, leadership, ambition",
+        "sky": "openness, freedom, tranquility",
+        "teal": "sophistication, balance, creativity"
+      }
+    },
+    "red": {
+      "evokes": "urgency, passion, energy, excitement",
+      "best_for": ["food", "entertainment", "sales/clearance", "sports"],
+      "avoid_for": ["medical", "finance", "wellness", "luxury"],
+      "shades": {
+        "crimson": "power, intensity, premium",
+        "coral": "warmth, approachability, youthful energy",
+        "burgundy": "sophistication, maturity, refined luxury",
+        "scarlet": "boldness, confidence, action"
+      }
+    },
+    "green": {
+      "evokes": "growth, health, nature, sustainability, prosperity",
+      "best_for": ["wellness", "organic/natural", "finance", "sustainability", "health tech"],
+      "avoid_for": ["luxury fashion", "entertainment", "high-energy brands"],
+      "shades": {
+        "emerald": "luxury, growth, ambition",
+        "sage": "calm, natural, wellness",
+        "lime": "energy, freshness, youth",
+        "forest": "stability, maturity, prestige"
+      }
+    },
+    "orange": {
+      "evokes": "energy, creativity, warmth, enthusiasm, friendliness",
+      "best_for": ["startups", "youth audiences", "food", "creative agencies", "SaaS"],
+      "avoid_for": ["luxury", "medical", "conservative finance"],
+      "shades": {
+        "tangerine": "playfulness, energy, vibrancy",
+        "peach": "softness, approachability, warmth",
+        "amber": "premium warmth, autumn, coziness",
+        "burnt_orange": "earthiness, authenticity, vintage"
+      }
+    },
+    "purple": {
+      "evokes": "creativity, luxury, wisdom, spirituality, innovation",
+      "best_for": ["beauty", "luxury", "creative/arts", "spiritual/wellness", "tech innovation"],
+      "avoid_for": ["agriculture", "construction", "budget brands"],
+      "shades": {
+        "violet": "imagination, dreaminess, futuristic",
+        "lavender": "calm, feminine, gentle luxury",
+        "plum": "depth, sophistication, royalty",
+        "indigo": "intuition, depth, mystery"
+      }
+    },
+    "yellow": {
+      "evokes": "optimism, clarity, warmth, happiness, attention",
+      "best_for": ["children", "food", "affordable/value brands", "education"],
+      "avoid_for": ["luxury", "serious B2B", "medical"],
+      "shades": {
+        "golden": "premium, success, achievement",
+        "lemon": "freshness, energy, cleanliness",
+        "mustard": "vintage, warmth, earthiness",
+        "cream": "softness, elegance, understated"
+      }
+    },
+    "black": {
+      "evokes": "luxury, power, exclusivity, sophistication, elegance",
+      "best_for": ["premium brands", "fashion", "technology", "automotive"],
+      "avoid_for": ["children", "wellness", "casual dining"],
+      "shades": {
+        "jet": "absolute luxury, formal, powerful",
+        "charcoal": "modern, accessible premium, tech",
+        "onyx": "mystery, depth, exclusivity",
+        "ink": "editorial, literary, intellectual"
+      }
+    },
+    "white": {
+      "evokes": "purity, simplicity, cleanliness, space, minimalism",
+      "best_for": ["healthcare", "tech", "minimalist brands", "skincare"],
+      "avoid_for": ["energy brands", "nightlife", "heavy industry"],
+      "shades": {
+        "pure_white": "clinical, clean, stark",
+        "off_white": "warm, natural, approachable",
+        "ivory": "elegant, classic, luxurious",
+        "snow": "fresh, modern, digital"
+      }
+    },
+    "pink": {
+      "evokes": "playfulness, romance, femininity, warmth, compassion",
+      "best_for": ["beauty", "fashion", "dating", "wellness", "Gen Z brands"],
+      "avoid_for": ["heavy industry", "B2B enterprise", "finance"],
+      "shades": {
+        "hot_pink": "boldness, energy, statement",
+        "blush": "softness, romance, luxury",
+        "magenta": "innovation, boldness, tech-forward",
+        "rose": "elegance, maturity, refined warmth"
+      }
+    }
+  },
+  "composition_psychology": {
+    "rule_of_thirds": {
+      "effect": "natural, professional, balanced",
+      "when": "most general-purpose imagery, product shots, portraits",
+      "prompt_hint": "subject positioned off-center using rule of thirds"
+    },
+    "centered_symmetry": {
+      "effect": "authority, power, formal, grand",
+      "when": "luxury brands, institutional branding, architecture, hero shots",
+      "prompt_hint": "perfectly centered, symmetrical composition, balanced framing"
+    },
+    "diagonal_lines": {
+      "effect": "dynamic, energetic, movement, tension",
+      "when": "sports, startups, action brands, technology launch",
+      "prompt_hint": "dynamic diagonal composition, strong leading lines, sense of movement"
+    },
+    "negative_space": {
+      "effect": "premium, breathing room, clarity, focus",
+      "when": "minimalist brands, text-overlay-needed, hero banners, pitch decks",
+      "prompt_hint": "generous negative space, clean background, room for text overlay"
+    },
+    "layered_depth": {
+      "effect": "immersion, richness, storytelling",
+      "when": "editorial, campaign imagery, lifestyle brands",
+      "prompt_hint": "layered depth with foreground, midground, and background elements"
+    },
+    "close_crop": {
+      "effect": "intimacy, detail, impact, emotional connection",
+      "when": "product detail shots, food, beauty, fashion",
+      "prompt_hint": "extreme close-up, tight crop, sharp detail, macro perspective"
+    }
+  },
+  "cognitive_load": {
+    "low_entropy": {
+      "when": "hero images, pitch decks, website backgrounds, thumbnails that need text space",
+      "style": "clean, minimal elements, large open areas, monochromatic or limited palette",
+      "prompt_hint": "clean minimalist composition, few elements, muted palette, professional"
+    },
+    "medium_entropy": {
+      "when": "blog headers, social posts, product showcases, feature highlights",
+      "style": "balanced composition, moderate detail, clear focal point with context",
+      "prompt_hint": "balanced composition with clear focal point, moderate detail level"
+    },
+    "high_entropy": {
+      "when": "Instagram feed (scroll-stopper), event posters, youth/Gen Z content",
+      "style": "detailed, high contrast, busy-but-purposeful, saturated, pattern-rich",
+      "prompt_hint": "high-contrast, visually rich, attention-grabbing, bold colors, detailed"
+    }
+  }
+}

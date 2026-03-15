@@ -1,0 +1,16 @@
+{
+  "id": "faceless-explainer",
+  "name": "Faceless Explainer",
+  "description": "5 images with voiceover and word-level captions. Perfect for educational and explainer content on Reels/TikTok.",
+  "aspectRatio": "9:16",
+  "slides": [
+    { "slot": "image", "duration": 3, "transition": "fadeblack", "kenBurns": true },
+    { "slot": "image", "duration": 3, "transition": "slideright", "kenBurns": true },
+    { "slot": "image", "duration": 3, "transition": "dissolve", "kenBurns": true },
+    { "slot": "image", "duration": 3, "transition": "smoothleft", "kenBurns": true },
+    { "slot": "image", "duration": 3, "transition": "fadeblack", "kenBurns": true }
+  ],
+  "audio": { "type": "voiceover", "required": true },
+  "captions": { "style": "word-highlight", "timing": "word", "position": "bottom" },
+  "tags": ["vertical", "reels", "tiktok", "explainer", "educational", "faceless"]
+}

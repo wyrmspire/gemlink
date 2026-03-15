@@ -1,0 +1,132 @@
+{
+  "archetypes": {
+    "enterprise_decision_maker": {
+      "label": "Enterprise Decision Maker",
+      "description": "C-suite and VP-level buyers at large organizations. Values credibility over creativity. Data > emotion. Needs to justify purchase to a committee.",
+      "visual_style": ["corporate minimalism", "data visualization", "clean photography", "infographic-heavy"],
+      "color_tendency": ["navy", "slate", "white", "subtle gold accent", "charcoal"],
+      "typography": "serif or geometric sans-serif, large, authoritative, high contrast",
+      "composition": "negative_space, centered_symmetry",
+      "avoid": ["cartoon", "stock-photo-generic", "neon", "hand-drawn", "memes", "overly casual"],
+      "platforms": {
+        "primary": ["linkedin", "website", "pitch-deck", "whitepaper"],
+        "secondary": ["twitter"],
+        "avoid": ["tiktok", "snapchat"]
+      },
+      "psychology_note": "Values credibility over creativity. Data > emotion. Needs to justify purchase to a committee. ROI and risk mitigation are key drivers.",
+      "prompt_modifiers": ["professional studio lighting", "clean corporate environment", "data-driven visuals", "authoritative composition"]
+    },
+    "gen_z_consumer": {
+      "label": "Gen Z Consumer",
+      "description": "Digital natives (born 1997-2012). Detects and rejects inauthenticity instantly. Prefers raw over polished. Humor > authority.",
+      "visual_style": ["neubrutalism", "y2k aesthetic", "raw/authentic", "meme-adjacent", "chaotic energy"],
+      "color_tendency": ["high contrast", "unexpected combos", "lime/violet/orange", "neon accents", "black + bright"],
+      "typography": "variable weight, mixed case, sometimes intentionally 'ugly', expressive, deconstructed",
+      "composition": "high_entropy, diagonal_lines",
+      "avoid": ["corporate", "overly polished", "stock photography", "traditional layouts", "blue-toned corporate"],
+      "platforms": {
+        "primary": ["tiktok", "instagram-reels", "instagram-stories"],
+        "secondary": ["youtube-shorts", "snapchat", "twitter"],
+        "avoid": ["linkedin", "traditional-media"]
+      },
+      "psychology_note": "Detects and rejects inauthenticity instantly. Prefers raw over polished. Humor > authority. Values self-expression and social causes.",
+      "prompt_modifiers": ["raw, unfiltered aesthetic", "bold distorted typography", "high contrast neon colors", "intentionally imperfect"]
+    },
+    "smb_founder": {
+      "label": "SMB Founder / Startup CEO",
+      "description": "Time-poor, ROI-focused. Needs to look professional without being intimidating. Authenticity matters.",
+      "visual_style": ["clean modern", "approachable professional", "warm tech", "friendly minimalism"],
+      "color_tendency": ["warm neutrals", "green/teal accents", "avoiding corporate blue", "earth tones with pops"],
+      "typography": "friendly sans-serif (Inter, Outfit, Plus Jakarta Sans), medium weight, approachable",
+      "composition": "rule_of_thirds, negative_space",
+      "avoid": ["enterprise-heavy", "overly playful", "generic startup gradient", "corporate stock"],
+      "platforms": {
+        "primary": ["website", "linkedin", "twitter", "instagram"],
+        "secondary": ["youtube", "email-newsletter"],
+        "avoid": []
+      },
+      "psychology_note": "Time-poor, ROI-focused. Needs to look professional without being intimidating. Authenticity matters. Wears multiple hats.",
+      "prompt_modifiers": ["warm natural lighting", "authentic workspace setting", "approachable professional atmosphere", "human-centric"]
+    },
+    "creative_professional": {
+      "label": "Creative Professional / Designer",
+      "description": "Discerning eye, values craft and originality. Expects design excellence. Responds to innovative aesthetics.",
+      "visual_style": ["editorial", "avant-garde", "design-forward", "typographic excellence"],
+      "color_tendency": ["curated palettes", "analogous schemes", "unexpected monochrome", "architectural neutrals"],
+      "typography": "expressive, considered, often a statement itself, custom or premium typefaces",
+      "composition": "layered_depth, diagonal_lines, close_crop",
+      "avoid": ["generic templates", "obvious stock", "default gradients", "over-filtered Instagram look"],
+      "platforms": {
+        "primary": ["instagram", "behance", "dribbble", "website"],
+        "secondary": ["twitter", "pinterest", "linkedin"],
+        "avoid": []
+      },
+      "psychology_note": "Values craft and originality. Expects design excellence. Will immediately notice poor typography or lazy color choices. Design IS the content.",
+      "prompt_modifiers": ["editorial composition", "exceptional attention to detail", "refined color grading", "gallery-quality"]
+    },
+    "health_wellness_consumer": {
+      "label": "Health & Wellness Consumer",
+      "description": "Seeks balance, authenticity, and natural living. Values holistic wellness and mindful consumption.",
+      "visual_style": ["soft organic", "natural textures", "serene landscapes", "lifestyle wellness"],
+      "color_tendency": ["sage green", "warm tan", "soft white", "muted earth tones", "light coral"],
+      "typography": "light weight sans-serif, generous spacing, clean, breathable",
+      "composition": "negative_space, rule_of_thirds",
+      "avoid": ["harsh neon", "corporate", "aggressive", "dark heavy themes", "tech-heavy"],
+      "platforms": {
+        "primary": ["instagram", "pinterest", "youtube"],
+        "secondary": ["tiktok", "email-newsletter"],
+        "avoid": ["twitter"]
+      },
+      "psychology_note": "Seeks authenticity and natural connection. Mistrusts overly commercial messaging. Values community, mindfulness, and holistic well-being.",
+      "prompt_modifiers": ["soft natural lighting", "organic textures", "serene atmosphere", "warm earth tones", "mindful composition"]
+    },
+    "luxury_consumer": {
+      "label": "Luxury Consumer",
+      "description": "Expects exclusivity and premium quality. Responds to aspirational imagery and understated elegance.",
+      "visual_style": ["editorial luxury", "dark sophistication", "architectural minimalism", "timeless elegance"],
+      "color_tendency": ["black", "gold", "cream", "deep emerald", "burgundy", "monochrome"],
+      "typography": "serif or thin sans-serif, elegant spacing, refined, often all-caps with wide tracking",
+      "composition": "centered_symmetry, negative_space, close_crop",
+      "avoid": ["loud colors", "busy layouts", "clipart", "generic stock", "discount aesthetics"],
+      "platforms": {
+        "primary": ["instagram", "website", "print"],
+        "secondary": ["youtube", "pinterest"],
+        "avoid": ["tiktok", "twitter"]
+      },
+      "psychology_note": "Scarcity and exclusivity drive desire. Less is more. Premium positioning requires restraint. Aspiration > information.",
+      "prompt_modifiers": ["studio lighting with dramatic shadows", "premium materials and textures", "understated luxury", "gallery-worthy composition"]
+    },
+    "developer_technical": {
+      "label": "Developer / Technical Audience",
+      "description": "Analytically minded, skeptical of marketing speak. Values substance, clear documentation, and technical accuracy.",
+      "visual_style": ["dark mode native", "code aesthetics", "technical diagrams", "terminal-inspired"],
+      "color_tendency": ["dark backgrounds", "syntax-highlight accents (cyan, green, orange)", "monospace vibes"],
+      "typography": "monospace for code, clean sans-serif (JetBrains Mono, SF Mono, Inter) for UI, clear hierarchy",
+      "composition": "negative_space, layered_depth",
+      "avoid": ["corporate stock", "marketing fluff imagery", "overly emotional", "clip art"],
+      "platforms": {
+        "primary": ["github", "twitter", "dev-blog", "youtube"],
+        "secondary": ["linkedin", "reddit", "hackernews"],
+        "avoid": ["instagram-stories", "tiktok"]
+      },
+      "psychology_note": "Deeply skeptical of marketing. Will investigate claims. Values clear documentation and honest communication. Show, don't tell.",
+      "prompt_modifiers": ["dark mode interface", "clean technical aesthetic", "code-inspired visual elements", "high contrast text"]
+    },
+    "parent_family": {
+      "label": "Parent / Family Decision Maker",
+      "description": "Safety-conscious, value-driven, time-poor. Looking for trustworthy, wholesome brands that simplify family life.",
+      "visual_style": ["bright & cheerful", "lifestyle photography", "wholesome warmth", "natural family moments"],
+      "color_tendency": ["warm pastels", "sky blue", "sunshine yellow", "soft greens", "cheerful but not childish"],
+      "typography": "rounded friendly sans-serif, clear readable sizes, warm and approachable",
+      "composition": "rule_of_thirds, layered_depth",
+      "avoid": ["dark themes", "edgy aesthetics", "overly corporate", "nightlife imagery"],
+      "platforms": {
+        "primary": ["instagram", "facebook", "pinterest", "youtube"],
+        "secondary": ["tiktok", "email-newsletter"],
+        "avoid": ["twitter-heavy", "reddit"]
+      },
+      "psychology_note": "Safety and trust are paramount. Testimonials and social proof from other parents carry enormous weight. Convenience is a major selling point.",
+      "prompt_modifiers": ["warm inviting lighting", "natural family setting", "genuine smiles and connection", "safe, wholesome atmosphere"]
+    }
+  }
+}

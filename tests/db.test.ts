@@ -92,6 +92,30 @@ const SCHEMA = /* sql */ `
   );
 
   CREATE INDEX IF NOT EXISTS idx_media_plans_project ON media_plans(projectId);
+
+  -- ── Strategy artifacts ──────────────────────────────────────────────────────
+  -- Persistent strategy intelligence: boardroom insights, research findings,
+  -- style directions, etc. Pinned artifacts auto-inject into generation context.
+  CREATE TABLE IF NOT EXISTS strategy_artifacts (
+    id         TEXT    PRIMARY KEY,
+    projectId  TEXT    REFERENCES projects(id) ON DELETE CASCADE,
+    type       TEXT    NOT NULL CHECK(type IN (
+      'boardroom_insight','research_finding','strategy_brief',
+      'style_direction','scoring_analysis','custom'
+    )),
+    title      TEXT    NOT NULL,
+    summary    TEXT    NOT NULL,
+    content    TEXT    NOT NULL,
+    tags       TEXT    NOT NULL DEFAULT '[]',
+    source     TEXT    NOT NULL DEFAULT '{}',
+    pinned     INTEGER NOT NULL DEFAULT 0,
+    createdAt  TEXT    NOT NULL,
+    updatedAt  TEXT    NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_strategy_artifacts_project ON strategy_artifacts(projectId);
+  CREATE INDEX IF NOT EXISTS idx_strategy_artifacts_type    ON strategy_artifacts(type);
+  CREATE INDEX IF NOT EXISTS idx_strategy_artifacts_pinned  ON strategy_artifacts(projectId, pinned);
 `;
 
 // ---------------------------------------------------------------------------
@@ -457,5 +481,176 @@ describe("SQLite schema — media_plans table", () => {
     const parsed = JSON.parse(plan.items);
     expect(parsed).toHaveLength(1);
     expect(parsed[0].prompt).toBe("Updated hero");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sprint 3 — W3: strategy_artifacts table
+// ---------------------------------------------------------------------------
+
+const SA_PROJECT_ID = "proj_sa_test";
+const ARTIFACT_ID_1 = "art_001";
+const ARTIFACT_ID_2 = "art_002";
+const ARTIFACT_ID_3 = "art_003";
+
+function seedArtifactsProject() {
+  db.prepare(`
+    INSERT OR IGNORE INTO projects
+      (id, name, brandName, brandDescription, targetAudience, brandVoice, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(SA_PROJECT_ID, "SA Project", "TestBrand", "Desc", "Audience", "Voice", NOW, NOW);
+}
+
+function seedArtifact(opts: {
+  id: string;
+  type?: string;
+  title?: string;
+  summary?: string;
+  content?: string;
+  pinned?: number;
+  tags?: string[];
+  projectId?: string;
+}) {
+  db.prepare(`
+    INSERT OR REPLACE INTO strategy_artifacts
+      (id, projectId, type, title, summary, content, tags, source, pinned, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?)
+  `).run(
+    opts.id,
+    opts.projectId ?? SA_PROJECT_ID,
+    opts.type ?? "research_finding",
+    opts.title ?? "Test Artifact",
+    opts.summary ?? "A brief summary",
+    opts.content ?? "Full content of the strategy artifact",
+    JSON.stringify(opts.tags ?? ["tag_a", "tag_b"]),
+    opts.pinned ?? 0,
+    NOW,
+    NOW,
+  );
+}
+
+describe("SQLite schema — strategy_artifacts table", () => {
+  beforeAll(() => {
+    seedArtifactsProject();
+  });
+
+  it("inserts an artifact and reads back all fields correctly", () => {
+    seedArtifact({ id: ARTIFACT_ID_1, type: "boardroom_insight", title: "Key Insight", pinned: 1, tags: ["brand", "strategy"] });
+    const row = db.prepare("SELECT * FROM strategy_artifacts WHERE id = ?").get(ARTIFACT_ID_1) as any;
+
+    expect(row).not.toBeNull();
+    expect(row.id).toBe(ARTIFACT_ID_1);
+    expect(row.projectId).toBe(SA_PROJECT_ID);
+    expect(row.type).toBe("boardroom_insight");
+    expect(row.title).toBe("Key Insight");
+    expect(row.summary).toBe("A brief summary");
+    expect(row.content).toBe("Full content of the strategy artifact");
+    expect(JSON.parse(row.tags)).toEqual(["brand", "strategy"]);
+    expect(row.pinned).toBe(1);
+    expect(typeof row.createdAt).toBe("string");
+    expect(typeof row.updatedAt).toBe("string");
+  });
+
+  it("filters artifacts by projectId", () => {
+    // Seed a second artifact for a different project
+    const OTHER_PROJ = "proj_sa_other";
+    db.prepare(`
+      INSERT OR IGNORE INTO projects (id, name, brandName, brandDescription, targetAudience, brandVoice, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(OTHER_PROJ, "Other SA Project", "OtherBrand", "Desc", "Audience", "Voice", NOW, NOW);
+    seedArtifact({ id: "art_other_001", projectId: OTHER_PROJ, title: "Other Project Artifact" });
+    seedArtifact({ id: ARTIFACT_ID_2, title: "Project-Scoped Artifact" });
+
+    const rows = db
+      .prepare("SELECT * FROM strategy_artifacts WHERE projectId = ? ORDER BY createdAt DESC")
+      .all(SA_PROJECT_ID) as any[];
+    expect(rows.length).toBeGreaterThanOrEqual(2); // ARTIFACT_ID_1 + ARTIFACT_ID_2
+    for (const row of rows) {
+      expect(row.projectId).toBe(SA_PROJECT_ID);
+    }
+  });
+
+  it("filters artifacts by type", () => {
+    seedArtifact({ id: ARTIFACT_ID_3, type: "style_direction", title: "Dark Mode Direction" });
+
+    const boardroomRows = db
+      .prepare("SELECT * FROM strategy_artifacts WHERE projectId = ? AND type = ?")
+      .all(SA_PROJECT_ID, "boardroom_insight") as any[];
+    const styleRows = db
+      .prepare("SELECT * FROM strategy_artifacts WHERE projectId = ? AND type = ?")
+      .all(SA_PROJECT_ID, "style_direction") as any[];
+
+    expect(boardroomRows.length).toBeGreaterThanOrEqual(1);
+    expect(styleRows.length).toBeGreaterThanOrEqual(1);
+    for (const r of boardroomRows) expect(r.type).toBe("boardroom_insight");
+    for (const r of styleRows) expect(r.type).toBe("style_direction");
+  });
+
+  it("filters by pinned=1 returns only pinned artifacts", () => {
+    // ARTIFACT_ID_1 is pinned=1; ARTIFACT_ID_2 and ARTIFACT_ID_3 are pinned=0
+    const pinnedRows = db
+      .prepare("SELECT * FROM strategy_artifacts WHERE projectId = ? AND pinned = 1")
+      .all(SA_PROJECT_ID) as any[];
+    expect(pinnedRows.length).toBeGreaterThanOrEqual(1);
+    for (const r of pinnedRows) {
+      expect(r.pinned).toBe(1);
+    }
+    // Confirm unread artifacts don't appear
+    const unpinnedIds = pinnedRows.map((r: any) => r.id);
+    expect(unpinnedIds).toContain(ARTIFACT_ID_1);
+    expect(unpinnedIds).not.toContain(ARTIFACT_ID_2);
+  });
+
+  it("updates pin status (togglePin)", () => {
+    // Verify ARTIFACT_ID_2 starts unpinned
+    const before = db.prepare("SELECT pinned FROM strategy_artifacts WHERE id = ?").get(ARTIFACT_ID_2) as any;
+    expect(before.pinned).toBe(0);
+
+    // Pin it
+    db.prepare("UPDATE strategy_artifacts SET pinned = 1, updatedAt = ? WHERE id = ?")
+      .run(new Date().toISOString(), ARTIFACT_ID_2);
+    const after = db.prepare("SELECT pinned FROM strategy_artifacts WHERE id = ?").get(ARTIFACT_ID_2) as any;
+    expect(after.pinned).toBe(1);
+
+    // Unpin it again
+    db.prepare("UPDATE strategy_artifacts SET pinned = 0, updatedAt = ? WHERE id = ?")
+      .run(new Date().toISOString(), ARTIFACT_ID_2);
+    const final = db.prepare("SELECT pinned FROM strategy_artifacts WHERE id = ?").get(ARTIFACT_ID_2) as any;
+    expect(final.pinned).toBe(0);
+  });
+
+  it("CASCADE delete when project is deleted removes all its artifacts", () => {
+    const CASCADE_PROJ = "proj_sa_cascade";
+    db.prepare(`
+      INSERT INTO projects (id, name, brandName, brandDescription, targetAudience, brandVoice, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(CASCADE_PROJ, "Cascade SA Project", "Brand", "Desc", "Audience", "Voice", NOW, NOW);
+
+    const CASCADE_ART = "art_cascade_001";
+    db.prepare(`
+      INSERT INTO strategy_artifacts
+        (id, projectId, type, title, summary, content, tags, source, pinned, createdAt, updatedAt)
+      VALUES (?, ?, 'custom', 'Cascade Artifact', 'Summary', 'Content', '[]', '{}', 0, ?, ?)
+    `).run(CASCADE_ART, CASCADE_PROJ, NOW, NOW);
+
+    // Confirm inserted
+    const pre = db.prepare("SELECT * FROM strategy_artifacts WHERE id = ?").get(CASCADE_ART);
+    expect(pre).toBeDefined();
+
+    // Delete the project — CASCADE should remove the artifact
+    db.prepare("DELETE FROM projects WHERE id = ?").run(CASCADE_PROJ);
+
+    const post = db.prepare("SELECT * FROM strategy_artifacts WHERE id = ?").get(CASCADE_ART);
+    expect(post).toBeUndefined();
+  });
+
+  it("rejects an invalid artifact type (CHECK constraint)", () => {
+    expect(() => {
+      db.prepare(`
+        INSERT INTO strategy_artifacts
+          (id, projectId, type, title, summary, content, tags, source, pinned, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, '[]', '{}', 0, ?, ?)
+      `).run("art_bad_type", SA_PROJECT_ID, "invalid_type", "Bad", "Bad", "Bad", NOW, NOW);
+    }).toThrow();
   });
 });

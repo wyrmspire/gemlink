@@ -14,8 +14,14 @@ import {
   Check,
   Star,
   SortAsc,
+  BarChart2,
+  Film,
+  Layers,
+  ExternalLink,
 } from "lucide-react";
 import { useToast } from "../context/ToastContext";
+import { useProject } from "../context/ProjectContext";
+import { useNavigate } from "react-router-dom";
 
 interface MediaScore {
   brandAlignment: number;
@@ -30,7 +36,7 @@ interface MediaScore {
 
 interface Job {
   id: string;
-  type: "image" | "video" | "voice";
+  type: "image" | "video" | "voice" | "compose";
   prompt?: string;
   text?: string;
   createdAt: string;
@@ -41,18 +47,35 @@ interface Job {
   logs?: string[];
   tags?: string[];
   score?: MediaScore;
+  // Compose-specific fields (from compose job manifest)
+  slideCount?: number;
+  templateName?: string;
+  sourceDescription?: string;
+  composeConfig?: Record<string, unknown>;
+  // compose-specific metadata
+  duration?: number;
+  slideCount?: number;
+  templateName?: string;
 }
 
 type SortMode = "newest" | "highest";
+type FilterType = "all" | "image" | "video" | "voice" | "compose";
+type TypeFilter = "all" | "image" | "video" | "compose";
 
 export default function Library() {
   const { toast } = useToast();
+  const { activeProject } = useProject();
+  const navigate = useNavigate();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("newest");
+  const [filterType, setFilterType] = useState<FilterType>("all");
+  const [savingInsights, setSavingInsights] = useState(false);
+  // W5 (L3): type filter
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
 
   const fetchHistory = useCallback(async (silent = false) => {
     if (silent) {
@@ -87,6 +110,10 @@ export default function Library() {
   // Client-side search filter + sort
   const filtered = useMemo(() => {
     let result = jobs;
+    // Type filter
+    if (filterType !== "all") {
+      result = result.filter((j) => j.type === filterType);
+    }
     if (search.trim()) {
       const q = search.toLowerCase();
       result = result.filter((j) =>
@@ -107,14 +134,15 @@ export default function Library() {
       );
     }
     return result;
-  }, [jobs, search, sortMode]);
+  }, [jobs, search, sortMode, filterType]);
 
   const getIcon = (type: string) => {
     switch (type) {
-      case "image": return <ImageIcon className="w-5 h-5 text-indigo-400" />;
-      case "video": return <Video className="w-5 h-5 text-emerald-400" />;
-      case "voice": return <Mic className="w-5 h-5 text-amber-400" />;
-      default: return <Clock className="w-5 h-5 text-zinc-400" />;
+      case "image":   return <ImageIcon className="w-5 h-5 text-indigo-400" />;
+      case "video":   return <Video className="w-5 h-5 text-emerald-400" />;
+      case "voice":   return <Mic className="w-5 h-5 text-amber-400" />;
+      case "compose": return <Film className="w-5 h-5 text-violet-400" />;
+      default:        return <Clock className="w-5 h-5 text-zinc-400" />;
     }
   };
 
@@ -178,6 +206,30 @@ export default function Library() {
 
   const lastLog = (job: Job) => job.logs?.[job.logs.length - 1];
 
+  /** W4 (L6): Save scoring insights as a strategy artifact */
+  const handleSaveScoringInsights = async () => {
+    const projectId = activeProject?.id;
+    if (!projectId) {
+      toast("Select an active project first.", "warning");
+      return;
+    }
+    setSavingInsights(true);
+    try {
+      const res = await fetch("/api/media/scoring-insights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Scoring insights failed");
+      toast(`📊 Scoring insights saved as strategy artifact (${data.mediaAnalyzed} media analyzed)`, "success");
+    } catch (e: any) {
+      toast(e.message || "Failed to save scoring insights.", "error");
+    } finally {
+      setSavingInsights(false);
+    }
+  };
+
   /** Render a star-rating badge for the overall score */
   const scoreBadge = (score: MediaScore) => {
     const val = score.overall.toFixed(1);
@@ -228,9 +280,7 @@ export default function Library() {
           <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
           Refresh
         </button>
-      </div>
-
-      {/* Search + Sort toolbar */}
+      </d      {/* Search + Sort + Filter toolbar */}
       <div className="flex gap-3 mb-6 flex-wrap">
         <div className="relative flex-1 min-w-0">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
@@ -242,6 +292,31 @@ export default function Library() {
             placeholder="Search prompts or tags…"
             className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-11 pr-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
           />
+        </div>
+        {/* Type filter tabs */}
+        <div className="flex items-center gap-1 bg-zinc-950 border border-zinc-800 rounded-xl px-2 py-1.5 flex-wrap">
+          {([
+            { value: "all", label: "All" },
+            { value: "image", label: "Images" },
+            { value: "video", label: "Videos" },
+            { value: "voice", label: "Voice" },
+            { value: "compose", label: "Composed" },
+          ] as { value: FilterType; label: string }[]).map((tab) => (
+            <button
+              key={tab.value}
+              id={`filter-${tab.value}`}
+              onClick={() => setFilterType(tab.value)}
+              className={`text-xs px-2.5 py-1 rounded-lg transition-colors ${
+                filterType === tab.value
+                  ? tab.value === "compose"
+                    ? "bg-violet-600 text-white"
+                    : "bg-indigo-600 text-white"
+                  : "text-zinc-400 hover:text-white"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
         {/* Sort toggle */}
         <div className="flex items-center gap-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2">
@@ -270,6 +345,60 @@ export default function Library() {
             ★ Highest Rated
           </button>
         </div>
+        {/* W4 (L6): Save Scoring Insights button — only visible in Highest Rated mode */}
+        {sortMode === "highest" && (
+          <button
+            id="save-scoring-insights"
+            onClick={handleSaveScoringInsights}
+            disabled={savingInsights}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-600/15 hover:bg-amber-600/25 border border-amber-500/30 text-amber-300 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Analyze scoring trends and save as a strategy artifact"
+          >
+            {savingInsights ? (
+              <RefreshCw className="w-4 h-4 animate-spin" />
+            ) : (
+              <BarChart2 className="w-4 h-4" />
+            )}
+            📊 Save Scoring Insights
+          </button>
+        )}
+      </div>}
+      </div>
+
+      {/* W5 (L3): Type filter tabs — All | Images | Videos | Voice | Compose */}
+      <div id="library-type-filter" className="flex gap-1.5 mb-6 flex-wrap">
+        {([
+          { key: "all",     label: "All",     icon: null },
+          { key: "image",   label: "Images",  icon: <ImageIcon className="w-3.5 h-3.5" /> },
+          { key: "video",   label: "Videos",  icon: <Video className="w-3.5 h-3.5" /> },
+          { key: "voice",   label: "Voice",   icon: <Mic className="w-3.5 h-3.5" /> },
+          { key: "compose", label: "Compose", icon: <Film className="w-3.5 h-3.5" /> },
+        ] as { key: TypeFilter; label: string; icon: React.ReactNode }[]).map(({ key, label, icon }) => (
+          <button
+            key={key}
+            id={`filter-${key}`}
+            onClick={() => setTypeFilter(key)}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${
+              typeFilter === key
+                ? key === "compose"
+                  ? "bg-violet-600/20 border-violet-500/40 text-violet-300"
+                  : key === "image"
+                  ? "bg-indigo-600/20 border-indigo-500/40 text-indigo-300"
+                  : key === "video"
+                  ? "bg-emerald-600/20 border-emerald-500/40 text-emerald-300"
+                  : key === "voice"
+                  ? "bg-amber-600/20 border-amber-500/40 text-amber-300"
+                  : "bg-zinc-700/60 border-zinc-600 text-white"
+                : "bg-zinc-950 border-zinc-800 text-zinc-500 hover:text-zinc-200 hover:border-zinc-600"
+            }`}
+          >
+            {icon}
+            {label}
+            <span className="ml-0.5 text-zinc-600 text-[10px]">
+              ({key === "all" ? jobs.length : jobs.filter((j) => j.type === key).length})
+            </span>
+          </button>
+        ))}
       </div>
 
       {loading ? (
@@ -327,7 +456,7 @@ export default function Library() {
                 <div className="aspect-square bg-zinc-900 relative flex items-center justify-center overflow-hidden">
                   {job.type === "image" && job.outputs.length > 0 ? (
                     <img src={job.outputs[0]} alt={job.prompt} className="w-full h-full object-cover" />
-                  ) : job.type === "video" && job.status === "completed" && job.outputs.length > 0 ? (
+                  ) : (job.type === "video" || job.type === "compose") && job.status === "completed" && job.outputs.length > 0 ? (
                     <video src={job.outputs[0]} controls className="w-full h-full object-cover" />
                   ) : job.type === "voice" && job.status === "completed" && job.outputs.length > 0 ? (
                     <div className="w-full h-full flex flex-col items-center justify-center bg-zinc-900 p-4">
@@ -357,10 +486,26 @@ export default function Library() {
                   <div className="flex items-center gap-2">
                     {getIcon(job.type)}
                     <span className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
-                      {job.type}
+                      {job.type === "compose" ? "Composed Video" : job.type}
                     </span>
                     <span className="ml-auto">{getStatusPill(job)}</span>
                   </div>
+
+                  {/* Compose-specific badges */}
+                  {job.type === "compose" && (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {job.slideCount && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-violet-500/15 text-violet-300 border border-violet-500/20">
+                          <Layers className="w-2.5 h-2.5" />{job.slideCount} slides
+                        </span>
+                      )}
+                      {job.templateName && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-indigo-500/15 text-indigo-300 border border-indigo-500/20">
+                          {job.templateName}
+                        </span>
+                      )}
+                    </div>
+                  )}
 
                   <p className="text-sm text-zinc-300 line-clamp-3">
                     {job.prompt || job.text || "No description available"}
@@ -368,6 +513,11 @@ export default function Library() {
 
                   {/* Tags */}
                   {job.tags && job.tags.length > 0 && tagPills(job.tags)}
+
+                  {/* Compose source indicator */}
+                  {job.type === "compose" && job.sourceDescription && (
+                    <p className="text-xs text-zinc-500 italic">{job.sourceDescription}</p>
+                  )}
 
                   <div className="text-xs text-zinc-500 space-y-1 mt-auto pt-1">
                     <p>Created {new Date(job.createdAt).toLocaleString()}</p>
@@ -390,15 +540,32 @@ export default function Library() {
                       )}
                       Copy Prompt
                     </button>
-                    <button
-                      id={`regen-${job.id}`}
-                      onClick={() => handleRegenerate(job)}
-                      title="Regenerate"
-                      className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-zinc-700 text-xs text-zinc-400 hover:text-white hover:border-indigo-500 transition-colors"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                      Regenerate
-                    </button>
+                    {job.type === "compose" ? (
+                      <button
+                        id={`re-edit-${job.id}`}
+                        onClick={() => {
+                          if (job.composeConfig) {
+                            sessionStorage.setItem("compose-re-edit", JSON.stringify(job.composeConfig));
+                          }
+                          navigate("/compose");
+                        }}
+                        title="Re-edit composition"
+                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-violet-700/50 text-xs text-violet-400 hover:text-white hover:border-violet-500 transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        Re-edit
+                      </button>
+                    ) : (
+                      <button
+                        id={`regen-${job.id}`}
+                        onClick={() => handleRegenerate(job)}
+                        title="Regenerate"
+                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-zinc-700 text-xs text-zinc-400 hover:text-white hover:border-indigo-500 transition-colors"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        Regenerate
+                      </button>
+                    )}
                   </div>
                 </div>
               </motion.div>

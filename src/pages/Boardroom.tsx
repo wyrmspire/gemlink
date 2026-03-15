@@ -6,6 +6,8 @@ import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import {
   AlertCircle,
+  BookmarkPlus,
+  Brain,
   CheckCircle2,
   ClipboardList,
   ClipboardCheck,
@@ -138,6 +140,38 @@ interface MediaPlanItem {
   status: "draft";
   generatedJobIds: string[];
 }
+
+// Strategy Analysis session template (L2 — W1)
+const STRATEGY_ANALYSIS_PARTICIPANTS = [
+  {
+    id: "analyst",
+    name: "Analyst",
+    role: "Strategy Analyst",
+    brief:
+      "Break down the observed strategy into its core components: hooks used, content formats, posting frequency, distribution tactics, monetisation mechanics, and any platform-specific patterns. Be precise and systematic.",
+  },
+  {
+    id: "psychologist",
+    name: "Psychologist",
+    role: "Consumer Psychologist",
+    brief:
+      "Identify the psychological principles operating beneath the surface: social proof, scarcity, authority, reciprocity, pattern interrupts, dopamine-loop design. Explain WHY each technique works.",
+  },
+  {
+    id: "adapter",
+    name: "Adapter",
+    role: "Brand Strategist",
+    brief:
+      'Translate the analysed strategy into concrete, actionable briefs for THIS brand. Prefix key points with: "Here\'s how this would work for YOUR audience". Be specific: format, frequency, tone, channel, expected outcome.',
+  },
+  {
+    id: "devils-advocate",
+    name: "Devil's Advocate",
+    role: "Critical Challenger",
+    brief:
+      "Challenge every assumption. Does this work at scale or is it survivorship bias? Does it depend on a faceless channel vs. a brand with a face? Force the room to earn its conclusions.",
+  },
+];
 
 // Media Strategy session template — pre-fills the form with a media-focused topic.
 const MEDIA_STRATEGY_TEMPLATE = {
@@ -273,8 +307,17 @@ export default function Boardroom() {
   const [copiedBriefId, setCopiedBriefId] = useState<string | null>(null);
   // C2: Phase filter for the turn transcript replay — null means show all turns.
   const [phaseFilter, setPhaseFilter] = useState<BoardroomPhase | null>(null);
+  // L2 W3: Artifact saving state.
+  const [savingArtifact, setSavingArtifact] = useState(false);
+  const [savedArtifactId, setSavedArtifactId] = useState<string | null>(null);
+  // L2 W1: Track active template so specialized seats are used.
+  const [activeTemplate, setActiveTemplate] = useState<"default" | "media-strategy" | "strategy-analysis">("default");
 
-  const selectedSeats = useMemo(() => seatTemplates.slice(0, seatCount), [seatCount]);
+  const selectedSeats = useMemo(() => {
+    if (activeTemplate === "strategy-analysis") return STRATEGY_ANALYSIS_PARTICIPANTS;
+    if (activeTemplate === "media-strategy") return MEDIA_STRATEGY_TEMPLATE.participants as unknown as BoardroomParticipant[];
+    return seatTemplates.slice(0, seatCount);
+  }, [seatCount, activeTemplate]);
 
   const fetchSessions = useCallback(async (silent = false) => {
     if (silent) {
@@ -334,6 +377,33 @@ export default function Boardroom() {
     void fetchSessions();
   }, [fetchSessions]);
 
+  // W4: Pick up Boardroom Plan handoff from MediaPlan.tsx.\n  // If sessionStorage has a boardroom-plan-handoff key, pre-fill the form with the media strategy template.
+  useEffect(() => {
+    const raw = sessionStorage.getItem("boardroom-plan-handoff");
+    if (!raw) return;
+    sessionStorage.removeItem("boardroom-plan-handoff");
+    try {
+      const payload = JSON.parse(raw) as {
+        templateId: string;
+        topic: string;
+        context: string;
+        returnTo?: string;
+      };
+      if (payload.templateId === "media-strategy") {
+        setTopic(payload.topic ?? "");
+        setContext(payload.context ?? "");
+        setSeatCount(3);
+        setRounds(5);
+        setDepth("standard");
+        setActiveTemplate("media-strategy");
+        setLeftPanel("new");
+      }
+    } catch { /* ignore */ }
+  // Only run once on mount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) || sessions[0] || null,
     [sessions, activeSessionId],
@@ -343,6 +413,7 @@ export default function Boardroom() {
   useEffect(() => {
     setPhaseFilter(null);
     setMediaBriefs([]);
+    setSavedArtifactId(null);
   }, [activeSessionId]);
 
   // I2: Extract media briefs from finished session.
@@ -395,7 +466,53 @@ export default function Boardroom() {
     setSeatCount(3);
     setRounds(5);
     setDepth("standard");
+    setActiveTemplate("media-strategy");
   }, [brand.brandName]);
+
+  // L2 W1: Apply the Strategy Analysis template to the form.
+  const applyStrategyAnalysisTemplate = useCallback(() => {
+    setTopic("Analyse this observed strategy and extract the underlying principles, psychological drivers, and adaptation notes for our brand.");
+    setContext(
+      [
+        `Brand: ${brand.brandName || "[brand name]"}`,
+        `Description: ${brand.brandDescription || "[brand description]"}`,
+        `Audience: ${brand.targetAudience || "[target audience]"}`,
+        `Brand voice: ${brand.brandVoice || "[brand voice]"}`,
+        "",
+        "[PASTE YOUR OBSERVED STRATEGY DESCRIPTION BELOW]",
+      ].join("\n"),
+    );
+    setSeatCount(4);
+    setRounds(5);
+    setDepth("deep");
+    setActiveTemplate("strategy-analysis");
+  }, [brand.brandName, brand.brandDescription, brand.targetAudience, brand.brandVoice]);
+
+  // L2 W2/W3: Save completed session as a strategy artifact.
+  const handleSaveArtifact = useCallback(async () => {
+    if (!activeSession || activeSession.status !== "completed") return;
+    setSavingArtifact(true);
+    try {
+      const res = await fetch(`/api/boardroom/sessions/${activeSession.id}/save-artifact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey: import.meta.env.VITE_GEMINI_API_KEY || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to save artifact.");
+      }
+      const artifact = await res.json();
+      setSavedArtifactId(artifact.id);
+      toast(`Saved as artifact: "${artifact.title.slice(0, 60)}"`, "success");
+    } catch (err: any) {
+      toast(err.message || "Artifact save failed.", "error");
+    } finally {
+      setSavingArtifact(false);
+    }
+  }, [activeSession, toast]);
 
   // C2: Derive the visible turns based on the current phase filter.
   const visibleTurns = useMemo(() => {
@@ -456,6 +573,7 @@ export default function Boardroom() {
       setActiveSessionId(pending.id);
       setTopic("");
       setContext("");
+      setActiveTemplate("default");
       // After submitting, switch back to the new-session view so the user
       // sees the pending session detail on the right immediately.
       setLeftPanel("new");
@@ -534,6 +652,15 @@ export default function Boardroom() {
                 <h2 className="text-lg font-semibold text-white">Start a session</h2>
                 <p className="text-sm text-zinc-400 mt-1">The room now anchors on objective first, then moves through a visible protocol instead of free-form ping-pong.</p>
               </div>
+              <button
+                type="button"
+                onClick={applyStrategyAnalysisTemplate}
+                title="Load Strategy Analysis template"
+                className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-300 hover:bg-violet-500/20 transition-colors"
+              >
+                <Brain className="w-3.5 h-3.5" />
+                Strategy Analysis
+              </button>
               <button
                 type="button"
                 onClick={applyMediaStrategyTemplate}
@@ -784,12 +911,30 @@ export default function Boardroom() {
                     <h2 className="text-2xl font-semibold text-white">{activeSession.topic}</h2>
                     <p className="text-sm text-zinc-500 mt-2">Started {new Date(activeSession.createdAt).toLocaleString()}</p>
                   </div>
-                  <div className="text-xs text-zinc-400 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 space-y-1">
-                    <div>{activeSession.participants.length} seat{activeSession.participants.length === 1 ? "" : "s"}</div>
-                    <div>{activeSession.config?.protocol?.length || activeSession.config?.rounds || 1} stage{(activeSession.config?.protocol?.length || activeSession.config?.rounds || 1) === 1 ? "" : "s"}</div>
-                    <div>{activeSession.config?.depth || "standard"} depth</div>
+                  <div className="flex flex-col gap-2 items-end">
+                    <div className="text-xs text-zinc-400 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 space-y-1">
+                      <div>{activeSession.participants.length} seat{activeSession.participants.length === 1 ? "" : "s"}</div>
+                      <div>{activeSession.config?.protocol?.length || activeSession.config?.rounds || 1} stage{(activeSession.config?.protocol?.length || activeSession.config?.rounds || 1) === 1 ? "" : "s"}</div>
+                      <div>{activeSession.config?.depth || "standard"} depth</div>
+                    </div>
+                    {/* L2 W3: Save as Artifact button */}
+                    {activeSession.status === "completed" && (
+                      <button
+                        onClick={handleSaveArtifact}
+                        disabled={savingArtifact || Boolean(savedArtifactId)}
+                        className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium transition-colors ${
+                          savedArtifactId
+                            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 cursor-default"
+                            : "border-violet-500/30 bg-violet-600/20 text-violet-300 hover:bg-violet-600/30 hover:text-white disabled:opacity-50"
+                        }`}
+                      >
+                        {savingArtifact ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BookmarkPlus className="w-3.5 h-3.5" />}
+                        {savedArtifactId ? "Saved as Artifact ✓" : savingArtifact ? "Saving…" : "Save as Artifact 📌"}
+                      </button>
+                    )}
                   </div>
                 </div>
+
                 {activeSession.context ? (
                   <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-300 whitespace-pre-wrap">
                     {activeSession.context}
@@ -1009,7 +1154,62 @@ export default function Boardroom() {
                 </div>
               ) : null}
 
+              {/* L2 W3: Strategy Analysis inline panel — shown when session uses the 4 specialist seats */}
+              {activeSession.status === "completed" && activeSession.participants.some(
+                (p) => p.id === "analyst" || p.id === "psychologist" || p.id === "adapter" || p.id === "devils-advocate"
+              ) && activeSession.result && (() => {
+                // Build inline display from the final synthesis + next steps
+                // These serve as a preview; the full structured output is generated on save-artifact
+                const principles = activeSession.result.nextSteps.slice(0, 6);
+                const summaryTags = activeSession.result.summary
+                  .split(/[,\.!?]+/)
+                  .filter(s => s.trim().length > 3 && s.trim().length < 30)
+                  .slice(0, 8)
+                  .map(s => s.trim().replace(/^[^\w]+/, "").replace(/[^\w\s-]+/g, "").trim())
+                  .filter(Boolean);
+                return (
+                  <div className="rounded-2xl border border-violet-500/20 bg-violet-500/5 p-5 space-y-4">
+                    <div className="flex items-center gap-2">
+                      <Brain className="w-5 h-5 text-violet-400" />
+                      <h3 className="text-lg font-semibold text-white">Strategy Analysis Output</h3>
+                    </div>
+                    {principles.length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-medium text-violet-300 mb-2">Extracted Principles</h4>
+                        <ul className="space-y-2">
+                          {principles.map((p, i) => (
+                            <li key={i} className="flex items-start gap-2 text-sm text-zinc-300">
+                              <span className="mt-0.5 shrink-0 w-5 h-5 rounded-full bg-violet-500/20 text-violet-300 text-xs flex items-center justify-center font-medium">{i + 1}</span>
+                              {p}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    <div>
+                      <h4 className="text-sm font-medium text-violet-300 mb-2">Adaptation Notes</h4>
+                      <p className="text-sm text-zinc-300 leading-relaxed">
+                        {activeSession.result.summary.slice(0, 400)}{activeSession.result.summary.length > 400 ? "…" : ""}
+                      </p>
+                    </div>
+                    {summaryTags.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {summaryTags.map((tag) => (
+                          <span key={tag} className="rounded-full bg-violet-800/30 border border-violet-500/20 px-2.5 py-0.5 text-xs text-violet-300">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-xs text-zinc-500">
+                      💡 Click <strong className="text-violet-300">Save as Artifact 📌</strong> above to run a full structured extraction and persist this to your strategy library.
+                    </p>
+                  </div>
+                );
+              })()}
+
               {/* I2: Extract Media Briefs button + results (completed sessions only) */}
+
               {activeSession.status === "completed" && (
                 <div className="rounded-2xl border border-fuchsia-500/20 bg-fuchsia-500/5 p-5 space-y-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

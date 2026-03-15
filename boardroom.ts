@@ -1161,3 +1161,173 @@ ${promptContext}`;
     .filter((item) => item.label && item.promptTemplate);
 }
 
+
+// ── L2: Strategy Analysis Template ───────────────────────────────────────────
+
+/**
+ * Strategy Analysis session template (L2).
+ * 4 specialized seats designed to extract underlying principles from
+ * any observed strategy (competitor, viral content, growth hack, etc.)
+ * and adapt them to the user's brand context.
+ */
+export const STRATEGY_ANALYSIS_TEMPLATE = {
+  id: "strategy-analysis",
+  label: "Strategy Analysis",
+  description:
+    "Describe a strategy you observed (e.g. a TikTok approach, a competitor campaign, a viral format). The 4 seats will extract the underlying principles and adapt them to your brand.",
+  defaultTopic:
+    "Analyse this observed strategy and extract the underlying principles, psychological drivers, and adaptation notes.",
+  defaultContext: "",
+  participants: [
+    {
+      id: "analyst",
+      name: "Analyst",
+      role: "Strategy Analyst",
+      brief:
+        "Break down the observed strategy into its core components: hooks used, content formats, posting frequency, distribution tactics, monetisation mechanics, and any platform-specific patterns. Be precise and systematic — not impressionistic.",
+    },
+    {
+      id: "psychologist",
+      name: "Psychologist",
+      role: "Consumer Psychologist",
+      brief:
+        "Identify the psychological principles operating beneath the surface of this strategy. Look for: social proof mechanics, scarcity or urgency signals, authority positioning, reciprocity loops, pattern interrupts, identity signalling, in-group/out-group dynamics, and dopamine-loop design. Explain WHY each technique works neurologically and socially.",
+    },
+    {
+      id: "adapter",
+      name: "Adapter",
+      role: "Brand Strategist / Translator",
+      brief:
+        "Translate the analysed strategy into concrete, actionable briefs for THIS specific brand and audience. Prefix your key points with: \"Here's how this would work for YOUR audience\". Be specific: format, frequency, tone, channel, and expected outcome. Do not theorise — prescribe.",
+    },
+    {
+      id: "devils-advocate",
+      name: "Devil's Advocate",
+      role: "Critical Challenger",
+      brief:
+        "Challenge every assumption the other seats make. Ask: does this actually work at scale, or is it survivorship bias? Does it depend on a faceless channel vs. a brand with a face? What breaks down when the audience is different? What risks or downsides is the room underweighting? Force the room to earn its conclusions.",
+    },
+  ],
+} as const;
+
+/**
+ * StrategyAnalysisOutput — the structured JSON produced by extractStrategyAnalysisOutput().
+ * Stored as a Strategy Artifact's content field.
+ */
+export interface StrategyAnalysisOutput {
+  originalDescription: string;
+  extractedPrinciples: string[];
+  adaptationNotes: string;
+  suggestedMedia: Array<{
+    type: "image" | "video" | "voice";
+    label: string;
+    purpose: string;
+    promptIdea: string;
+  }>;
+  tags: string[];
+}
+
+/**
+ * Extract structured Strategy Analysis output from a completed session's convergence.
+ * Called by the save-artifact endpoint (W2).
+ */
+export async function extractStrategyAnalysisOutput(
+  sessionId: string,
+  apiKey?: string,
+): Promise<StrategyAnalysisOutput> {
+  const session = await readBoardroomSession(sessionId);
+
+  if (session.status !== "completed") {
+    throw new Error(
+      `Session ${sessionId} is not completed (status: ${session.status}).`,
+    );
+  }
+
+  const key = apiKey || process.env.GEMINI_API_KEY;
+  if (!key) {
+    throw new Error("GEMINI_API_KEY is missing.");
+  }
+
+  const convergenceText = [
+    ...session.turns.map((t) => `[${t.participantName}]: ${t.content}`),
+    session.result?.summary ? `\nFinal synthesis:\n${session.result.summary}` : "",
+    session.result?.nextSteps?.length
+      ? `\nNext steps:\n${session.result.nextSteps.join("\n")}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+    .slice(0, 6000);
+
+  const ai = new GoogleGenAI({ apiKey: key });
+
+  const prompt = `You are extracting structured intelligence from a completed boardroom strategy analysis session.
+
+Session topic: ${session.topic}
+Session output:
+${convergenceText}
+
+Return ONLY valid JSON (no markdown fences) with this exact shape:
+{
+  "originalDescription": "The user's original observed strategy in 1-2 sentences",
+  "extractedPrinciples": ["principle 1", "principle 2", "principle 3"],
+  "adaptationNotes": "2-3 sentences on how to adapt this to the brand",
+  "suggestedMedia": [
+    { "type": "image", "label": "...", "purpose": "...", "promptIdea": "..." }
+  ],
+  "tags": ["tag1", "tag2", "tag3"]
+}
+
+Rules:
+- extractedPrinciples: 3-7 specific, named principles (e.g. Pattern interrupt in first 3 seconds, Social proof via comment bait)
+- adaptationNotes: concrete, not generic — specific to the brand described in the session
+- suggestedMedia: 2-4 concrete media suggestions derived from the strategy (type must be image, video, or voice)
+- tags: 3-8 short descriptive tags (platform, format, psychological technique, audience)`;
+
+  const response = await ai.models.generateContent({
+    model: DEFAULT_MODEL,
+    contents: prompt,
+  });
+
+  const rawText = (response.text || "").trim();
+  let parsed: unknown;
+  try {
+    const start = rawText.indexOf("{");
+    const end = rawText.lastIndexOf("}");
+    if (start === -1 || end === -1) throw new Error("No JSON found");
+    parsed = JSON.parse(rawText.slice(start, end + 1));
+  } catch {
+    return {
+      originalDescription: session.topic,
+      extractedPrinciples: session.result?.nextSteps ?? [],
+      adaptationNotes: session.result?.summary ?? "",
+      suggestedMedia: [],
+      tags: ["strategy-analysis"],
+    };
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  const validTypes = new Set(["image", "video", "voice"]);
+
+  return {
+    originalDescription: String(obj.originalDescription || session.topic).slice(0, 500),
+    extractedPrinciples: Array.isArray(obj.extractedPrinciples)
+      ? obj.extractedPrinciples.map(String).filter(Boolean).slice(0, 10)
+      : [],
+    adaptationNotes: String(obj.adaptationNotes || "").slice(0, 1000),
+    suggestedMedia: Array.isArray(obj.suggestedMedia)
+      ? (obj.suggestedMedia as Record<string, unknown>[])
+          .filter((m) => m && typeof m === "object")
+          .map((m) => ({
+            type: validTypes.has(String(m.type)) ? (m.type as "image" | "video" | "voice") : "image",
+            label: String(m.label || "Untitled").slice(0, 120),
+            purpose: String(m.purpose || "").slice(0, 200),
+            promptIdea: String(m.promptIdea || "").slice(0, 500),
+          }))
+          .slice(0, 6)
+      : [],
+    tags: Array.isArray(obj.tags)
+      ? obj.tags.map(String).filter(Boolean).slice(0, 10)
+      : ["strategy-analysis"],
+  };
+}

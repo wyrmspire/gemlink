@@ -123,6 +123,30 @@ db.exec(/* sql */ `
 
   CREATE INDEX IF NOT EXISTS idx_col_items_collection ON collection_items(collectionId, sortOrder);
 
+  -- ── Strategy artifacts ──────────────────────────────────────────────────────
+  -- Persistent strategy intelligence: boardroom insights, research findings,
+  -- style directions, etc. Pinned artifacts auto-inject into generation context.
+  CREATE TABLE IF NOT EXISTS strategy_artifacts (
+    id         TEXT    PRIMARY KEY,
+    projectId  TEXT    REFERENCES projects(id) ON DELETE CASCADE,
+    type       TEXT    NOT NULL CHECK(type IN (
+      'boardroom_insight','research_finding','strategy_brief',
+      'style_direction','scoring_analysis','custom'
+    )),
+    title      TEXT    NOT NULL,
+    summary    TEXT    NOT NULL,
+    content    TEXT    NOT NULL,
+    tags       TEXT    NOT NULL DEFAULT '[]',
+    source     TEXT    NOT NULL DEFAULT '{}',
+    pinned     INTEGER NOT NULL DEFAULT 0,
+    createdAt  TEXT    NOT NULL,
+    updatedAt  TEXT    NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_strategy_artifacts_project ON strategy_artifacts(projectId);
+  CREATE INDEX IF NOT EXISTS idx_strategy_artifacts_type    ON strategy_artifacts(type);
+  CREATE INDEX IF NOT EXISTS idx_strategy_artifacts_pinned  ON strategy_artifacts(projectId, pinned);
+
   -- ── Media plans ───────────────────────────────────────────────────────────
   -- items is a JSON array of MediaPlanItem (defined in upgrade.md Track H).
   CREATE TABLE IF NOT EXISTS media_plans (
@@ -134,6 +158,24 @@ db.exec(/* sql */ `
   );
 
   CREATE INDEX IF NOT EXISTS idx_media_plans_project ON media_plans(projectId);
+
+  -- ── Compose jobs ─────────────────────────────────────────────────────────────────────────
+  -- Tracks FFmpeg compose jobs (slideshow, merge, caption).
+  CREATE TABLE IF NOT EXISTS compose_jobs (
+    id           TEXT    PRIMARY KEY,     -- e.g. "compose_abc123"
+    projectId    TEXT    REFERENCES projects(id) ON DELETE SET NULL,
+    type         TEXT    NOT NULL CHECK(type IN ('merge', 'slideshow', 'caption')),
+    status       TEXT    NOT NULL CHECK(status IN ('pending', 'processing', 'done', 'failed')),
+    title        TEXT,
+    inputConfig  TEXT    NOT NULL DEFAULT '{}',  -- JSON ComposeRequest snapshot
+    outputPath   TEXT,
+    duration     REAL,
+    createdAt    TEXT    NOT NULL,
+    updatedAt    TEXT    NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_compose_jobs_project ON compose_jobs(projectId);
+  CREATE INDEX IF NOT EXISTS idx_compose_jobs_status  ON compose_jobs(status);
 `);
 
 // ---------------------------------------------------------------------------
@@ -200,6 +242,46 @@ export interface MediaPlanRow {
   /** JSON-encoded MediaPlanItem[] */
   items: string;
   createdAt: string;
+}
+
+// ── Compose jobs types ────────────────────────────────────────────────────────
+
+export interface ComposeJobRow {
+  id: string;
+  projectId: string | null;
+  type: "merge" | "slideshow" | "caption";
+  status: "pending" | "processing" | "done" | "failed";
+  title: string | null;
+  /** JSON-encoded ComposeRequest snapshot */
+  inputConfig: string;
+  outputPath: string | null;
+  duration: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ArtifactType =
+  | "boardroom_insight"
+  | "research_finding"
+  | "strategy_brief"
+  | "style_direction"
+  | "scoring_analysis"
+  | "custom";
+
+export interface StrategyArtifactRow {
+  id: string;
+  projectId: string | null;
+  type: ArtifactType;
+  title: string;
+  summary: string;
+  content: string;
+  /** JSON-encoded string[] */
+  tags: string;
+  /** JSON-encoded ArtifactSource object */
+  source: string;
+  pinned: number; // 0 or 1
+  createdAt: string;
+  updatedAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -397,4 +479,119 @@ export const mediaPlanQueries = {
     _getPlan.get({ id }) as MediaPlanRow | undefined,
   delete: (id: string) =>
     db.prepare("DELETE FROM media_plans WHERE id = ?").run(id),
+};
+
+// ── Strategy artifacts ────────────────────────────────────────────────────────
+
+const _insertArtifact = db.prepare<StrategyArtifactRow>(/* sql */ `
+  INSERT INTO strategy_artifacts
+    (id, projectId, type, title, summary, content, tags, source, pinned, createdAt, updatedAt)
+  VALUES
+    (@id, @projectId, @type, @title, @summary, @content, @tags, @source, @pinned, @createdAt, @updatedAt)
+`);
+
+const _getArtifact = db.prepare<{ id: string }>(
+  "SELECT * FROM strategy_artifacts WHERE id = @id"
+);
+
+const _listArtifacts = db.prepare<{ projectId: string }>(
+  "SELECT * FROM strategy_artifacts WHERE projectId = @projectId ORDER BY pinned DESC, updatedAt DESC"
+);
+
+const _listPinnedArtifacts = db.prepare<{ projectId: string }>(
+  "SELECT * FROM strategy_artifacts WHERE projectId = @projectId AND pinned = 1 ORDER BY updatedAt DESC"
+);
+
+const _updateArtifact = db.prepare<StrategyArtifactRow>(/* sql */ `
+  UPDATE strategy_artifacts
+  SET type      = @type,
+      title     = @title,
+      summary   = @summary,
+      content   = @content,
+      tags      = @tags,
+      source    = @source,
+      pinned    = @pinned,
+      updatedAt = @updatedAt
+  WHERE id = @id
+`);
+
+const _togglePin = db.prepare<{ id: string; pinned: number; updatedAt: string }>(/* sql */ `
+  UPDATE strategy_artifacts SET pinned = @pinned, updatedAt = @updatedAt WHERE id = @id
+`);
+
+export const strategyArtifactQueries = {
+  insert: (row: StrategyArtifactRow) => _insertArtifact.run(row),
+  get: (id: string): StrategyArtifactRow | undefined =>
+    _getArtifact.get({ id }) as StrategyArtifactRow | undefined,
+  list: (projectId: string): StrategyArtifactRow[] =>
+    _listArtifacts.all({ projectId }) as StrategyArtifactRow[],
+  listPinned: (projectId: string): StrategyArtifactRow[] =>
+    _listPinnedArtifacts.all({ projectId }) as StrategyArtifactRow[],
+  update: (row: StrategyArtifactRow) => _updateArtifact.run(row),
+  delete: (id: string) =>
+    db.prepare("DELETE FROM strategy_artifacts WHERE id = ?").run(id),
+  togglePin: (id: string, pinned: boolean) =>
+    _togglePin.run({ id, pinned: pinned ? 1 : 0, updatedAt: new Date().toISOString() }),
+};
+
+/**
+ * getActiveArtifacts — returns all pinned strategy artifacts for a project.
+ * Called by generation endpoints to inject context.
+ */
+export function getActiveArtifacts(projectId: string): StrategyArtifactRow[] {
+  return strategyArtifactQueries.listPinned(projectId);
+}
+
+// ── Compose jobs ───────────────────────────────────────────────────────────────
+
+const _insertComposeJob = db.prepare<ComposeJobRow>(/* sql */ `
+  INSERT OR REPLACE INTO compose_jobs
+    (id, projectId, type, status, title, inputConfig, outputPath, duration, createdAt, updatedAt)
+  VALUES
+    (@id, @projectId, @type, @status, @title, @inputConfig, @outputPath, @duration, @createdAt, @updatedAt)
+`);
+
+const _getComposeJob = db.prepare<{ id: string }>(
+  "SELECT * FROM compose_jobs WHERE id = @id"
+);
+
+const _listComposeJobsByProject = db.prepare<{ projectId: string }>(
+  "SELECT * FROM compose_jobs WHERE projectId = @projectId ORDER BY createdAt DESC"
+);
+
+const _updateComposeJobStatus = db.prepare<{
+  id: string;
+  status: string;
+  outputPath: string | null;
+  duration: number | null;
+  updatedAt: string;
+}>(/* sql */ `
+  UPDATE compose_jobs
+  SET status     = @status,
+      outputPath = @outputPath,
+      duration   = @duration,
+      updatedAt  = @updatedAt
+  WHERE id = @id
+`);
+
+export const composeJobQueries = {
+  insert: (row: ComposeJobRow) => _insertComposeJob.run(row),
+  getById: (id: string): ComposeJobRow | undefined =>
+    _getComposeJob.get({ id }) as ComposeJobRow | undefined,
+  listByProject: (projectId: string): ComposeJobRow[] =>
+    _listComposeJobsByProject.all({ projectId }) as ComposeJobRow[],
+  updateStatus: (opts: {
+    id: string;
+    status: ComposeJobRow["status"];
+    outputPath?: string | null;
+    duration?: number | null;
+    updatedAt?: string;
+  }) =>
+    _updateComposeJobStatus.run({
+      id: opts.id,
+      status: opts.status,
+      outputPath: opts.outputPath ?? null,
+      duration: opts.duration ?? null,
+      updatedAt: opts.updatedAt ?? new Date().toISOString(),
+    }),
 };

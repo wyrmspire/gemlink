@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useBrand } from "../context/BrandContext";
+import { useProject } from "../context/ProjectContext";
 import { useApiKey } from "../components/ApiKeyGuard";
 import { useToast } from "../context/ToastContext";
 import { motion, AnimatePresence } from "motion/react";
@@ -13,6 +14,9 @@ import {
   Image as ImageIcon,
   Video,
   Mic,
+  Save,
+  Pin,
+  CheckCircle2,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
@@ -23,8 +27,34 @@ interface MediaSuggestion {
   promptTemplate: string;
 }
 
+/** Extract simple keywords from text (client-side fallback for tagging) */
+function extractKeywords(text: string, query: string): string[] {
+  const stopWords = new Set([
+    "the","a","an","and","or","but","in","on","at","to","for","of","with",
+    "by","from","is","are","was","were","be","been","being","have","has","had",
+    "do","does","did","will","would","could","should","may","might","shall",
+    "this","that","these","those","it","its","as","if","than","then","so",
+  ]);
+  // Pull candidate words from query + first 300 chars of text
+  const combined = `${query} ${text.slice(0, 300)}`;
+  const words = combined
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 3 && !stopWords.has(w));
+  // Deduplicate and take top 6
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const w of words) {
+    if (!seen.has(w)) { seen.add(w); result.push(w); }
+    if (result.length >= 6) break;
+  }
+  return result;
+}
+
 export default function Research() {
   const brand = useBrand();
+  const { activeProject } = useProject();
   const { resetKey } = useApiKey();
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -40,11 +70,16 @@ export default function Research() {
   const [suggestions, setSuggestions] = useState<MediaSuggestion[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
+  // L6: Save as Artifact state
+  const [savingArtifact, setSavingArtifact] = useState(false);
+  const [artifactSaved, setArtifactSaved] = useState(false);
+
   const performResearch = async () => {
     if (!query) return;
     setLoading(true);
     setResult("");
     setSources([]);
+    setArtifactSaved(false);
 
     try {
       const brandContext = {
@@ -84,6 +119,68 @@ export default function Research() {
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  // L6: Save research result as a strategy artifact
+  const handleSaveAsArtifact = async () => {
+    if (!result) return;
+    setSavingArtifact(true);
+    try {
+      const tags = extractKeywords(result, query);
+      const projectId = activeProject?.id ?? null;
+
+      const body = {
+        type: "research_finding",
+        title: query.slice(0, 120) || "Research Finding",
+        summary: result.slice(0, 300).replace(/\n/g, " ") + (result.length > 300 ? "…" : ""),
+        content: result,
+        tags,
+        projectId,
+        source: {
+          type: "research",
+          timestamp: new Date().toISOString(),
+        },
+        pinned: false,
+      };
+
+      const res = await fetch("/api/artifacts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) throw new Error("Failed to save artifact");
+      const artifact = await res.json();
+
+      setArtifactSaved(true);
+      toast(
+        <span className="flex items-center gap-2">
+          💾 Research saved as artifact!{" "}
+          <button
+            className="underline text-indigo-300 hover:text-indigo-200 ml-1"
+            onClick={async () => {
+              try {
+                await fetch(`/api/artifacts/${artifact.id}/pin`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ pinned: true }),
+                });
+                toast("📌 Artifact pinned to project!", "success");
+              } catch {
+                toast("Failed to pin artifact.", "error");
+              }
+            }}
+          >
+            Pin to project
+          </button>
+        </span> as any,
+        "success"
+      );
+    } catch (e: any) {
+      toast(e.message || "Failed to save artifact.", "error");
+    } finally {
+      setSavingArtifact(false);
     }
   };
 
@@ -253,18 +350,54 @@ export default function Research() {
           animate={{ opacity: 1, y: 0 }}
           className="bg-zinc-950 border border-zinc-800 rounded-2xl p-8"
         >
-          {/* I1: Create media button */}
+          {/* Header with action buttons */}
           <div className="flex items-start justify-between gap-4 mb-6 flex-wrap">
             <h2 className="text-lg font-semibold text-white">Research Results</h2>
-            <button
-              id="create-media-from-research"
-              onClick={handleSuggestMedia}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition-colors"
-            >
-              <Sparkles className="w-4 h-4" />
-              Create media from this
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* L6: Save as Artifact button */}
+              <button
+                id="save-research-as-artifact"
+                onClick={handleSaveAsArtifact}
+                disabled={savingArtifact || artifactSaved}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors disabled:cursor-not-allowed ${
+                  artifactSaved
+                    ? "bg-emerald-600/20 text-emerald-300 border border-emerald-600/30"
+                    : "bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700"
+                }`}
+              >
+                {savingArtifact ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : artifactSaved ? (
+                  <CheckCircle2 className="w-4 h-4" />
+                ) : (
+                  <Save className="w-4 h-4" />
+                )}
+                {artifactSaved ? "📌 Saved" : "💾 Save as Artifact"}
+              </button>
+
+              {/* I1: Create media button */}
+              <button
+                id="create-media-from-research"
+                onClick={handleSuggestMedia}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition-colors"
+              >
+                <Sparkles className="w-4 h-4" />
+                Create media from this
+              </button>
+            </div>
           </div>
+
+          {/* Saved badge */}
+          {artifactSaved && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="flex items-center gap-2 mb-4 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300 text-sm"
+            >
+              <Pin className="w-4 h-4" />
+              Saved as research artifact — visit Strategy Briefs to pin it to your project.
+            </motion.div>
+          )}
 
           <div className="prose prose-invert max-w-none">
             <div className="text-zinc-300 leading-relaxed whitespace-pre-wrap">{result}</div>
