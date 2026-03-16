@@ -24,6 +24,40 @@ import os from "node:os";
 
 const execFileAsync = promisify(execFile);
 
+// ── W3: Worker Pool (Semaphore) ────────────────────────────────────────────────
+const MAX_CONCURRENT_FFMPEG = Math.min(os.cpus().length || 1, 3);
+let _activeFfmpegCount = 0;
+const _ffmpegQueue: (() => void)[] = [];
+
+async function acquireFfmpegSlot(): Promise<void> {
+  if (_activeFfmpegCount < MAX_CONCURRENT_FFMPEG) {
+    _activeFfmpegCount++;
+    return;
+  }
+  return new Promise((resolve) => _ffmpegQueue.push(resolve));
+}
+
+function releaseFfmpegSlot(): void {
+  _activeFfmpegCount--;
+  const next = _ffmpegQueue.shift();
+  if (next) {
+    _activeFfmpegCount++;
+    next();
+  }
+}
+
+/**
+ * Internal wrapper for execFileAsync that respects the worker pool.
+ */
+async function runLimitedFfmpeg(name: string, args: string[], options?: any): Promise<{ stdout: any; stderr: any }> {
+  await acquireFfmpegSlot();
+  try {
+    return await execFileAsync(name, args, options);
+  } finally {
+    releaseFfmpegSlot();
+  }
+}
+
 // ── FFmpeg availability probe ─────────────────────────────────────────────────
 
 async function checkBinary(name: string): Promise<boolean> {
@@ -122,6 +156,8 @@ export interface ASSOptions {
   fontColor?: string;         // hex without # or &H prefix — we handle formatting
   position?: "top" | "center" | "bottom";
   outlineThickness?: number;
+  /** W2: entrance animation style */
+  animation?: "fade" | "pop" | "blur";
 }
 
 export interface ASSResult {
@@ -199,6 +235,23 @@ function watermarkPositionToOverlay(position?: string): string {
   }
 }
 
+/** W2: Helper to get ASS animation tags based on animation name */
+function getAnimationTags(animation?: "fade" | "pop" | "blur"): string {
+  if (!animation) return "";
+  switch (animation) {
+    case "fade":
+      return "{\\fad(200,200)}";
+    case "pop":
+      // Scale up to 120% then back to 100%
+      return "{\\t(0,150,\\fscx120\\fscy120)\\t(150,300,\\fscx100\\fscy100)}";
+    case "blur":
+      // Start blurred and clear up
+      return "{\\blur5\\t(0,300,\\blur0)}";
+    default:
+      return "";
+  }
+}
+
 // ── W1: probeMedia ────────────────────────────────────────────────────────────
 
 export async function probeMedia(filePath: string): Promise<ProbeResult> {
@@ -209,7 +262,7 @@ export async function probeMedia(filePath: string): Promise<ProbeResult> {
   let stdout = "";
   let stderr = "";
   try {
-    const result = await execFileAsync("ffprobe", args);
+    const result = await runLimitedFfmpeg("ffprobe", args);
     stdout = result.stdout;
     stderr = result.stderr;
   } catch (err: any) {
@@ -361,7 +414,7 @@ export async function mergeVideoAudio(
 
   try {
     console.log(`[compose] mergeVideoAudio: ffmpeg ${args.join(" ")}`);
-    await execFileAsync("ffmpeg", args);
+    await runLimitedFfmpeg("ffmpeg", args);
   } catch (err: any) {
     throw new Error(`mergeVideoAudio failed: ${err.stderr || err.message}`);
   }
@@ -430,7 +483,8 @@ export async function createSlideshow(
     if (isImageFile(slide.imagePath)) {
       args.push("-loop", "1", "-i", slide.imagePath);
     } else {
-      args.push("-stream_loop", "-1", "-i", slide.imagePath);
+      // W1: No stream_loop for videos to avoid freezing/incorrect looping
+      args.push("-i", slide.imagePath);
     }
   }
 
@@ -457,12 +511,20 @@ export async function createSlideshow(
   for (let i = 0; i < slides.length; i++) {
     const slide = slides[i];
     const dur = slide.duration;
+    const isVid = !isImageFile(slide.imagePath);
 
-    if (slide.kenBurns) {
+    if (slide.kenBurns && !isVid) {
       // W4: pass direction through to kenBurnsFilter
       filterParts.push(
         `[${i}:v]${scaleFilter},${kenBurnsFilter(dur, fps, w, h, slide.kenBurnsDirection ?? "zoom-in")},` +
         `setpts=PTS-STARTPTS,fps=${fps}[v${i}]`
+      );
+    } else if (isVid) {
+      // W1: Videos use trim + setpts (no tpad, no stream_loop, no ken burns)
+      filterParts.push(
+        `[${i}:v]${scaleFilter},` +
+        `trim=duration=${dur},fps=${fps},` +
+        `setpts=PTS-STARTPTS[v${i}]`
       );
     } else {
       filterParts.push(
@@ -561,7 +623,7 @@ export async function createSlideshow(
   args.push("-shortest", outputPath);
 
   try {
-    await execFileAsync("ffmpeg", args, { maxBuffer: 100 * 1024 * 1024 });
+    await runLimitedFfmpeg("ffmpeg", args, { maxBuffer: 100 * 1024 * 1024 });
   } catch (err: any) {
     throw new Error(`createSlideshow failed: ${err.stderr || err.message}`);
   }
@@ -592,9 +654,51 @@ export async function burnCaptions(
   ];
 
   try {
-    await execFileAsync("ffmpeg", args, { maxBuffer: 100 * 1024 * 1024 });
+    await runLimitedFfmpeg("ffmpeg", args, { maxBuffer: 100 * 1024 * 1024 });
   } catch (err: any) {
     throw new Error(`burnCaptions failed: ${err.stderr || err.message}`);
+  }
+
+  const probe = await probeMedia(outputPath);
+  return { outputPath, duration: probe.duration, size: await fileSize(outputPath) };
+}
+
+// ── W2: concatVideos ─────────────────────────────────────────────────────────
+
+/**
+ * Concat multiple video files into one using FFmpeg's concat filter.
+ * This is robust for files with potentially different resolutions/codecs
+ * as it re-encodes the final result.
+ */
+export async function concatVideos(
+  videoPaths: string[],
+  outputPath: string,
+): Promise<ComposeResult> {
+  await _initPromise;
+  if (!_ffmpegAvailable) throw new Error("ffmpeg is not installed");
+  if (videoPaths.length === 0) throw new Error("concatVideos requires at least one video path");
+
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+
+  const args: string[] = ["-y"];
+  for (const p of videoPaths) {
+    args.push("-i", p);
+  }
+
+  // Build filter_complex string: "[0:v][0:a][1:v][1:a]...concat=n=N:v=1:a=1[v][a]"
+  const inputs = videoPaths.map((_, i) => `[${i}:v][${i}:a]`).join("");
+  const filter = `${inputs}concat=n=${videoPaths.length}:v=1:a=1[vout][aout]`;
+
+  args.push("-filter_complex", filter);
+  args.push("-map", "[vout]", "-map", "[aout]");
+  args.push("-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac");
+  args.push(outputPath);
+
+  try {
+    console.log(`[compose] concatVideos: ffmpeg ${args.join(" ")}`);
+    await runLimitedFfmpeg("ffmpeg", args, { maxBuffer: 100 * 1024 * 1024 });
+  } catch (err: any) {
+    throw new Error(`concatVideos failed: ${err.stderr || err.message}`);
   }
 
   const probe = await probeMedia(outputPath);
@@ -802,13 +906,14 @@ export async function generateASS(
 
     segments.push({ text: sentence, startTime, endTime });
 
-    let displayText = sentence;
+    const anim = getAnimationTags(opts.animation);
+    let displayText = anim + sentence;
 
     if (style === "typewriter") {
       // Use \kf (karaoke fill) for word-by-word reveal within a sentence
       const words = sentence.split(/\s+/).filter(Boolean);
       const wordDur = timePerSentence / words.length;
-      displayText = words
+      displayText = anim + words
         .map((w) => `{\\kf${Math.round(wordDur * 100)}}${w}`)
         .join(" ");
     }
@@ -864,6 +969,7 @@ export async function generateWordLevelASS(
 
     segments.push({ text: words[i], startTime: wordStart, endTime: wordEnd });
 
+    const anim = getAnimationTags(opts.animation);
     if (style === "word-highlight") {
       // Show all words; active word gets accent color via inline override
       const parts = words.map((w, wi) => {
@@ -872,7 +978,7 @@ export async function generateWordLevelASS(
         }
         return `{\\c${dimColor}}${w}{\\c}`;
       });
-      const displayText = parts.join(" ");
+      const displayText = anim + parts.join(" ");
 
       dialogueLines.push(
         `Dialogue: 0,${toASSTime(wordStart)},${toASSTime(wordEnd)},Default,,0,0,0,,${displayText}`
@@ -880,7 +986,7 @@ export async function generateWordLevelASS(
     } else {
       // Generic word-level: show word with karaoke fill
       const totalWordCentiseconds = Math.round(wordDurations[i] * 100);
-      const displayText = `{\\kf${totalWordCentiseconds}}${words[i]}`;
+      const displayText = anim + `{\\kf${totalWordCentiseconds}}${words[i]}`;
 
       dialogueLines.push(
         `Dialogue: 0,${toASSTime(wordStart)},${toASSTime(wordEnd)},Default,,0,0,0,,${displayText}`

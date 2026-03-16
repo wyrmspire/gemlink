@@ -3,7 +3,8 @@ import { useBrand } from "../context/BrandContext";
 import { useApiKey } from "../components/ApiKeyGuard";
 import { useToast } from "../context/ToastContext";
 import { motion } from "motion/react";
-import { Loader2, Video, Upload, CheckCircle2, AlertCircle, History } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Loader2, Video, Upload, CheckCircle2, AlertCircle, History, Download, Send, Sparkles } from "lucide-react";
 
 interface HistoryItem {
   id: string;
@@ -40,9 +41,11 @@ export default function VideoLab() {
   const brand = useBrand();
   const { resetKey } = useApiKey();
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [prompt, setPrompt] = useState("");
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingExpand, setLoadingExpand] = useState(false);
   const [job, setJob] = useState<VideoJob | null>(null);
   const [analysisResult, setAnalysisResult] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
@@ -57,11 +60,18 @@ export default function VideoLab() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [recentPrompts, setRecentPrompts] = useState<string[]>([]);
   const [showPrompts, setShowPrompts] = useState(false);
+  const [styles, setStyles] = useState<any[]>([]);
+  const [selectedStyle, setSelectedStyle] = useState("");
 
   useEffect(() => {
     fetch("/api/media/history?type=video")
       .then(res => res.json())
       .then(data => setHistory(data.slice(0, 5)))
+      .catch(console.error);
+
+    fetch("/api/agent/style-presets")
+      .then(res => res.json())
+      .then(data => setStyles(data))
       .catch(console.error);
 
     try {
@@ -84,6 +94,26 @@ export default function VideoLab() {
     setPreset(value);
     setAspectRatio(p.aspectRatio);
     setResolution(p.resolution);
+  }
+
+  function applyStyle(styleId: string) {
+    const s = styles.find(x => x.id === styleId);
+    if (!s) {
+      setSelectedStyle("");
+      return;
+    }
+    setSelectedStyle(styleId);
+    
+    if (s.positiveAppend && !prompt.includes(s.positiveAppend)) {
+      setPrompt(prev => {
+        const cleaned = prev.trim();
+        return cleaned ? `${cleaned}, ${s.positiveAppend}` : s.positiveAppend;
+      });
+    }
+    
+    if (s.aspectRatio && (!aspectRatio || preset === "custom")) {
+      setAspectRatio(s.aspectRatio);
+    }
   }
 
   const generateVideo = async () => {
@@ -255,6 +285,26 @@ export default function VideoLab() {
             </select>
           </div>
 
+          {/* Style selector */}
+          <div>
+            <label className="block text-sm font-medium text-zinc-300 mb-2">Style Preset</label>
+            <select
+              value={selectedStyle}
+              onChange={(e) => applyStyle(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">No Style (Default)</option>
+              {styles.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+            {selectedStyle && (
+              <p className="mt-1.5 text-[10px] text-zinc-500 italic">
+                {styles.find(x => x.id === selectedStyle)?.description}
+              </p>
+            )}
+          </div>
+
           {/* Model selector */}
           <div>
             <label className="block text-sm font-medium text-zinc-300 mb-2">Video Model</label>
@@ -293,14 +343,47 @@ export default function VideoLab() {
           <div className="relative">
             <div className="flex justify-between items-end mb-2">
               <label className="block text-sm font-medium text-zinc-300">Video Prompt</label>
-              {recentPrompts.length > 0 && (
-                <button 
-                  onClick={() => setShowPrompts(!showPrompts)} 
-                  className="text-xs flex items-center gap-1 text-indigo-400 hover:text-indigo-300 transition-colors"
+              <div className="flex gap-3">
+                <button
+                  onClick={async () => {
+                    if (!prompt || loadingExpand) return;
+                    setLoadingExpand(true);
+                    try {
+                      const res = await fetch("/api/agent/expand-prompt", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          prompt,
+                          type: "video",
+                          apiKey: import.meta.env.VITE_GEMINI_API_KEY
+                        })
+                      });
+                      if (!res.ok) throw new Error("Failed to enhance prompt");
+                      const data = await res.json();
+                      setPrompt(data.expanded);
+                      toast("Prompt enhanced ✨", "success");
+                    } catch (err: any) {
+                      toast(err.message, "error");
+                    } finally {
+                      setLoadingExpand(false);
+                    }
+                  }}
+                  disabled={!prompt || loadingExpand}
+                  className="text-xs flex items-center gap-1 text-indigo-400 hover:text-indigo-300 transition-colors disabled:opacity-50"
+                  title="Enhance with AI"
                 >
-                  <History className="w-3.5 h-3.5" /> Recent
+                  {loadingExpand ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                  Enhance
                 </button>
-              )}
+                {recentPrompts.length > 0 && (
+                  <button 
+                    onClick={() => setShowPrompts(!showPrompts)} 
+                    className="text-xs flex items-center gap-1 text-indigo-400 hover:text-indigo-300 transition-colors"
+                  >
+                    <History className="w-3.5 h-3.5" /> Recent
+                  </button>
+                )}
+              </div>
             </div>
             
             <textarea
@@ -398,6 +481,31 @@ export default function VideoLab() {
                     controls
                     className="w-full rounded-lg border border-zinc-700"
                   />
+                  <div className="flex gap-2">
+                    <a
+                      href={job.outputs[0]}
+                      download={`video-${job.id}.mp4`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 py-2 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 border border-zinc-700"
+                    >
+                      <Download className="w-4 h-4" /> Download
+                    </a>
+                    <button
+                      onClick={() => {
+                        sessionStorage.setItem("compose-send-item", JSON.stringify({
+                          id: job.id,
+                          type: "video",
+                          url: job.outputs[0],
+                          prompt: prompt
+                        }));
+                        navigate("/compose");
+                      }}
+                      className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 border border-indigo-500"
+                    >
+                      <Send className="w-4 h-4" /> Send to Compose
+                    </button>
+                  </div>
                   <p className="text-xs text-zinc-500">Video ready — also available in the Media Library.</p>
                 </div>
               )}
@@ -450,8 +558,33 @@ export default function VideoLab() {
                 {item.outputs?.[0] ? (
                   <>
                     <video src={item.outputs[0]} className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity p-2 flex items-end">
-                      <p className="text-xs text-white line-clamp-3">{item.prompt}</p>
+                    <div className="absolute inset-0 bg-black/80 opacity-0 group-hover:opacity-100 transition-opacity p-3 flex flex-col justify-end gap-2">
+                      <p className="text-[10px] text-white line-clamp-2 leading-tight mb-1">{item.prompt}</p>
+                      <div className="flex gap-1.5">
+                        <a
+                          href={item.outputs[0]}
+                          download={`history-${item.id}.mp4`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex-1 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded text-[10px] font-medium transition-colors flex items-center justify-center gap-1"
+                        >
+                          <Download className="w-3 h-3" /> Download
+                        </a>
+                        <button
+                          onClick={() => {
+                            sessionStorage.setItem("compose-send-item", JSON.stringify({
+                              id: item.id,
+                              type: "video",
+                              url: item.outputs[0],
+                              prompt: item.prompt
+                            }));
+                            navigate("/compose");
+                          }}
+                          className="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[10px] font-medium transition-colors flex items-center justify-center gap-1"
+                        >
+                          <Send className="w-3 h-3" /> Compose
+                        </button>
+                      </div>
                     </div>
                   </>
                 ) : (

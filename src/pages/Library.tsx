@@ -22,6 +22,8 @@ import {
   SendHorizonal,
   Music,
   Download,
+  FolderPlus,
+  X,
 } from "lucide-react";
 import { useToast } from "../context/ToastContext";
 import { useProject } from "../context/ProjectContext";
@@ -56,8 +58,9 @@ interface Job {
   slideCount?: number;
   templateName?: string;
   sourceDescription?: string;
-  composeConfig?: Record<string, unknown>;
+  composeConfig?: Record<string, any>;
   duration?: number;
+  aspectRatio?: string;
 }
 
 type SortMode = "newest" | "highest";
@@ -73,9 +76,13 @@ export default function Library() {
   const [search, setSearch] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("newest");
   const [filterType, setFilterType] = useState<FilterType>("all");
   const [savingInsights, setSavingInsights] = useState(false);
+  const [collections, setCollections] = useState<{ id: string, name: string }[]>([]);
+  const [showCollectionPicker, setShowCollectionPicker] = useState(false);
 
   const fetchHistory = useCallback(async (silent = false) => {
     if (silent) {
@@ -96,9 +103,22 @@ export default function Library() {
     }
   }, []);
 
+  const fetchCollections = useCallback(async () => {
+    try {
+      const projId = activeProject?.id ?? "default";
+      const res = await fetch(`/api/collections?projectId=${encodeURIComponent(projId)}`);
+      if (res.ok) {
+        setCollections(await res.json());
+      }
+    } catch (e) {
+      console.error("Failed to fetch collections", e);
+    }
+  }, [activeProject?.id]);
+
   useEffect(() => {
     fetchHistory();
-  }, [fetchHistory]);
+    fetchCollections();
+  }, [fetchHistory, fetchCollections]);
 
   useEffect(() => {
     const hasPending = jobs.some((job) => job.status === "pending");
@@ -238,6 +258,137 @@ export default function Library() {
     }
   };
 
+  const handleSelect = (id: string, e: React.MouseEvent) => {
+    const isMultiSelect = e.ctrlKey || e.metaKey;
+    const isRangeSelect = e.shiftKey;
+
+    if (isRangeSelect && lastSelectedId) {
+      const currentIdx = filtered.findIndex((j) => j.id === id);
+      const lastIdx = filtered.findIndex((j) => j.id === lastSelectedId);
+      if (currentIdx !== -1 && lastIdx !== -1) {
+        const start = Math.min(currentIdx, lastIdx);
+        const end = Math.max(currentIdx, lastIdx);
+        const rangeIds = filtered.slice(start, end + 1).map((j) => j.id);
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          rangeIds.forEach((rid) => next.add(rid));
+          return next;
+        });
+      }
+    } else if (isMultiSelect) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    } else {
+      // Regular click - open lightbox
+      setSelectedJobId(id);
+    }
+    setLastSelectedId(id);
+  };
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+    setLastSelectedId(null);
+  };
+
+  const handleBatchDownload = async () => {
+    const selectedJobs = jobs.filter(j => selectedIds.has(j.id));
+    toast(`Starting download of ${selectedJobs.length} items...`, "info");
+    for (const job of selectedJobs) {
+      if (job.outputs?.[0]) {
+        const link = document.createElement("a");
+        link.href = job.outputs[0];
+        const url = job.outputs[0];
+        link.download = (typeof url === "string" ? url.split("/").pop() : "download") || "download";
+        link.target = "_blank";
+        link.click();
+        await new Promise(r => setTimeout(r, 150));
+      }
+    }
+  };
+
+  const handleBatchSendToCompose = () => {
+    const selectedJobs = jobs.filter(j => selectedIds.has(j.id));
+    const current = JSON.parse(sessionStorage.getItem("compose-batch-items") || "[]");
+    const next = [...current, ...selectedJobs.map(j => ({
+      id: j.id,
+      type: j.type,
+      url: j.outputs[0],
+      prompt: j.prompt || j.text
+    }))];
+    sessionStorage.setItem("compose-batch-items", JSON.stringify(next));
+    toast(`Sent ${selectedJobs.length} items to Compose.`, "success");
+    navigate("/compose");
+  };
+
+  const handleBatchDelete = async () => {
+    const idsToDelete = Array.from(selectedIds);
+    const previousJobs = [...jobs];
+    setJobs(prev => prev.filter(j => !selectedIds.has(j.id)));
+    const count = selectedIds.size;
+    clearSelection();
+
+    try {
+      const res = await fetch("/api/media/bulk-delete", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: idsToDelete })
+      });
+      if (!res.ok) throw new Error();
+
+      toast(`${count} items archived.`, "info", {
+        duration: 10000,
+        action: {
+          label: "Undo",
+          onClick: async () => {
+             await fetch("/api/media/unarchive", {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({ ids: idsToDelete })
+             });
+             setJobs(previousJobs);
+             toast("Archived items restored.", "success");
+          }
+        }
+      });
+    } catch {
+      setJobs(previousJobs);
+      toast("Failed to archive items.", "error");
+    }
+  };
+
+  const handleAddToCollection = async (collectionId: string) => {
+    const selectedJobs = jobs.filter(j => selectedIds.has(j.id));
+    let successCount = 0;
+    
+    for (const job of selectedJobs) {
+      try {
+        const item = {
+          jobId: job.id,
+          type: job.type === "compose" ? "video" : job.type,
+          url: job.outputs[0],
+          prompt: job.prompt || job.text || "",
+          addedAt: new Date().toISOString(),
+        };
+        const res = await fetch(`/api/collections/${collectionId}/items`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(item),
+        });
+        if (res.ok) successCount++;
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    
+    toast(`Added ${successCount} items to collection.`, "success");
+    setShowCollectionPicker(false);
+    clearSelection();
+  };
+
   /** W3 (L2): Send a Library item directly to the Compose page */
   const handleSendToCompose = (job: Job) => {
     try {
@@ -330,6 +481,68 @@ export default function Library() {
       animate={{ opacity: 1, y: 0 }}
       className="p-4 md:p-8 max-w-6xl mx-auto"
     >
+      {/* Sticky Batch Actions Bar */}
+      <AnimatePresence>
+        {selectedIds.size > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="sticky top-0 z-[60] bg-indigo-600 shadow-xl border-b border-indigo-500/50 -mx-4 md:-mx-8 px-4 md:px-8 py-3 flex items-center justify-between mb-4 backdrop-blur-md bg-opacity-95"
+          >
+            <div className="flex items-center gap-4">
+              <button 
+                onClick={clearSelection}
+                className="p-1.5 hover:bg-white/20 rounded-lg transition-colors text-white"
+                title="Clear selection"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <div className="flex items-baseline gap-2">
+                <span className="text-xl font-bold text-white leading-none">
+                  {selectedIds.size}
+                </span>
+                <span className="text-sm font-medium text-indigo-100 uppercase tracking-wider">
+                  Selected
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleBatchDownload}
+                className="flex items-center gap-2 px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-sm font-medium transition-all"
+              >
+                <Download className="w-4 h-4" />
+                <span className="hidden sm:inline">Download</span>
+              </button>
+              <button
+                onClick={() => setShowCollectionPicker(true)}
+                className="flex items-center gap-2 px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-sm font-medium transition-all"
+              >
+                <FolderPlus className="w-4 h-4" />
+                <span className="hidden sm:inline">Add to Collection</span>
+              </button>
+              <button
+                onClick={handleBatchSendToCompose}
+                className="flex items-center gap-2 px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-sm font-medium transition-all"
+              >
+                <SendHorizonal className="w-4 h-4" />
+                <span className="hidden sm:inline">Compose</span>
+              </button>
+              <div className="w-px h-6 bg-white/20 mx-1" />
+              <button
+                onClick={handleBatchDelete}
+                className="flex items-center gap-2 px-3 py-1.5 bg-red-500/20 hover:bg-red-500/40 text-red-100 rounded-xl text-sm font-medium transition-all border border-red-400/20"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span className="hidden sm:inline">Delete</span>
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-white mb-2">Media Library</h1>
@@ -478,21 +691,48 @@ export default function Library() {
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
-                className="bg-zinc-950 border border-zinc-800 rounded-2xl overflow-hidden flex flex-col"
+                className={`bg-zinc-950 border transition-all duration-200 rounded-2xl overflow-hidden flex flex-col ${
+                  selectedIds.has(job.id) ? "border-indigo-500 ring-2 ring-indigo-500/20" : "border-zinc-800"
+                }`}
               >
                 {/* Media area */}
                 <div 
-                  className={`aspect-square bg-zinc-900 relative flex items-center justify-center overflow-hidden ${job.status === "completed" && job.outputs && job.outputs.length > 0 ? "cursor-pointer" : ""}`}
-                  onClick={() => {
-                    if (job.status === "completed" && job.outputs && job.outputs.length > 0) {
-                      setSelectedJobId(job.id);
-                    }
-                  }}
+                  className={`relative flex items-center justify-center overflow-hidden bg-zinc-900 group ${
+                    job.status === "completed" && job.outputs && job.outputs.length > 0 ? "cursor-pointer" : ""
+                  } ${(() => {
+                    const isAudio = job.type === "voice" || job.type === "music";
+                    if (isAudio) return "aspect-square";
+                    
+                    const ar = job.aspectRatio || (job as any).composeConfig?.output?.aspectRatio;
+                    if (ar === "9:16") return "aspect-[9/16]";
+                    if (ar === "16:9") return "aspect-video";
+                    if (ar === "4:5") return "aspect-[4/5]";
+                    if (ar === "1:1") return "aspect-square";
+                    
+                    if (job.type === "image") return "aspect-auto max-h-[460px]";
+                    return "aspect-video";
+                  })()}`}
+                  onClick={(e) => handleSelect(job.id, e)}
                 >
+                  {/* Selection Checkbox Overlay */}
+                  <div 
+                    id={`select-${job.id}`}
+                    className={`absolute top-2 right-2 z-20 w-5 h-5 rounded-lg border flex items-center justify-center transition-all ${
+                      selectedIds.has(job.id) 
+                        ? "bg-indigo-600 border-indigo-500 scale-110" 
+                        : "bg-black/40 border-white/20 opacity-0 group-hover:opacity-100"
+                    }`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSelect(job.id, { ...e, ctrlKey: true } as any);
+                    }}
+                  >
+                    {selectedIds.has(job.id) && <Check className="w-3.5 h-3.5 text-white" />}
+                  </div>
                   {job.type === "image" && job.outputs.length > 0 ? (
-                    <img src={job.outputs[0]} alt={job.prompt} className="w-full h-full object-cover" />
-                  ) : (job.type === "video" || job.type === "compose") && job.status === "completed" && job.outputs.length > 0 ? (
-                    <video src={job.outputs[0]} controls className="w-full h-full object-cover" />
+                    <img src={job.outputs[0]} alt={job.prompt} className="w-full h-full object-contain" />
+                  ) : (job.type === "video" || job.type === "compose" || job.tags?.includes("compose")) && job.status === "completed" && job.outputs.length > 0 ? (
+                    <video src={job.outputs[0]} controls className="w-full h-full object-contain" />
                   ) : job.type === "voice" && job.status === "completed" && job.outputs.length > 0 ? (
                     <div className="w-full h-full flex flex-col items-center justify-center bg-zinc-900 p-4">
                       <Mic className="w-12 h-12 text-amber-400 mb-6 opacity-80" />
@@ -508,6 +748,15 @@ export default function Library() {
                     </div>
                   )}
 
+                  {/* Aspect ratio badge (top-left corner) - W5 Lane 3 */}
+                  {(job.type === "video" || job.type === "image" || job.type === "compose" || job.tags?.includes("compose")) && (job.aspectRatio || (job as any).composeConfig?.output?.aspectRatio) && (
+                    <div className="absolute top-2 left-2 z-10">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-zinc-950/80 text-zinc-300 border border-zinc-800 backdrop-blur-md">
+                        {job.aspectRatio || (job as any).composeConfig?.output?.aspectRatio}
+                      </span>
+                    </div>
+                  )}
+
                   {/* Score overlay badge (top-right corner) */}
                   {job.score && (
                     <div className="absolute top-2 right-2">
@@ -515,9 +764,9 @@ export default function Library() {
                     </div>
                   )}
 
-                  {/* Compose type indicator (top-left corner) */}
-                  {job.type === "compose" && (
-                    <div className="absolute top-2 left-2">
+                  {/* Compose type indicator (top-left if aspect badge missing, else below) */}
+                  {(job.type === "compose" || job.tags?.includes("compose")) && (
+                    <div className={`absolute left-2 ${ (job.aspectRatio || (job as any).composeConfig?.output?.aspectRatio) ? "top-8" : "top-2"}`}>
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-violet-600/80 text-white backdrop-blur-sm">
                         <Film className="w-2.5 h-2.5" /> Composed
                       </span>
@@ -528,15 +777,15 @@ export default function Library() {
                 {/* Info */}
                 <div className="p-4 flex-1 flex flex-col gap-2">
                   <div className="flex items-center gap-2">
-                    {getIcon(job.type)}
+                    {getIcon((job.type === "compose" || job.tags?.includes("compose")) ? "compose" : job.type)}
                     <span className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
-                      {job.type === "compose" ? "Composed Video" : job.type}
+                      {(job.type === "compose" || job.tags?.includes("compose")) ? "Composed Video" : job.type}
                     </span>
                     <span className="ml-auto">{getStatusPill(job)}</span>
                   </div>
 
                   {/* Compose-specific badges (W5 Lane 3) */}
-                  {job.type === "compose" && (
+                  {(job.type === "compose" || job.tags?.includes("compose")) && (
                     <div className="flex items-center gap-2 flex-wrap">
                       {job.slideCount && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-violet-500/15 text-violet-300 border border-violet-500/20">
@@ -589,7 +838,7 @@ export default function Library() {
                     </button>
 
                     {/* W5 (Lane 3): Compose jobs get Re-edit instead of Regenerate */}
-                    {job.type === "compose" ? (
+                    {(job.type === "compose" || job.tags?.includes("compose")) ? (
                       <button
                         id={`re-edit-${job.id}`}
                         onClick={() => {
@@ -617,7 +866,7 @@ export default function Library() {
                     )}
                     
                     {/* W3 (L2): Send to Compose — for non-compose jobs only */}
-                    {job.type !== "compose" && job.status !== "pending" && (
+                    {!(job.type === "compose" || job.tags?.includes("compose")) && job.status !== "pending" && (
                       <button
                         id={`send-compose-${job.id}`}
                         onClick={() => handleSendToCompose(job)}
@@ -664,6 +913,60 @@ export default function Library() {
           </AnimatePresence>
         </div>
       )}
+
+      {/* Selection badge replaced by sticky bar */}
+
+      {/* Collection Picker Modal */}
+      <AnimatePresence>
+        {showCollectionPicker && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-zinc-900 border border-zinc-700 p-6 rounded-2xl w-full max-w-md shadow-2xl"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                  <FolderPlus className="w-5 h-5 text-indigo-400" />
+                  Add to Collection
+                </h2>
+                <button onClick={() => setShowCollectionPicker(false)} className="text-zinc-500 hover:text-white transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              
+              <div className="space-y-2 max-h-[40vh] overflow-y-auto pr-2 custom-scrollbar">
+                {collections.length === 0 ? (
+                  <p className="text-zinc-500 text-center py-8 border border-dashed border-zinc-800 rounded-xl">
+                    No collections found. Create one in the Collections page first.
+                  </p>
+                ) : (
+                  collections.map(col => (
+                    <button
+                      key={col.id}
+                      onClick={() => handleAddToCollection(col.id)}
+                      className="w-full text-left px-4 py-3 rounded-xl border border-zinc-800 bg-zinc-800/50 hover:bg-indigo-600/20 hover:border-indigo-500/40 text-zinc-300 hover:text-white transition-all flex items-center justify-between group"
+                    >
+                      <span className="font-medium">{col.name}</span>
+                      <CheckCircle2 className="w-4 h-4 opacity-0 group-hover:opacity-100 text-indigo-400 transition-opacity" />
+                    </button>
+                  ))
+                )}
+              </div>
+              
+              <div className="mt-6 pt-4 border-t border-zinc-800 flex justify-end">
+                <button
+                  onClick={() => setShowCollectionPicker(false)}
+                  className="px-4 py-2 text-sm text-zinc-400 hover:text-white transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Lightbox */}
       <MediaLightbox

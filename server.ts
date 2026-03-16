@@ -6,7 +6,7 @@ import twilio from "twilio";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { startBoardroomSessionAsync, listBoardroomSessions, readBoardroomSession, extractMediaBriefs, STRATEGY_ANALYSIS_TEMPLATE, extractStrategyAnalysisOutput } from "./boardroom.ts";
-import { mediaJobQueries, collectionQueries, collectionItemQueries, strategyArtifactQueries, getActiveArtifacts, composeJobQueries, idempotencyQueries, type MediaJobRow, type StrategyArtifactRow, type ArtifactType, type ComposeJobRow } from "./src/db.ts";
+import { mediaJobQueries, collectionQueries, collectionItemQueries, strategyArtifactQueries, mediaPlanQueries, getActiveArtifacts, composeJobQueries, idempotencyQueries, stylePresetQueries, type MediaJobRow, type StrategyArtifactRow, type ArtifactType, type ComposeJobRow, type StylePresetRow } from "./src/db.ts";
 import type { SlideInput as ComposeSlideInput } from "./compose.ts";
 import { loadTemplates, getTemplate, type ComposeTemplate } from "./templates.ts";
 // ── L1-S4.5 + L2-S4.5: Centralized config import ───────────────────────────
@@ -79,6 +79,7 @@ export interface JobManifest {
   providerOperationName?: string | null;
   tags?: string[];
   score?: MediaScore;
+  duration?: number;
 }
 
 const PORT = Number(process.env.PORT || 3000);
@@ -151,6 +152,7 @@ function manifestToRow(manifest: JobManifest): MediaJobRow {
     scores: manifest.score ? JSON.stringify(manifest.score) : null,
     rating: null,
     planItemId: null,
+    duration: manifest.duration ?? null,
     createdAt: manifest.createdAt,
     updatedAt: manifest.updatedAt,
   };
@@ -428,6 +430,166 @@ async function startServer() {
 
   // ── W3: Load style database on startup + serve via API ─────────────────────
   await loadStyleDatabase();
+
+  // ── Lane 2: Agent Intelligence ──
+
+  async function seedStylePresets() {
+    try {
+      const existing = stylePresetQueries.list();
+      if (existing.length === 0) {
+        console.log("[agent-presets] Seeding built-in style presets...");
+        const builtIn: StylePresetRow[] = [
+          {
+            id: "preset_cinematic",
+            name: "Cinematic",
+            description: "High drama, anamorphic lens, deep shadows.",
+            positiveAppend: "cinematic lighting, volumetric fog, 8k resolution, highly detailed, masterwork, anamorphic lens, dramatic shadows",
+            negativeAppend: "cartoon, illustration, low quality, blurry, distorted, grainy",
+            aspectRatio: "16:9",
+            colorGrade: "teal and orange",
+            isBuiltIn: 1,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            id: "preset_corporate",
+            name: "Corporate",
+            description: "Clean, professional, bright, and trust-building.",
+            positiveAppend: "clean minimalist aesthetic, bright natural lighting, professional photography, high-end commercial style, soft bokeh",
+            negativeAppend: "dark, moody, messy, low quality, informal, amateur",
+            aspectRatio: "16:9",
+            colorGrade: "natural",
+            isBuiltIn: 1,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            id: "preset_neon",
+            name: "Neon Night",
+            description: "Vibrant colors, cyberpunk atmosphere, midnight city vibes.",
+            positiveAppend: "cyberpunk aesthetic, vibrant neon lights, magenta and cyan color palette, rainy streets, night photography, futuristic atmosphere",
+            negativeAppend: "daylight, sun, natural, flat lighting, low quality",
+            aspectRatio: "9:16",
+            colorGrade: "vibrant",
+            isBuiltIn: 1,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            id: "preset_lofi",
+            name: "Lo-Fi",
+            description: "Retro, nostalgic, grainy, and cozy vibes.",
+            positiveAppend: "lo-fi aesthetic, retro film grain, nostalgic atmosphere, warm lighting, cozy vibes, slightly faded colors",
+            negativeAppend: "sharp, 8k, modern, high gloss, low quality, ugly",
+            aspectRatio: "1:1",
+            colorGrade: "warm vintage",
+            isBuiltIn: 1,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            id: "preset_editorial",
+            name: "Editorial",
+            description: "High fashion, studio lighting, sharp and sophisticated.",
+            positiveAppend: "editorial fashion photography, studio lighting, sharp focus, sophisticated composition, vogue style, highly polished",
+            negativeAppend: "casual, snapshots, messy, low quality, blurry",
+            aspectRatio: "4:5",
+            colorGrade: "muted contrast",
+            isBuiltIn: 1,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ];
+        for (const p of builtIn) {
+          stylePresetQueries.upsert(p);
+        }
+      }
+    } catch (err) {
+      console.error("[agent-presets] Seed error:", err);
+    }
+  }
+
+  await seedStylePresets();
+
+  api.post("/agent/expand-prompt", async (req, res) => {
+    try {
+      const { prompt, type, style, apiKey } = req.body;
+      if (!prompt) return res.status(400).json({ error: "Prompt is required" });
+      
+      const key = requireApiKey(apiKey);
+      const ai = new GoogleGenAI({ apiKey: key });
+      const model = getMergedModels().creative || getMergedModels().text;
+      
+      const systemPrompt = `You are a professional prompt engineer for AI media generation.
+Your task is to transform a simple, basic prompt into a highly detailed, cinematic, and professional one.
+Input: "${prompt}"
+Type: ${type || 'image'}
+${style ? `Style: ${style}` : ''}
+
+Guidelines:
+- Enrich the prompt with sensory details, atmosphere, lighting, and technical specs (lens, motion, acoustic environment, instruments, etc).
+- If type is 'image', focus on artistic style and composition.
+- If type is 'video', focus on motion and camera movement.
+- If type is 'voice', focus on tone and inflection.
+- If type is 'music', focus on rhythm and genre.
+- Enriched prompt should be 1-3 descriptive sentences.
+- Stay true to the original intent but make it 'WOW'.
+- Return ONLY the expanded text, no prefixes or extra words.`;
+
+      const response = await ai.models.generateContent({
+        model,
+        contents: [{ role: "user", parts: [{ text: systemPrompt }] }],
+      });
+
+      const expanded = response.text?.trim() || prompt;
+      console.log(`[agent-expand] Expanded "${prompt.slice(0, 30)}..." -> "${expanded.slice(0, 30)}..."`);
+      res.json({ expanded });
+    } catch (error: any) {
+      console.error("[agent-expand] Error:", error);
+      res.status(500).json({ error: error.message || "Failed to expand prompt" });
+    }
+  });
+
+  api.post("/agent/optimize-negative", async (req, res) => {
+    try {
+      const { prompt, apiKey } = req.body;
+      if (!prompt) return res.status(400).json({ error: "Prompt is required" });
+      
+      const key = requireApiKey(apiKey);
+      const ai = new GoogleGenAI({ apiKey: key });
+      const model = getMergedModels().text;
+      
+      const systemPrompt = `Given this positive prompt: "${prompt}", generate an optimized negative prompt to ensure high quality media generation.
+Return 10-20 comma-separated keywords of things to AVOID (e.g. "blurry, distorted, low quality, grainy").
+Focus on avoiding artifacts relevant to the prompt context.
+Return ONLY the comma-separated list, no other text.`;
+
+      const response = await ai.models.generateContent({
+        model,
+        contents: [{ role: "user", parts: [{ text: systemPrompt }] }],
+      });
+
+      const negative = response.text?.trim() || "blurry, distorted, low quality, grainy, pixelated, watermark, text, out of frame, signature, cut off, messy, lowres, ugly";
+      console.log(`[agent-negative] Optimized for "${prompt.slice(0, 30)}..."`);
+      res.json({ negative });
+    } catch (error: any) {
+      console.error("[agent-negative] Error:", error);
+      res.status(500).json({ error: error.message || "Failed to optimize negative prompt" });
+    }
+  });
+
+  api.get("/agent/style-presets", async (_req, res) => {
+    try {
+      const presets = stylePresetQueries.list();
+      res.json(presets.map((p) => ({
+        ...p,
+        isBuiltIn: Boolean(p.isBuiltIn)
+      })));
+    } catch (error: any) {
+      console.error("[agent-presets] List Error:", error);
+      res.status(500).json({ error: "Failed to list style presets" });
+    }
+  });
 
   
 
@@ -2790,6 +2952,87 @@ async function startServer() {
     }
   });
 
+  // ── Compose Helpers (L1-S4.5/W4) ───────────────────────────────────────────
+  async function resolveMediaSource(jobIdOrPath: string, type: MediaType): Promise<string> {
+    if (!jobIdOrPath) return "";
+    if (jobIdOrPath.includes("/") || jobIdOrPath.includes("\\")) {
+      return path.isAbsolute(jobIdOrPath) ? jobIdOrPath : path.join(process.cwd(), jobIdOrPath.replace(/^\//, ""));
+    }
+    const manifest = await readManifest(type, jobIdOrPath);
+    const relOut = manifest.outputs[0];
+    if (!relOut) throw new Error(`${type} jobId ${jobIdOrPath} has no outputs`);
+    return path.join(process.cwd(), relOut.replace(/^\//, ""));
+  }
+
+  async function inferStandardAspectRatio(mediaPath: string): Promise<string> {
+    const compose = await import("./compose.ts");
+    const probe = await compose.probeMedia(mediaPath);
+    const ar = probe.width / probe.height;
+    if (Math.abs(ar - 9/16) < 0.1) return "9:16";
+    if (Math.abs(ar - 16/9) < 0.1) return "16:9";
+    if (Math.abs(ar - 1/1) < 0.1) return "1:1";
+    if (Math.abs(ar - 4/5) < 0.1) return "4:5";
+    return ar > 1 ? "16:9" : "9:16";
+  }
+
+  async function performComposeAction(type: string, body: any, outputPath: string): Promise<{ outputPath: string; duration: number }> {
+    const compose = await import("./compose.ts");
+    
+    // Resolve Common Assets
+    const resolvedAudioTracks: import("./compose.ts").AudioTrackInput[] = [];
+    if (Array.isArray(body.audioTracks)) {
+      for (const t of body.audioTracks) {
+        const ap = await resolveMediaSource(t.path || t.jobId, "voice");
+        resolvedAudioTracks.push({ audioPath: ap, volume: t.volume });
+      }
+    } else if (body.audioJobId || body.audioPath) {
+      resolvedAudioTracks.push({ audioPath: await resolveMediaSource(body.audioPath || body.audioJobId, "voice") });
+    }
+
+    let watermarkPath: string | undefined;
+    if (body.watermarkPath || body.watermarkJobId) {
+      watermarkPath = await resolveMediaSource(body.watermarkPath || body.watermarkJobId, "image");
+    }
+
+    if (type === "merge") {
+      const videoPath = await resolveMediaSource(body.videoPath || body.videoJobId, "video");
+      return await compose.mergeVideoAudio(videoPath, resolvedAudioTracks, outputPath, {
+        watermarkPath,
+        watermarkOpacity: body.watermarkOpacity,
+        trimPoints: body.trimPoints
+      });
+    } else if (type === "slideshow") {
+      const resolvedSlides = [];
+      for (const slide of (body.slides || [])) {
+        resolvedSlides.push({
+          imagePath: await resolveMediaSource(slide.imagePath || slide.jobId, "image"),
+          duration: slide.duration || 3,
+          transition: slide.transition || "fade",
+          kenBurns: slide.kenBurns
+        });
+      }
+      const ar = body.aspectRatio || "16:9";
+      const [width, height] = ar === "9:16" ? [1080, 1920] : ar === "1:1" ? [1080, 1080] : ar === "4:5" ? [1080, 1350] : [1920, 1080];
+      
+      return await compose.createSlideshow(resolvedSlides, outputPath, {
+        width, height,
+        fps: body.fps || 30,
+        audioTracks: resolvedAudioTracks,
+        watermarkPath,
+        watermarkOpacity: body.watermarkOpacity
+      });
+    } else if (type === "caption") {
+      const videoPath = await resolveMediaSource(body.videoPath || body.videoJobId, "video");
+      const captionCfg = body.captions;
+      const probe = await compose.probeMedia(videoPath);
+      const assResult = captionCfg.timing === "word"
+        ? await compose.generateWordLevelASS(captionCfg.text, captionCfg.style || "clean", probe.duration, captionCfg)
+        : await compose.generateASS(captionCfg.text, captionCfg.style || "clean", probe.duration, captionCfg);
+      return await compose.burnCaptions(videoPath, assResult.assPath, outputPath);
+    }
+    throw new Error(`Unsupported compose type: ${type}`);
+  }
+
   // ── Compose ──────────────────────────────────────────────────────────────────────────
 
   /**
@@ -2802,266 +3045,168 @@ async function startServer() {
    * type: "caption"    — burn ASS subtitles onto a video
    */
   api.post("/media/compose", async (req, res) => {
-    // Lazy-load compose module to avoid import-time side effects during testing
+    // Lazy-load compose module
     const compose = await import("./compose.ts");
     await compose.waitForInit();
 
-    if (!compose.isFFmpegAvailable()) {
-      return res.status(503).json({
-        error: "FFmpeg not installed",
-        installHint: "sudo apt install ffmpeg",
-      });
-    }
-
     const body = req.body as Record<string, unknown>;
-    const type = body.type as string | undefined;
+    let type = body.type as string | undefined;
 
-    if (!type || !["merge", "slideshow", "caption"].includes(type)) {
-      return res.status(400).json({ error: 'type must be one of "merge", "slideshow", "caption"' });
-    }
-
-    if (type === "slideshow") {
-      const slides = body.slides as unknown[] | undefined;
-      if (!slides || !Array.isArray(slides) || slides.length === 0) {
-        return res.status(400).json({ error: "slideshow requires at least one slide in the slides[] array" });
+    // ── W5: Quick Compose Shorthand ──
+    if (type === "quick") {
+      if (Array.isArray(body.slideJobIds) && (!body.slides || !Array.isArray(body.slides))) {
+        body.slides = body.slideJobIds.map((id) => ({ jobId: id, duration: 3, transition: "fade" }));
+        type = "slideshow";
+        body.type = "slideshow";
+      }
+      if (body.captions === "auto") {
+        body.captions = { text: "", timing: "word" };
+        body.captionSource = "voice";
+      }
+      if ((body.output as any)?.aspectRatio === "auto" || body.aspectRatio === "auto") {
+         body.aspectRatio = "auto";
       }
     }
 
-    if (type === "merge") {
-      if (!body.videoJobId && !body.videoPath) {
-        return res.status(400).json({ error: "merge requires videoJobId or videoPath" });
-      }
-      if (!body.audioJobId && !body.audioPath && (!Array.isArray(body.audioTracks) || body.audioTracks.length === 0)) {
-        return res.status(400).json({ error: "merge requires audioJobId, audioPath, or audioTracks" });
-      }
+    if (Array.isArray(body.chapters) && body.chapters.length > 0) {
+      type = "multi-part";
     }
 
-    if (type === "caption") {
-      if (!body.videoJobId && !body.videoPath) {
-        return res.status(400).json({ error: "caption requires videoJobId or videoPath" });
-      }
-      if (!body.captions || typeof (body.captions as any).text !== "string") {
-        return res.status(400).json({ error: "caption requires captions.text" });
-      }
-    }
+    if (!type) return res.status(400).json({ error: "Type is required" });
 
-    const composeId = `compose_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const now = new Date().toISOString();
-    const projectId = (body.projectId as string | undefined) ?? null;
-    const title = (body.title as string | undefined) ?? null;
-
+    const projectId = (req.query.projectId as string) || (body.projectId as string) || "default";
+    const title = (body.title as string) || `Compose ${new Date().toLocaleTimeString()}`;
+    const composeId = `cmp_${Date.now()}`;
     const outputDir = path.join(jobsDir, "compose", composeId);
-    const outputFilePath = path.join(outputDir, "output.mp4");
-    const outputUrl = `/jobs/compose/${composeId}/output.mp4`;
+    await fs.mkdir(outputDir, { recursive: true });
 
-    // Insert initial DB record
-    const jobRow: ComposeJobRow = {
+    const outputFileName = `output_${Date.now()}.mp4`;
+    const outputFilePath = path.join(outputDir, outputFileName);
+    const outputUrl = `/data/jobs/compose/${composeId}/${outputFileName}`;
+
+    // Register job in DB
+    const now = new Date().toISOString();
+    composeJobQueries.insert({
       id: composeId,
       projectId,
-      type: type as ComposeJobRow["type"],
+      type: (type === "multi-part" ? "merge" : type) as any,
       status: "processing",
       title,
       inputConfig: JSON.stringify(body),
-      audioTracks: body.audioTracks ? JSON.stringify(body.audioTracks) : null,
-      trimPoints: body.trimPoints ? JSON.stringify(body.trimPoints) : null,
-      watermarkJobId: (body.watermarkJobId as string) ?? null,
+      audioTracks: null,
+      trimPoints: null,
+      watermarkJobId: null,
       outputPath: null,
       outputs: JSON.stringify([]),
       duration: null,
       createdAt: now,
       updatedAt: now,
-    };
-    try {
-      composeJobQueries.insert(jobRow);
-    } catch (dbErr) {
-      console.error("[compose] DB insert failed:", dbErr);
-    }
-
-    // Write a manifest file so the job is discoverable via GET
-    await fs.mkdir(outputDir, { recursive: true });
-    await fs.writeFile(
-      path.join(outputDir, "manifest.json"),
-      JSON.stringify({ ...jobRow, outputs: [] }, null, 2),
-    );
+    });
 
     // Fire-and-forget background composition
     void (async () => {
       try {
-        let result: { outputPath: string; duration: number; size: number } | null = null;
+        // ── W3: Caption Source from Voice ──
+        if (body.captionSource === "voice") {
+          const vId = body.voiceJobId as string || (body.audioJobId as string) || (Array.isArray(body.audioTracks) ? (body.audioTracks[0] as any)?.jobId : null);
+          if (vId) {
+            try {
+              const voiceManifest = await readManifest("voice", vId);
+              if (!body.captions) body.captions = {};
+              (body.captions as any).text = voiceManifest.text || voiceManifest.prompt || "";
+            } catch (e) {
+              console.warn("[compose] Failed to auto-fill captions from voice job:", e);
+            }
+          }
+        }
 
-        // ── Resolve Common Assets (Audio & Watermark) ───────────────────────
-        const resolvedAudioTracks: import("./compose.ts").AudioTrackInput[] = [];
-        if (Array.isArray(body.audioTracks) && body.audioTracks.length > 0) {
-          for (const t of body.audioTracks as Array<{ jobId?: string; path?: string; volume?: number }>) {
-            let ap = "";
-            if (t.path) {
-              ap = t.path;
-            } else if (t.jobId) {
-              let manifest;
-              try {
-                manifest = await readManifest("voice", t.jobId);
-              } catch {
-                try {
-                  manifest = await readManifest("audio" as any, t.jobId);
-                } catch {
-                  manifest = await readManifest("video", t.jobId); 
-                }
+        // ── W4: Aspect Ratio Auto-detection ──
+        let resolvedAspectRatio = (body.aspectRatio as string) || (body.output as any)?.aspectRatio || "9:16";
+        if (resolvedAspectRatio === "auto") {
+          try {
+            let samplePath = "";
+            if (type === "multi-part") {
+              const first = (body.chapters as any[])[0];
+              if (first.videoJobId) samplePath = await resolveMediaSource(first.videoJobId, "video");
+              else if (first.videoPath) samplePath = first.videoPath;
+              else if (Array.isArray(first.slides) && first.slides.length > 0) {
+                 samplePath = first.slides[0].path || await resolveMediaSource(first.slides[0].jobId, "image");
               }
-              const relOut = manifest.outputs[0];
-              if (!relOut) throw new Error(`audioTrack jobId ${t.jobId} has no outputs`);
-              ap = path.join(process.cwd(), relOut.replace(/^\//, ""));
-            } else {
-              continue;
+            } else if (body.videoJobId) {
+              samplePath = await resolveMediaSource(body.videoJobId as string, "video");
+            } else if (body.videoPath) {
+              samplePath = body.videoPath as string;
+            } else if (Array.isArray(body.slides) && body.slides.length > 0) {
+              const s = (body.slides as any[])[0];
+              samplePath = s.imagePath || await resolveMediaSource(s.jobId, "image");
             }
-            resolvedAudioTracks.push({ audioPath: ap, volume: t.volume });
+
+            if (samplePath) {
+              resolvedAspectRatio = await inferStandardAspectRatio(samplePath);
+              body.aspectRatio = resolvedAspectRatio;
+            } else {
+              resolvedAspectRatio = "9:16";
+            }
+          } catch {
+            resolvedAspectRatio = "9:16";
           }
-        } else if (body.audioJobId || body.audioPath) {
-          // legacy single track fallback
-          let audioPath: string;
-          if (body.audioPath) {
-            audioPath = body.audioPath as string;
-          } else {
-            const manifest = await readManifest("voice", body.audioJobId as string);
-            const relOut = manifest.outputs[0];
-            if (!relOut) throw new Error(`audioJobId ${body.audioJobId} has no outputs`);
-            audioPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
+        }
+        body.aspectRatio = resolvedAspectRatio;
+
+        let result: any = null;
+
+        // ── W2: Multi-Part Logic ──
+        if (type === "multi-part") {
+          console.log(`[compose] Multi-part render started for ${(body.chapters as any[]).length} chapters`);
+          const chapterPaths = [];
+          for (let i = 0; i < (body.chapters as any[]).length; i++) {
+             const chapter = (body.chapters as any[])[i];
+             const chapterPath = path.join(outputDir, `chapter_${i}.mp4`);
+             const chapterBody = { ...body, ...chapter, chapters: undefined };
+             console.log(`[compose] Rendering chapter ${i} (${chapter.type})...`);
+             const res = await performComposeAction(chapter.type, chapterBody, chapterPath);
+             chapterPaths.push(res.outputPath);
           }
-          resolvedAudioTracks.push({ audioPath });
+          console.log(`[compose] Concatenating ${chapterPaths.length} chapters...`);
+          result = await compose.concatVideos(chapterPaths, outputFilePath);
+          for (const p of chapterPaths) { try { await fs.unlink(p); } catch {} }
+        } else {
+          result = await performComposeAction(type as string, body, outputFilePath);
         }
 
-        let watermarkPath: string | undefined;
-        if (body.watermarkPath) {
-          watermarkPath = body.watermarkPath as string;
-        } else if (body.watermarkJobId) {
-          const manifest = await readManifest("image", body.watermarkJobId as string);
-          const relOut = manifest.outputs[0];
-          if (!relOut) throw new Error(`watermarkJobId ${body.watermarkJobId} has no outputs`);
-          watermarkPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
-        }
-
-        if (type === "merge") {
-          // Resolve video path
-          let videoPath: string;
-          if (body.videoPath) {
-            videoPath = body.videoPath as string;
-          } else {
-            const manifest = await readManifest(
-              "video",
-              body.videoJobId as string
-            );
-            const relOut = manifest.outputs[0];
-            if (!relOut) throw new Error(`videoJobId ${body.videoJobId} has no outputs`);
-            videoPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
-          }
-
-          // Resolve trim points
-          let trimPoints: { inPoint: number; outPoint: number } | undefined;
-          if (body.trimPoints && typeof body.trimPoints === "object") {
-            const tp = body.trimPoints as { inPoint?: number; outPoint?: number };
-            if (tp.inPoint !== undefined && tp.outPoint !== undefined) {
-              trimPoints = { inPoint: Number(tp.inPoint), outPoint: Number(tp.outPoint) };
-            }
-          }
-
-          const mergeOpts: import("./compose.ts").MergeOptions = {
-             trimPoints,
-             watermarkPath,
-             watermarkOpacity: (body.watermarkOpacity as number) ?? 1.0,
-          };
-
-          result = await compose.mergeVideoAudio(videoPath, resolvedAudioTracks, outputFilePath, mergeOpts);
-
-
-        } else if (type === "slideshow") {
-          const slides = body.slides as Array<{
-            jobId?: string;
-            imagePath?: string;
-            duration?: number;
-            transition?: string;
-            kenBurns?: boolean;
-          }>;
-
-          const resolvedSlides: ComposeSlideInput[] = [];
-          for (const slide of slides) {
-            let imagePath: string;
-            if (slide.imagePath) {
-              imagePath = slide.imagePath;
-            } else if (slide.jobId) {
-              const manifest = await readManifest("image", slide.jobId);
-              const relOut = manifest.outputs[0];
-              if (!relOut) throw new Error(`jobId ${slide.jobId} has no outputs`);
-              imagePath = path.join(process.cwd(), relOut.replace(/^\//, ""));
-            } else {
-              throw new Error("Each slide must have jobId or imagePath");
-            }
-            resolvedSlides.push({
-              imagePath,
-              duration: slide.duration ?? 3,
-              transition: slide.transition ?? "fade",
-              kenBurns: slide.kenBurns ?? false,
-            });
-          }
-
-          const outputCfg = (body.output as Record<string, unknown>) ?? {};
-          const [ow, oh] = (() => {
-            const ar = (outputCfg.aspectRatio as string) ?? "16:9";
-            if (ar === "9:16") return [1080, 1920];
-            if (ar === "1:1") return [1080, 1080];
-            if (ar === "4:5") return [1080, 1350];
-            return [1920, 1080]; // 16:9 default
-          })();
-
-          result = await compose.createSlideshow(resolvedSlides, outputFilePath, {
-            width: ow,
-            height: oh,
-            fps: (outputCfg.fps as number) ?? 30,
-            audioTracks: resolvedAudioTracks,
-            watermarkPath,
-            watermarkOpacity: (body.watermarkOpacity as number) ?? 1.0,
-          });
-
-        } else if (type === "caption") {
-          // Resolve video path
-          let videoPath: string;
-          if (body.videoPath) {
-            videoPath = body.videoPath as string;
-          } else {
-            const manifest = await readManifest(
-              "video",
-              body.videoJobId as string
-            );
-            const relOut = manifest.outputs[0];
-            if (!relOut) throw new Error(`videoJobId ${body.videoJobId} has no outputs`);
-            videoPath = path.join(process.cwd(), relOut.replace(/^\//, ""));
-          }
-
-          const captionCfg = body.captions as {
-            text: string;
-            style?: string;
-            fontSize?: number;
-            color?: string;
-            position?: "top" | "center" | "bottom";
-            timing?: "sentence" | "word";
-          };
-
-          const videoProbe = await compose.probeMedia(videoPath);
-          const duration = videoProbe.duration;
-
-          const style = (captionCfg.style ?? "clean") as Parameters<typeof compose.generateASS>[1];
-          const assResult =
-            captionCfg.timing === "word"
+        // ── W2 & W3: Auto-burn Captions 2-Pass ──
+        if (result && body.captions && (body.captions as any).text && type !== "caption") {
+          console.log(`[compose] Pass 2: Burning captions...`);
+          const captionCfg = body.captions as any;
+          const intermediatePath = path.join(outputDir, "intermediate_base.mp4");
+          
+          try {
+            await fs.rename(outputFilePath, intermediatePath);
+            const style = (captionCfg.style ?? "clean") as any;
+            const duration = result.duration;
+            
+            const assResult = captionCfg.timing === "word"
               ? await compose.generateWordLevelASS(captionCfg.text, style, duration, {
                   fontSize: captionCfg.fontSize,
                   fontColor: captionCfg.color,
                   position: captionCfg.position,
+                  animation: captionCfg.animation || "scale",
                 })
               : await compose.generateASS(captionCfg.text, style, duration, {
                   fontSize: captionCfg.fontSize,
                   fontColor: captionCfg.color,
                   position: captionCfg.position,
+                  animation: captionCfg.animation || "scale",
                 });
-
-          result = await compose.burnCaptions(videoPath, assResult.assPath, outputFilePath);
+            
+            result = await compose.burnCaptions(intermediatePath, assResult.assPath, outputFilePath);
+            await fs.unlink(intermediatePath).catch(() => {});
+          } catch (pass2Err) {
+            console.error("[compose] Caption pass 2 failed:", pass2Err);
+            if (await fs.stat(intermediatePath).then(() => true).catch(() => false)) {
+              await fs.rename(intermediatePath, outputFilePath).catch(() => {});
+            }
+          }
         }
 
         if (result) {
@@ -3072,7 +3217,6 @@ async function startServer() {
             duration: result.duration,
           });
 
-          // Update manifest file
           await fs.writeFile(
             path.join(outputDir, "manifest.json"),
             JSON.stringify({
@@ -3088,9 +3232,9 @@ async function startServer() {
               createdAt: now,
               updatedAt: new Date().toISOString(),
             }, null, 2),
+            "utf8"
           );
 
-          // Also index in media_jobs so it appears in Library
           try {
             mediaJobQueries.upsert({
               id: composeId,
@@ -3100,7 +3244,7 @@ async function startServer() {
               prompt: title ?? `${type} compose job`,
               model: null,
               size: null,
-              aspectRatio: (body.output as any)?.aspectRatio ?? null,
+              aspectRatio: body.aspectRatio as string,
               resolution: null,
               voice: null,
               outputs: JSON.stringify([outputUrl]),
@@ -3108,13 +3252,13 @@ async function startServer() {
               scores: null,
               rating: null,
               planItemId: null,
+              duration: result.duration,
               createdAt: now,
               updatedAt: new Date().toISOString(),
             });
           } catch (dbErr) {
             console.error("[compose] media_jobs index failed:", dbErr);
           }
-
           console.log(`[compose] Job ${composeId} completed — ${outputUrl}`);
         }
       } catch (err: any) {
@@ -3136,11 +3280,37 @@ async function startServer() {
             createdAt: now,
             updatedAt: new Date().toISOString(),
           }, null, 2),
+          "utf8"
         ).catch(() => {});
       }
     })();
 
     res.status(202).json({ composeId, status: "processing" });
+  });
+
+  api.get("/media/compose/status", async (req, res) => {
+    const active = composeJobQueries.listActive();
+    res.json(active.map(j => ({
+      id: j.id,
+      type: "compose",
+      status: j.status,
+      label: j.title || "Untitled Compose",
+      createdAt: j.createdAt,
+      progress: j.status === "processing" ? 45 : 0, 
+    })));
+  });
+
+  api.get("/media/batch/status", async (req, res) => {
+    // Poll all active media jobs
+    const jobs = mediaJobQueries.listActive();
+    res.json(jobs.map(j => ({
+      id: j.id,
+      type: j.type,
+      status: j.status,
+      label: j.prompt || "Media Job",
+      createdAt: j.createdAt,
+      progress: j.status === "pending" ? 30 : 0
+    })));
   });
 
   /**

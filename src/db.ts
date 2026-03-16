@@ -94,6 +94,8 @@ db.exec(/* sql */ `
     scores        TEXT,                           -- JSON object: { overall, brandAlignment, … }
     rating        INTEGER,                         -- user manual rating 1-5
     planItemId    TEXT,                           -- FK into media_plans item ID (soft ref)
+    duration      REAL,                           -- duration in seconds (for video, voice, music)
+    archivedAt    TEXT,                           -- soft-delete timestamp (lane 3)
     createdAt     TEXT    NOT NULL,
     updatedAt     TEXT    NOT NULL
   );
@@ -174,6 +176,7 @@ db.exec(/* sql */ `
     outputPath   TEXT,
     outputs      TEXT    NOT NULL DEFAULT '[]',  -- JSON array of output paths
     duration     REAL,
+    archivedAt   TEXT,                            -- soft-delete timestamp (lane 3)
     createdAt    TEXT    NOT NULL,
     updatedAt    TEXT    NOT NULL
   );
@@ -183,6 +186,20 @@ db.exec(/* sql */ `
   -- but since better-sqlite3 exec() doesn't allow catching individual errors in one multi-statement call,
   -- we'll split the alter calls into separate exec calls below the main bootstrap.
   CREATE INDEX IF NOT EXISTS idx_compose_jobs_project ON compose_jobs(projectId);
+  -- ── Style Presets ─────────────────────────────────────────────────────────
+  CREATE TABLE IF NOT EXISTS style_presets (
+    id            TEXT    PRIMARY KEY,
+    name          TEXT    NOT NULL,
+    description   TEXT,
+    positiveAppend TEXT,
+    negativeAppend TEXT,
+    aspectRatio   TEXT,
+    colorGrade    TEXT,
+    isBuiltIn     INTEGER DEFAULT 0,
+    createdAt     TEXT    NOT NULL,
+    updatedAt     TEXT    NOT NULL
+  );
+
   -- ── Idempotency Keys ──────────────────────────────────────────────────────
   -- Cache successful generation responses to prevent duplication on retry.
   CREATE TABLE IF NOT EXISTS idempotency_keys (
@@ -196,7 +213,10 @@ db.exec(/* sql */ `
 ["audioTracks", "trimPoints", "watermarkJobId"].forEach(col => {
   try { db.exec(`ALTER TABLE compose_jobs ADD COLUMN ${col} TEXT`); } catch {}
 });
+try { db.exec(`ALTER TABLE media_jobs ADD COLUMN duration REAL`); } catch {}
 try { db.exec(`ALTER TABLE compose_jobs ADD COLUMN outputs TEXT NOT NULL DEFAULT '[]'`); } catch {}
+try { db.exec(`ALTER TABLE media_jobs ADD COLUMN archivedAt TEXT`); } catch {}
+try { db.exec(`ALTER TABLE compose_jobs ADD COLUMN archivedAt TEXT`); } catch {}
 
 // ---------------------------------------------------------------------------
 // TypeScript types (shared by all lanes that import db.ts)
@@ -238,6 +258,8 @@ export interface MediaJobRow {
   scores: string | null;
   rating: number | null;
   planItemId: string | null;
+  duration: number | null;
+  archivedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -283,6 +305,7 @@ export interface ComposeJobRow {
   /** JSON-encoded string[] */
   outputs: string;
   duration: number | null;
+  archivedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -360,15 +383,19 @@ export const projectQueries = {
 const _insertJob = db.prepare<MediaJobRow>(/* sql */ `
   INSERT OR REPLACE INTO media_jobs
     (id, projectId, type, status, prompt, model, size, aspectRatio, resolution,
-     voice, outputs, tags, scores, rating, planItemId, createdAt, updatedAt)
+     voice, outputs, tags, scores, rating, planItemId, duration, archivedAt, createdAt, updatedAt)
   VALUES
     (@id, @projectId, @type, @status, @prompt, @model, @size, @aspectRatio, @resolution,
-     @voice, @outputs, @tags, @scores, @rating, @planItemId, @createdAt, @updatedAt)
+     @voice, @outputs, @tags, @scores, @rating, @planItemId, @duration, @archivedAt, @createdAt, @updatedAt)
 `);
 
 const _getJob = db.prepare<{ id: string }>("SELECT * FROM media_jobs WHERE id = @id");
 
 const _listJobsByProject = db.prepare<{ projectId: string }>(
+  "SELECT * FROM media_jobs WHERE projectId = @projectId AND archivedAt IS NULL ORDER BY createdAt DESC"
+);
+
+const _listJobsByProjectWithArchived = db.prepare<{ projectId: string }>(
   "SELECT * FROM media_jobs WHERE projectId = @projectId ORDER BY createdAt DESC"
 );
 
@@ -402,8 +429,8 @@ export const mediaJobQueries = {
   upsert: (row: MediaJobRow) => _insertJob.run(row),
   get: (id: string): MediaJobRow | undefined =>
     _getJob.get({ id }) as MediaJobRow | undefined,
-  listByProject: (projectId: string): MediaJobRow[] =>
-    _listJobsByProject.all({ projectId }) as MediaJobRow[],
+  listByProject: (projectId: string, includeArchived = false): MediaJobRow[] =>
+    (includeArchived ? _listJobsByProjectWithArchived : _listJobsByProject).all({ projectId }) as MediaJobRow[],
   updateStatus: (opts: {
     id: string;
     status: string;
@@ -424,6 +451,12 @@ export const mediaJobQueries = {
       ...opts,
       scores: JSON.stringify(opts.scores),
     }),
+  archive: (id: string) => 
+    db.prepare("UPDATE media_jobs SET archivedAt = ? WHERE id = ?").run(new Date().toISOString(), id),
+  unarchive: (id: string) => 
+    db.prepare("UPDATE media_jobs SET archivedAt = NULL WHERE id = ?").run(id),
+  listActive: (): MediaJobRow[] =>
+    db.prepare("SELECT * FROM media_jobs WHERE status = 'pending' AND archivedAt IS NULL ORDER BY createdAt DESC").all() as MediaJobRow[],
   delete: (id: string) => db.prepare("DELETE FROM media_jobs WHERE id = ?").run(id),
 };
 
@@ -574,9 +607,9 @@ export function getActiveArtifacts(projectId: string): StrategyArtifactRow[] {
 
 const _insertComposeJob = db.prepare<ComposeJobRow>(/* sql */ `
   INSERT OR REPLACE INTO compose_jobs
-    (id, projectId, type, status, title, inputConfig, audioTracks, trimPoints, watermarkJobId, outputPath, outputs, duration, createdAt, updatedAt)
+    (id, projectId, type, status, title, inputConfig, audioTracks, trimPoints, watermarkJobId, outputPath, outputs, duration, archivedAt, createdAt, updatedAt)
   VALUES
-    (@id, @projectId, @type, @status, @title, @inputConfig, @audioTracks, @trimPoints, @watermarkJobId, @outputPath, @outputs, @duration, @createdAt, @updatedAt)
+    (@id, @projectId, @type, @status, @title, @inputConfig, @audioTracks, @trimPoints, @watermarkJobId, @outputPath, @outputs, @duration, @archivedAt, @createdAt, @updatedAt)
 `);
 
 const _getComposeJob = db.prepare<{ id: string }>(
@@ -584,7 +617,7 @@ const _getComposeJob = db.prepare<{ id: string }>(
 );
 
 const _listComposeJobsByProject = db.prepare<{ projectId: string }>(
-  "SELECT * FROM compose_jobs WHERE projectId = @projectId ORDER BY createdAt DESC"
+  "SELECT * FROM compose_jobs WHERE projectId = @projectId AND archivedAt IS NULL ORDER BY createdAt DESC"
 );
 
 const _updateComposeJobStatus = db.prepare<{
@@ -626,6 +659,12 @@ export const composeJobQueries = {
       duration: opts.duration ?? null,
       updatedAt: opts.updatedAt ?? new Date().toISOString(),
     }),
+  archive: (id: string) => 
+    db.prepare("UPDATE compose_jobs SET archivedAt = ? WHERE id = ?").run(new Date().toISOString(), id),
+  unarchive: (id: string) => 
+    db.prepare("UPDATE compose_jobs SET archivedAt = NULL WHERE id = ?").run(id),
+  listActive: (): ComposeJobRow[] =>
+    db.prepare("SELECT * FROM compose_jobs WHERE status IN ('pending', 'processing') AND archivedAt IS NULL ORDER BY createdAt DESC").all() as ComposeJobRow[],
   delete: (id: string) => db.prepare("DELETE FROM compose_jobs WHERE id = ?").run(id),
 };
 
@@ -666,4 +705,35 @@ export const idempotencyQueries = {
       return undefined;
     }
   },
+};
+
+// ── Style Presets ───────────────────────────────────────────────────────────
+
+export interface StylePresetRow {
+  id: string;
+  name: string;
+  description: string | null;
+  positiveAppend: string | null;
+  negativeAppend: string | null;
+  aspectRatio: string | null;
+  colorGrade: string | null;
+  isBuiltIn: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const _listStylePresets = db.prepare("SELECT * FROM style_presets ORDER BY isBuiltIn DESC, name ASC");
+const _getStylePreset = db.prepare<{ id: string }>("SELECT * FROM style_presets WHERE id = @id");
+const _insertStylePreset = db.prepare<StylePresetRow>(`
+  INSERT OR REPLACE INTO style_presets
+    (id, name, description, positiveAppend, negativeAppend, aspectRatio, colorGrade, isBuiltIn, createdAt, updatedAt)
+  VALUES
+    (@id, @name, @description, @positiveAppend, @negativeAppend, @aspectRatio, @colorGrade, @isBuiltIn, @createdAt, @updatedAt)
+`);
+
+export const stylePresetQueries = {
+  list: (): StylePresetRow[] => _listStylePresets.all() as StylePresetRow[],
+  get: (id: string): StylePresetRow | undefined => _getStylePreset.get({ id }) as StylePresetRow | undefined,
+  upsert: (row: StylePresetRow) => _insertStylePreset.run(row),
+  delete: (id: string) => db.prepare("DELETE FROM style_presets WHERE id = ?").run(id),
 };

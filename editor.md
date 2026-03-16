@@ -785,3 +785,1279 @@ server/
 data/
   compose-templates/           — JSON template files
 ```
+
+---
+
+## Tier 6 — Compose Next: Honest Audit & Roadmap (March 2025)
+
+> This section is the result of a full audit of the shipped compose system as of Sprint 9.
+> It asks: what can we realistically build that adds real value, and what should we
+> just use CapCut (or DaVinci / Premiere) for?
+
+---
+
+### 6.0 What's Actually Shipped (Engine Capabilities)
+
+Before planning, here's the truthful **"what works today"** inventory:
+
+| Feature | Status | Engine | Notes |
+|---------|--------|--------|-------|
+| **Video+Voiceover Merge** | ✅ Shipped | FFmpeg `mergeVideoAudio()` | Multi-track audio, volume, fade in/out |
+| **Image Slideshow** | ✅ Shipped | FFmpeg `createSlideshow()` | Video slides now supported too |
+| **Video Slides in Slideshow** | ✅ Shipped | `-stream_loop -1` | Fixed this sprint — mp4 inputs work |
+| **xfade Transitions** | ✅ Shipped | 12 transitions exposed | FFmpeg supports 40+, we show 12 |
+| **Ken Burns (4 directions)** | ✅ Shipped | `zoompan` filter | zoom-in, zoom-out, pan-left, pan-right |
+| **Sentence-Level Captions** | ✅ Shipped | ASS subtitles | 5 style presets, position control, color |
+| **Word-Level Captions** | ✅ Shipped | `generateWordLevelASS()` | Proportional timing by character count |
+| **Watermark Overlay** | ✅ Shipped | 9-position grid | Opacity + position picker works |
+| **Per-Slide Text Overlay** | ✅ Shipped | SlideTimeline UI | Text + position (top/center/bottom) |
+| **Audio Fade In/Out** | ✅ Shipped | `afade` filter | Per-track fade controls |
+| **Trim Points (Merge)** | ✅ Shipped | `-ss`/`-to` | In/out point controls |
+| **Templates** | ✅ Shipped | 6 JSON templates + AI suggestion | Template selection + artifact-tuned |
+| **Speed Control** | ⬜ Specced only | `setpts` filter | E14 — not wired to UI |
+| **Highlight Color (word caps)** | ⬜ Specced only | ASS `\c&H...&` | E11 — not wired to UI |
+| **Subtitle Entrance Animations** | ⬜ Specced only | ASS `\fad`, `\t` | 2.8.4 — not built |
+| **Subtitle Background Box** | ⬜ Specced only | ASS `\3c`, `\4c` | 2.8.1 — not built |
+| **Font Selection** | ⬜ Specced only | `Fontname=X` in ASS | 2.8.5 — needs bundled fonts |
+| **Multi-Line Caption Control** | ⬜ Specced only | Line-split logic | 2.8.3 — not built |
+
+So roughly: **Tier 1 is done. Half of Tier 1.5 is done. Tier 2 is partially done (captions, watermarks, trim). Tiers 2.5-5 are essentially untouched.**
+
+---
+
+### 6.1 The Big Question: Build vs. CapCut
+
+Here's the honest breakdown of what Gemlink can realistically own versus what's better left to dedicated NLEs:
+
+#### ✅ BUILD — These add unique value that CapCut can't replicate
+
+| Feature | Why build it | Effort |
+|---------|-------------|--------|
+| **Agent-Assisted Compose** | CapCut can't read your brand strategy, look at your media plan, and auto-build a composition. This is our unique moat. | Medium |
+| **Streaming Word Subtitles** | We already have the engine (`generateWordLevelASS`). Just needs highlight color, entrance animation, and karaoke background box. These are ASS tag additions — no new infra. | Small |
+| **Media Plan → Auto-Compose** | A second AI reasoning pass over the plan that groups images+voice into compositions, assigns transitions based on brand feel, and queues renders. Nobody else does this. | Medium |
+| **Post-Render Add Slide** | Let the user add/insert an image to an existing slideshow after initial assembly, without starting over. Already possible — just wire the "insert at index" logic. | Small |
+| **Full Transition Library** | We have 12 of 40+ FFmpeg transitions. Expanding is pure UI — no engine changes. | Tiny |
+
+#### ⚠️ BUILD CAREFULLY — Diminishing returns, keep it minimal
+
+| Feature | Risk | Recommendation |
+|---------|------|----------------|
+| **Text Positioning (drag-to-place)** | We'd need a canvas-based overlay editor. Worth doing only as a simple 9-position grid (like watermark), NOT a freeform drag. | Build the 9-grid version. Skip freeform. |
+| **Text Effects (typewriter, bounce, glow)** | ASS supports `\fad`, `\t\fscx`, `\t\blur` for basic animation. But truly premium text animation (bounce, glitch, shake) requires Remotion or canvas rendering. | Build the 4 ASS-native effects. Skip fancy ones. |
+| **Timing Row for Text** | A visual timeline showing when each word/sentence appears. This is the gateway to a full NLE timeline, which is Tier 5 territory. | Build a simple read-only "caption timeline bar" that shows word blocks, NOT a full draggable editor. |
+| **Speed Ramp** | Variable speed within a single clip (slow-mo then fast) is very complex in FFmpeg's filtergraph. Constant speed is trivial. | Build constant speed only (0.5x–2x segmented control). Skip variable ramp. |
+
+#### ❌ DON'T BUILD — Use CapCut/Premiere for these
+
+| Feature | Why not | Alternative |
+|---------|---------|-------------|
+| **Freeform text drag positioning** | Requires a canvas compositing engine. Months of work for something CapCut does perfectly. | Export to CapCut for fine positioning. |
+| **Multi-track visual timeline** | This is DaVinci Resolve. We'd be building an NLE inside a marketing tool. | Use the storyboard (cards) for ordering, export for precise editing. |
+| **Motion graphics / animated overlays** | Requires Remotion or After Effects. Way outside our stack. | Use CapCut templates or Canva. |
+| **Keyframe animation editor** | The core of any NLE. Completely impractical to build well. | CapCut or Premiere. |
+| **Audio waveform scrubbing** | Needs WebAudio API + canvas rendering. Big project for small payoff. | Match durations using the E9 warning system. |
+| **Split-screen / picture-in-picture** | Complex FFmpeg overlay math with positioning. Fragile. | CapCut has one-click PiP. |
+
+---
+
+### 6.2 Agent-Assisted Compose ("Compose with Agent")
+
+This is the **killer feature** that no standalone editor has. Here's how it works:
+
+#### The Flow
+
+```
+Media Plan (approved items) → Agent Reasoning Pass → Proposed Composition → User Review → Render
+```
+
+#### What the Agent Does (Second Reasoning Session)
+
+The Media Plan already has a "Quick Plan" AI that generates items. The **second reasoning pass** would:
+
+1. **Group approved media** — cluster images/videos by purpose, topic, or tags
+2. **Assign slide order** — put "hook" imagery first, "CTA" last, "features" in middle
+3. **Choose transitions** — match brand feel (fast cuts for Gen Z, dissolves for luxury)
+4. **Set timing** — shorter slides for high-energy brands, longer for "premium" feel
+5. **Write caption text** — generate voiceover script from the slide sequence
+6. **Pick caption style** — bold-outline for TikTok, clean for LinkedIn, word-highlight for Reels
+7. **Suggest music mood** — "upbeat", "cinematic", "chill" (for future Lyria integration)
+
+#### How to Build It
+
+This is essentially `templateSuggestionFromArtifact()` (already in compose.ts!) but operating on the **actual media plan items** instead of an artifact:
+
+```typescript
+// New endpoint: POST /api/media/plan/:planId/auto-compose
+// Input: { items: MediaPlanItem[] }
+// Output: ComposeProject (ready to load into Compose page)
+```
+
+The server would:
+1. Read the approved items from the plan
+2. Read any pinned strategy artifacts for brand context
+3. Call Gemini with both + ask for a composition config
+4. Return a `ComposeProject` JSON that the frontend loads directly into `setProject()`
+5. User sees the pre-built composition, tweaks anything, hits Render
+
+**Effort**: ~1 day. The hardest part is prompt engineering the Gemini call. The plumbing already exists.
+
+---
+
+### 6.3 Streaming Word Subtitles (The Viral Caption Stack)
+
+What makes TikTok/Reels captions feel premium:
+
+1. ✅ **Word-by-word timing** — we have this (`generateWordLevelASS`)
+2. ⬜ **Active word highlight color** — specced as E11, needs wiring
+3. ⬜ **Background box on active word** — specced as 2.8.1, ASS tags only
+4. ⬜ **Entrance animation** — specced as 2.8.4, ASS `\fad` + `\t` tags
+5. ⬜ **Multi-line auto-wrap** — specced as 2.8.3, line-split logic
+6. ⬜ **Font selection** — specced as 2.8.5, need to bundle 2-3 TTF files
+
+All six of these are **ASS subtitle tag modifications** in `compose.ts`. No new FFmpeg filters. No new infrastructure. The total change to `generateWordLevelASS()` is probably ~80 lines.
+
+#### Priority order for subtitle work:
+
+| Step | What | Impact | Effort |
+|------|------|--------|--------|
+| 1 | **Highlight color** (E11) | Makes word-level mode visually obvious | ~20 lines |
+| 2 | **Background box** (2.8.1) | The "karaoke" look everyone wants | ~30 lines |
+| 3 | **Entrance animation** (2.8.4) | Words feel alive instead of static | ~15 lines |
+| 4 | **Multi-line wrap** (2.8.3) | Prevents text overflow on 9:16 | ~25 lines |
+| 5 | **Font selection** (2.8.5) | Premium feel — needs font files | ~20 lines + font download |
+
+Total for all 5: **~110 lines of ASS generation logic + 6 lines of CaptionEditor UI per feature**.
+
+---
+
+### 6.4 Text Positioning & Effects (Realistic Scope)
+
+#### What we CAN build with ASS subtitles:
+
+The ASS format supports positional override tags that let us place text anywhere on screen:
+
+```
+{\an7}     top-left        {\an8}     top-center        {\an9}     top-right
+{\an4}     middle-left     {\an5}     center            {\an6}     middle-right
+{\an1}     bottom-left     {\an2}     bottom-center     {\an3}     bottom-right
+```
+
+We can also do these ASS-native text effects:
+- `\fad(500,300)` — Fade in 500ms, fade out 300ms
+- `\t(\fscx120\fscy120,\fscx100\fscy100)` — Pop-in (scale up then settle)
+- `\t(\blur10,\blur0)` — Blur-in (soft entrance)
+- `\move(x1,y1,x2,y2)` — Slide text from one position to another
+- `\kf` — Karaoke fill (already using this for typewriter)
+
+**Action**: Build a 9-position grid (reuse watermark picker component) for caption placement. Add 4 entrance animation options. ~40 lines of UI + ~20 lines of ASS tag logic.
+
+#### What we CANNOT build without a canvas editor:
+
+- Freeform pixel-position text dragging
+- Text along a curved path
+- Per-character animation (bounce, wave, shake)
+- Animated emoji
+- Text masked by video content
+
+**Verdict**: Don't build these. CapCut's text editor is world-class for this.
+
+---
+
+### 6.5 Post-Assembly Image Insertion
+
+> "Can we add an image to the slideshow afterwards?"
+
+**Yes, and this is already mostly wired.** The slide timeline has:
+- Drag-to-reorder (via `@dnd-kit`)
+- Duplicate slide button
+- Delete slide button
+- Media picker opens on "slide" target
+
+What's missing is an **"Insert After" action** that opens the picker and inserts at a specific index rather than appending to the end. This is ~10 lines:
+
+```typescript
+function insertSlideAfter(index: number, job: MediaJob) {
+  const slide = jobToSlide(job);
+  const next = [...project.slides];
+  next.splice(index + 1, 0, slide);
+  patch({ slides: next });
+}
+```
+
+Add an "+" button between each slide card in the timeline. On click, open picker with `pickerTarget = "slide-insert"` and save the target index. When media is selected, insert at that index instead of appending.
+
+---
+
+### 6.6 Caption Timing Bar (Read-Only Timeline)
+
+A visual bar showing when each word or sentence appears, without being a full timeline editor.
+
+```
+┌─────────────────────────────────────────────────────┐
+│ ██ Welcome ██ to ██ our ██ brand ██████ new ██ prod │
+│ 0s          2s        4s        6s        8s    10s │
+└─────────────────────────────────────────────────────┘
+```
+
+- Each word gets a colored block proportional to its duration
+- Active word (during preview playback) highlights
+- NOT draggable (that's a full NLE feature)
+- Purely informational: helps the user see if timing feels right before rendering
+
+**How to build**: In `CaptionEditor.tsx`, when `timing === "word"`, compute the word durations using the same proportional-character-count algorithm from `generateWordLevelASS()`. Render as a flex row of `<div>` blocks with widths proportional to duration. ~40 lines of UI.
+
+---
+
+### 6.7 Media Plan Agent: Second Reasoning Session
+
+The existing "Quick Plan" generates items from a text description. A **second reasoning pass** would:
+
+1. Look at the completed/approved items in the plan
+2. Read pinned strategy artifacts for brand context
+3. Propose a complete `ComposeProject`:
+   - Which items become slides, in what order
+   - Which voice job is the voiceover
+   - Which music job is the background track
+   - Slide durations, transitions, caption style
+   - Output aspect ratio based on target platform
+4. Load the proposed config into Compose for user review
+
+This is the glue between Media Plan and Compose. It turns "I generated 8 images and a voiceover" into "here's a ready-to-render video" with one click.
+
+**Endpoint**: `POST /api/media/plan/:planId/auto-compose` (already stubbed in MediaPlan.tsx as `handleAutoCompose`)
+
+**Effort**: ~1 day for the endpoint + prompt engineering. Frontend wiring already exists.
+
+---
+
+### 6.8 Updated Roadmap: What to Build Next
+
+Given everything above, here's the recommended sequence — optimized for **maximum impact with minimum effort**, keeping us out of "building an NLE" territory:
+
+| Phase | What | Effort | Why |
+|-------|------|--------|-----|
+| **Next (1 day)** | Full transition library (expose all 40+ FFmpeg xfade transitions) | Tiny | Pure UI change, huge perceived improvement |
+| **Next (1 day)** | Highlight color for word-level captions (E11) | Small | Makes viral captions actually look viral |
+| **Next (1 day)** | Caption entrance animations (fade/pop/blur) | Small | Captions feel alive |
+| **Next (1 day)** | Karaoke background box on active word | Small | The look everyone wants |
+| **Sprint** | Agent-Assisted Compose (plan → auto-compose → render) | Medium | Our unique moat. Nobody else has this. |
+| **Sprint** | Speed control for merge mode (E14) | Small | 5 pill buttons + 1 FFmpeg filter |
+| **Sprint** | Insert slide at index (post-assembly) | Small | "+" button between slide cards |
+| **Sprint** | Caption timing bar (read-only) | Small | Informational, prevents bad renders |
+| **Sprint** | Multi-line caption auto-wrap | Small | Fixes text overflow on 9:16 |
+| **Sprint** | Font selection (bundle 3 fonts) | Small | Premium feel for captions |
+| **Later** | 9-position caption placement (reuse watermark grid) | Small | More text control without freeform drag |
+| **Later** | Composition notes field (E15) | Tiny | Helps track iterations |
+| **Never** | Freeform text drag, multi-track timeline, keyframes | Huge | Use CapCut. We are not an NLE. |
+
+---
+
+### 6.9 The CapCut Line
+
+This is the rule for deciding what to build:
+
+> **If it can be done with an FFmpeg filter or ASS subtitle tag, build it.**
+> **If it requires a canvas-based visual editor, use CapCut.**
+
+Everything above the line runs server-side, renders deterministically, and can be automated by the AI agent. Everything below the line requires a visual compositing engine that would take months to build and years to polish.
+
+Our competitive advantage is **AI-driven composition from brand context** — not pixel-level video editing. The agent reads your strategy, understands your brand, groups your media intelligently, and produces a render-ready composition. CapCut can't do that. We focus there.
+
+The export story is: Gemlink produces the 80% version. If you need the last 20% (text animations, split screen, motion graphics), download the video from Library and open it in CapCut for final polish.
+
+---
+
+## Tier 7 — Critical UX Gaps (Identified March 2025)
+
+> These are real, testable bugs and missing connections found during hands-on usage.
+> Each item describes what currently happens, what should happen, and how to fix it.
+> **These should be prioritized before any new feature work** — they break the core flow.
+
+---
+
+### 7.1 Auto-Compose Does NOT Actually Pre-Fill Compose
+
+**What happens now**: MediaPlan's `handleAutoCompose` calls the server → gets composition groups → shows modal → stores to `sessionStorage("auto-compose-groups")` → navigates to `/compose`. **But Compose.tsx never reads `auto-compose-groups` from sessionStorage.** It only reads `compose-send-item`. So the user lands on a blank Compose page.
+
+**What should happen**: When the user clicks "Compose All", Compose should load up with the first composition group's slides pre-filled, voiceover matched, captions auto-populated from the voice text, and the template's transitions/durations applied. The user should see a fully assembled storyboard ready to tweak and render.
+
+**How to fix**:
+
+In `Compose.tsx`, add a second `useEffect` on mount that reads `auto-compose-groups`:
+
+```typescript
+useEffect(() => {
+  const raw = sessionStorage.getItem("auto-compose-groups");
+  if (!raw) return;
+  sessionStorage.removeItem("auto-compose-groups");
+  try {
+    const groups = JSON.parse(raw);
+    if (!groups.length) return;
+    const first = groups[0]; // load first group for now
+    
+    // Build slides from slideJobIds
+    const slides = first.slideJobIds.map((jobId, i) => ({
+      id: genId(),
+      jobId,
+      thumbnail: null, // will be resolved when picker loads
+      duration: first.template?.slides?.[i]?.duration ?? 3,
+      transition: first.template?.slides?.[i]?.transition ?? "fade",
+      kenBurns: first.template?.slides?.[i]?.kenBurns ?? false,
+    }));
+    
+    const newProject: ComposeProject = {
+      ...defaultProject(),
+      mode: "slideshow",
+      title: first.title || "Auto-Composed",
+      slides,
+      voiceJobId: first.voiceJobId || undefined,
+      captionConfig: first.captionText ? {
+        ...DEFAULT_CAPTION_CONFIG,
+        text: first.captionText,
+        style: first.template?.captions?.style ?? "bold-outline",
+        timing: first.template?.captions?.timing ?? "word",
+        position: first.template?.captions?.position ?? "bottom",
+      } : undefined,
+      outputConfig: {
+        aspectRatio: first.template?.aspectRatio ?? "9:16",
+        resolution: "1080p",
+        fps: 30,
+      },
+    };
+    
+    setProject(newProject);
+    saveProject(newProject);
+    toast(`Loaded "${first.title}" — ${slides.length} slides ready.`, "success");
+  } catch { /* ignore */ }
+}, []);
+```
+
+Additionally, the auto-compose endpoint should resolve slide thumbnails (the actual output URLs) so the Compose page shows the images immediately, not blank cards.
+
+**Effort**: ~40 lines in Compose.tsx + ~10 lines in auto-compose endpoint to include output URLs.
+
+---
+
+### 7.2 Videos Don't Work as Slideshow Slides
+
+**What happens now**: When you add a video to the slideshow timeline, two problems:
+
+1. `jobToSlide()` hardcodes `duration: 3` regardless of the actual video length.
+2. The slide thumbnail doesn't show (video cards may show blank if `.mp4` URL isn't handled).
+3. In `createSlideshow()` (compose.ts), video slides use `-stream_loop -1` which loops them, but the `tpad=stop_mode=clone:stop_duration=` filter still applies — which was designed for still images, not videos.
+
+**What should happen**: When a video is added as a slide, the system should:
+- Probe the video's actual duration (using `probeMedia()` or reading it from the manifest/DB)
+- Default the slide duration to the video's actual length
+- Show a video thumbnail (first frame or the video element itself)
+- In FFmpeg, handle video slides differently from image slides (trim to duration instead of tpad)
+
+**How to fix**:
+
+1. **Add `duration` to `MediaJob` interface** in MediaPickerPanel.tsx:
+```typescript
+export interface MediaJob {
+  // ...existing fields...
+  duration?: number;  // in seconds — available for video/voice/music
+}
+```
+
+2. **Return `duration` from the history API**: The DB schema already has `duration` on `MediaJobRow` and compose jobs. The `collectHistory()` function just doesn't map it. Add `duration: row.duration ?? undefined` to the flat-file scan result too (read from manifest).
+
+3. **Update `jobToSlide()`** in Compose.tsx:
+```typescript
+function jobToSlide(job: MediaJob): Slide {
+  const thumb = job.outputs?.[0] ?? job.outputPath ?? null;
+  return {
+    id: genId(),
+    jobId: job.id,
+    thumbnail: thumb,
+    jobType: job.type,
+    duration: job.type === "video" ? (job.duration ?? 8) : 3,
+    transition: "fade",
+    kenBurns: job.type !== "video", // Ken Burns on images only
+  };
+}
+```
+
+4. **Fix compose.ts `createSlideshow()`** — video slides should NOT get `tpad`/`zoompan`, they should get `trim=duration=X`:
+```typescript
+if (isImageFile(slide.imagePath)) {
+  // existing tpad logic for images
+} else {
+  // Video slide: trim to requested duration, no tpad
+  filterParts.push(
+    `[${i}:v]${scaleFilter},trim=duration=${dur},setpts=PTS-STARTPTS,fps=${fps}[v${i}]`
+  );
+}
+```
+
+**Effort**: ~30 lines across Compose.tsx, server.ts, and compose.ts.
+
+---
+
+### 7.3 Planner Agent Doesn't Know Video Duration Limits
+
+**What happens now**: The plan/suggest AI prompt says nothing about how long generated videos actually are. It doesn't know Veo produces ~8 second clips. So it might plan a "30-second product demo" as a single video item, which will fail or produce an 8s clip.
+
+**What should happen**: The system prompt should tell the AI:
+- Veo generates clips of **up to 8 seconds**
+- If you need a longer video, plan it as **multiple video clips** or a **slideshow of images with voiceover**
+- Music generation is **up to 30 seconds**
+- Voice generation depends on text length
+
+**How to fix** — in `server.ts` line ~1672, add to the system prompt:
+
+```typescript
+"- VIDEO DURATION: Video generation (Veo) produces clips of up to 8 seconds each. For longer content, plan multiple video clips or use an image slideshow with voiceover.",
+"- AUDIO DURATION: Music generation produces tracks up to 30 seconds. Voice generation length depends on text.",
+"- ASPECT RATIOS: Videos only support 16:9 (widescreen) and 9:16 (vertical). Images support any ratio.",
+"- For promptTemplate on video items: keep the action describable in 8 seconds or less.",
+```
+
+**Effort**: 4 lines added to the system prompt string array.
+
+---
+
+### 7.4 Thinking Depth Control for the Planner
+
+**What the user wants**: A way to control how deeply the AI reasons about the media plan — a "think more" vs "quick" toggle.
+
+**How to implement**:
+
+1. **UI**: Add a small segmented control or dropdown next to the "Quick Plan" button in MediaPlan.tsx:
+   - **Quick** — current behavior (single Gemini call, `gemini-2.5-flash`)
+   - **Deep** — uses `gemini-2.5-pro` with a much richer system prompt that asks for strategic reasoning before generating items
+   - **Think Again** — re-runs the AI on the *existing* plan items asking it to critique and improve them
+
+2. **"Deep" mode** — uses a two-pass approach:
+   - Pass 1: "Analyze this brand and project. What types of content will perform best? What's the optimal mix of formats?"
+   - Pass 2: "Based on your analysis, generate a specific media plan."
+   - Uses the thinking/extended model for more nuanced plans
+
+3. **"Think Again" mode** — takes the current items and sends them to the AI:
+   - "Here is the current media plan. Critique it. What's missing? What should be reworded? What order should they be generated in? Suggest improvements."
+   - Returns revised items or additional items
+
+4. **Add state**:
+```typescript
+const [thinkingDepth, setThinkingDepth] = useState<"quick" | "deep">("quick");
+```
+
+5. **Pass to server**:
+```typescript
+body: JSON.stringify({
+  description: naturalInput,
+  depth: thinkingDepth,
+  // ...
+})
+```
+
+6. **Server-side**: When `depth === "deep"`, use the multi-stage pipeline endpoint (which already exists at line ~1726 in server.ts), OR switch to a thinking model.
+
+**Effort**: ~15 lines UI + ~20 lines server prompt logic.
+
+---
+
+### 7.5 Planner Should Think About Formatting & Composition
+
+**What happens now**: The plan/suggest prompt only thinks about what assets to generate (images, videos, voice). It doesn't think about:
+- What subtitle/caption style would work best
+- What transitions suit the brand
+- What aspect ratio each platform needs
+- How the assets should be sequenced
+- What animation style the captions should use
+
+**What should happen**: The planner should output **composition metadata** alongside the asset list:
+
+```json
+{
+  "items": [ ... ],
+  "compositionSuggestion": {
+    "captionStyle": "word-highlight",
+    "captionAnimation": "pop",
+    "transitionStyle": "smoothleft",
+    "aspectRatio": "9:16",
+    "slideDuration": 3,
+    "kenBurns": true,
+    "mood": "upbeat, energetic",
+    "reasoning": "Gen Z audience → fast cuts, bold captions, vertical format"
+  }
+}
+```
+
+This composition suggestion would be stored on the plan and automatically loaded when you hit Auto-Compose.
+
+**How to fix**: Add `compositionSuggestion` to the plan/suggest server prompt output schema, and store it alongside the plan items in the frontend.
+
+**Effort**: ~10 lines in server prompt + ~5 lines to store/pass the suggestion.
+
+---
+
+### 7.6 Captions vs. Subtitles vs. Narration — Three Different Things
+
+**The user's insight is critical.** These are three different features that currently get conflated:
+
+| Concept | What it is | Source | Current state |
+|---------|-----------|--------|---------------|
+| **Narration / Voiceover** | TTS audio track layered on the video | User types text → TTS generates audio | ✅ Works — voice generation + merge |
+| **Captions** | Burned text that matches the spoken narration | Should auto-populate from voiceover text | ❌ User has to manually type the same text into CaptionEditor |
+| **Subtitles** | Separate timed text (translations, descriptions) | Different from narration | ❌ No distinction — CaptionEditor handles both |
+
+**What should happen**:
+
+1. **When a voiceover is selected**, the caption text should **auto-fill from the voiceover's source text** — the user should NOT have to retype it. The voice job's `text` or `prompt` field contains the narration script. When the user selects a voice track, the CaptionEditor should immediately populate with that text.
+
+2. **Caption style should be choosable** — show the style grid (clean, bold-outline, word-highlight, etc.) prominently when a voiceover is detected.
+
+3. **The flow should be**:
+   - User picks voiceover → captions auto-fill with voiceover text
+   - User sees style presets → picks one
+   - Caption timing auto-matches the voiceover duration
+   - User can edit the text if they want different wording
+
+**How to fix** — in Compose.tsx `handleMediaSelect()`:
+
+```typescript
+if (pickerTarget === "voice") {
+  patch({ 
+    voiceJobId: job.id,
+    captionConfig: {
+      ...DEFAULT_CAPTION_CONFIG,
+      text: job.text || job.prompt || "",   // auto-fill from voice
+      style: "bold-outline",
+      timing: "word",
+    }
+  });
+  toast("Voiceover added. Captions auto-filled from narration text.", "success");
+}
+```
+
+**Also**: Add a visible "Auto-fill from voiceover" button in the CaptionEditor that pulls text from the currently selected voice job (for cases where the user changes the text and wants to reset).
+
+**Effort**: ~15 lines in Compose.tsx + ~10 lines of UI in CaptionEditor.
+
+---
+
+### 7.7 Animated Subtitles as Media Plan Items
+
+**What the user wants**: The Media Plan should include subtitle/caption configuration as first-class plan items, not just images and voice. The planner should be able to say "this video needs word-level bold-outline captions in 9:16".
+
+**How to implement**:
+
+1. **Add `captionConfig` as an optional field on `MediaPlanItem`**:
+```typescript
+interface MediaPlanItem {
+  // ...existing...
+  captionConfig?: {
+    style: "clean" | "bold-outline" | "boxed" | "word-highlight";
+    timing: "sentence" | "word";
+    animation?: "none" | "fade" | "pop" | "blur";
+    position?: "top" | "center" | "bottom";
+  };
+}
+```
+
+2. **The planner AI should output this** for voice items — when it plans a voiceover, it should also specify what caption style goes with it.
+
+3. **Auto-Compose should read these** and apply them to the composition.
+
+**Effort**: ~5 lines to add the field + ~10 lines in the planner prompt to include it.
+
+---
+
+### 7.8 "Think Again" Button — Re-Analyze an Existing Plan
+
+**What it does**: A button that takes the current plan items and sends them back to the AI for critique and improvement. Different from "Quick Plan" which starts fresh.
+
+**UI**: Add a "🔄 Think Again" button next to "Quick Plan" that appears when there are existing items.
+
+**Server**: New endpoint or parameter on existing `/api/media/plan/suggest`:
+
+```typescript
+body: {
+  mode: "refine",  // vs "generate"
+  existingItems: activePlan.items,
+  description: "Review and improve this plan", 
+}
+```
+
+The AI would:
+- Review the existing items
+- Suggest reworded prompts for better generation results
+- Flag missing items (e.g., "you have images but no voiceover")
+- Suggest ordering for composition
+- Recommend caption/transition styles
+
+**Effort**: ~20 lines endpoint + ~10 lines UI button/handler.
+
+---
+
+### 7.9 Video Duration Defaults to 3s in Slideshow
+
+**This is a concrete bug.** The `jobToSlide()` function in Compose.tsx hardcodes `duration: 3` for ALL slides regardless of type.
+
+```typescript
+function jobToSlide(job: MediaJob): Slide {
+  return {
+    duration: 3,  // ← this is wrong for video slides!
+    // ...
+  };
+}
+```
+
+A 10-second Veo video becomes a 3-second slide. This is because:
+1. `MediaJob` interface doesn't have `duration`
+2. The history API doesn't return `duration` (even though the DB stores it)
+3. `jobToSlide()` can't read what it doesn't have
+
+See **7.2** for the full fix.
+
+---
+
+### 7.10 Summary: Priority Order for Tier 7
+
+These break the core Media Plan → Compose flow and should be fixed before adding new features:
+
+| # | Issue | Severity | Fix Size |
+|---|-------|----------|----------|
+| **7.1** | Auto-Compose doesn't pre-fill Compose | 🔴 Critical | ~40 lines |
+| **7.2** | Videos don't work as slideshow slides | 🔴 Critical | ~30 lines |
+| **7.6** | Voiceover doesn't auto-fill captions | 🔴 Critical | ~15 lines |
+| **7.9** | Video duration hardcoded to 3s | 🔴 Critical | ~10 lines (part of 7.2) |
+| **7.3** | Planner doesn't know video duration limits | 🟡 Medium | ~4 lines |
+| **7.4** | No thinking depth control | 🟡 Medium | ~35 lines |
+| **7.5** | Planner doesn't think about formatting | 🟡 Medium | ~15 lines |
+| **7.7** | Animated subtitles in media plan | 🟢 Enhancement | ~15 lines |
+| **7.8** | "Think Again" button | 🟢 Enhancement | ~30 lines |
+
+The 🔴 items are **bugs** — things that are technically wired but don't actually work end-to-end. Fix these first. The 🟡 items make the planner smarter. The 🟢 items are genuine new features.
+
+Total to fix all 🔴 bugs: **~95 lines of code** spread across 3 files. These should be a single sprint's worth of focused work.
+
+---
+
+## Tier 8 — Compose UX Overhaul: From Tool to Flow (March 2025)
+
+> This tier addresses the **structural UX problems** in the Compose page — not missing features,
+> but wrong architecture. The current 3-mode tab system forces users to think like an engineer
+> ("Is this a merge or a slideshow?") instead of thinking like a creator ("I want a video with
+> a voiceover and animated captions"). Every fix here also makes the compose API more natural
+> for agent-driven workflows.
+
+---
+
+### 8.0 The Three Structural Problems
+
+Before any feature work, these are the root causes of friction:
+
+| Problem | What happens | Why it's wrong |
+|---------|-------------|----------------|
+| **Rigid 3-mode system** | User must pick Slideshow/Merge/Captions before adding any media | The right mode depends on WHAT you add. Single video + voiceover = merge. 5 images = slideshow. The system should infer this. |
+| **Captions missing from Merge mode** | The CaptionEditor component only renders in Slideshow and Captions modes. Merge mode has no caption UI. | The #1 use case is video + voiceover + animated captions. Currently requires two separate renders across two modes. |
+| **Voiceover and captions are disconnected** | User adds a voiceover, then has to manually retype the same text into the CaptionEditor | The voice job already has the source text. Captions should auto-fill instantly. |
+
+These three problems cascade: because captions aren't in merge mode, users who want
+video + voice + captions don't know what mode to pick. They try merge (no captions), try
+captions (no audio mixing), and end up doing two passes. The "easy" path doesn't exist.
+
+---
+
+### 8.1 Kill the Mode Tabs — Adaptive Compose
+
+**Current**: Three rigid tabs (Slideshow | Merge | Captions Only) that determine which UI
+panels are visible. User picks a mode first, then adds media.
+
+**Proposed**: One unified canvas that adapts based on what media is present. No tabs. The UI
+shows exactly the controls that are relevant to the current state.
+
+#### The Adaptive Logic
+
+```
+IF slides.length > 0 AND no video clip selected:
+  → Show SlideTimeline + slide controls (this is a slideshow)
+ELSE IF video clip selected AND slides.length === 0:
+  → Show video preview + trim controls (this is a merge/enhance)
+ELSE IF slides.length > 0 AND video clip selected:
+  → Show both — video becomes a slide in the timeline
+END
+
+ALWAYS show (when relevant):
+  → Voiceover track (if voice job selected OR user clicks "Add Voiceover")
+  → Music track (if music job selected OR user clicks "Add Music")
+  → CaptionEditor (if voiceover is present OR user clicks "Add Captions")
+  → Watermark section (if watermark selected)
+  → Output settings (aspect ratio, resolution)
+```
+
+#### How This Changes Compose.tsx
+
+Replace the `ComposeMode` type and `MODE_TABS` with derived state:
+
+```typescript
+// Remove: export type ComposeMode = "slideshow" | "merge" | "captions";
+// Remove: MODE_TABS array
+// Remove: mode tabs UI in header
+
+// Add: derived display mode (for the render API, not UI)
+function deriveMode(project: ComposeProject): "slideshow" | "merge" | "caption" {
+  if (project.slides.length > 0) return "slideshow";
+  if (project.videoJobId) {
+    if (project.captionConfig?.text && !project.voiceJobId && !project.musicJobId) {
+      return "caption";  // video + captions only, no audio mixing
+    }
+    return "merge";
+  }
+  return "slideshow"; // default empty state
+}
+```
+
+The UI becomes a single scrollable editor where sections appear/disappear based on state:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  COMPOSE  "My Brand Video"                  [Start Fresh]│
+├──────────┬───────────────────────────────────────────────┤
+│          │                                               │
+│  MEDIA   │  ┌─ VISUAL TRACK ──────────────────────────┐ │
+│  PICKER  │  │ [slide] [slide] [slide] [+ Add]         │ │  ← shows if slides exist
+│          │  │  OR                                      │ │
+│          │  │ [Video Clip: selected ✓] [Trim: 0-8s]   │ │  ← shows if video selected
+│          │  └─────────────────────────────────────────┘ │
+│  (always │                                               │
+│   open)  │  ┌─ VOICEOVER TRACK ───────────────────────┐ │  ← shows when voice selected
+│          │  │ 🎤 [audio player] Vol: [===] Fade: in/out│ │
+│          │  └─────────────────────────────────────────┘ │
+│          │                                               │
+│          │  ┌─ MUSIC TRACK ───────────────────────────┐ │  ← shows when music selected
+│          │  │ 🎵 [audio player] Vol: [===] Fade: in/out│ │
+│          │  └─────────────────────────────────────────┘ │
+│          │                                               │
+│          │  ┌─ ANIMATED CAPTIONS ─────────────────────┐ │  ← shows when voice OR manual
+│          │  │ "Welcome to our brand..."  [from voice ↻]│ │
+│          │  │ Style: [Clean] [Bold] [Boxed] [Type] [HL]│ │
+│          │  │ Timing: [Sentence] [Word-Level]          │ │
+│          │  │ Animation: [None] [Fade] [Pop] [Blur]    │ │
+│          │  │ Position: [Top] [Center] [Bottom]        │ │
+│          │  └─────────────────────────────────────────┘ │
+│          │                                               │
+│          │  ┌─ WATERMARK (optional) ──────────────────┐ │
+│          │  │ [image] Position: [grid] Opacity: [===]  │ │
+│          │  └─────────────────────────────────────────┘ │
+│          │                                               │
+├──────────┴───────────────────────────────────────────────┤
+│ [9:16 Reels] [16:9 Wide] [1:1] [4:5]  [720p] [1080p]   │
+│                                    [Preview]  [🎬 Render]│
+└──────────────────────────────────────────────────────────┘
+```
+
+#### What the Agent Sees
+
+No change to the compose API — it still takes `type: "merge" | "slideshow" | "caption"`.
+The `deriveMode()` function maps the UI state to the API type automatically. An agent
+calling `POST /api/media/compose` directly already bypasses the mode tabs entirely — this
+change just makes the human UI match the API's flexibility.
+
+**Effort**: Medium (~100 lines of refactoring). The render logic doesn't change. Only the
+conditional rendering in the JSX changes — replacing `{project.mode === "slideshow" && ...}`
+with `{project.slides.length > 0 && ...}`.
+
+---
+
+### 8.2 Voiceover → Animated Captions: The One-Click Pipeline
+
+This is the highest-impact UX fix. The current flow for "video with voiceover and animated
+captions" is 10+ actions. It should be 4.
+
+#### Current Flow (painful)
+
+1. Pick mode (merge? captions? which one?)
+2. Select video
+3. Open picker for voiceover
+4. Select voiceover
+5. Adjust volume
+6. Realize captions aren't available in merge mode
+7. Switch to captions mode (lose audio settings)
+8. Re-select video
+9. Manually type the voiceover text into CaptionEditor
+10. Pick caption style
+11. Pick timing mode
+12. Render — but now there's no voiceover audio because captions mode doesn't merge audio
+
+#### Proposed Flow (delightful)
+
+1. Drop a video from the Library
+2. Drop a voiceover → **captions auto-fill, style picker appears, timing defaults to word-level**
+3. Pick a caption style (one click on a visual preset card)
+4. Hit Render
+
+#### Implementation: Auto-Caption on Voiceover Selection
+
+When a voiceover job is selected, the system should:
+
+1. **Read the voice job's source text** from its metadata (the `prompt` or `text` field
+   stored in the job manifest/DB)
+2. **Auto-fill the CaptionEditor** with that text
+3. **Default to word-level timing** (the viral TikTok style — this is what people want)
+4. **Default to bold-outline style** (the most popular style for short-form)
+5. **Show the CaptionEditor section** immediately (don't require a mode switch)
+6. **Show a toast**: "Captions auto-filled from voiceover. Pick a style below."
+
+```typescript
+// In handleMediaSelect(), when selecting a voiceover:
+if (pickerTarget === "voice" || job.type === "voice") {
+  const voiceText = job.text || job.prompt || job.transcription || "";
+
+  const updates: Partial<ComposeProject> = {
+    voiceJobId: job.id,
+  };
+
+  // Auto-fill captions if we have voice text and captions are currently empty
+  if (voiceText && (!project.captionConfig?.text || !project.captionConfig.text.trim())) {
+    updates.captionConfig = {
+      ...DEFAULT_CAPTION_CONFIG,
+      text: voiceText,
+      style: "bold-outline",
+      timing: "word",
+      position: "bottom",
+    };
+    toast("Voiceover added — captions auto-filled. Pick a style below.", "success");
+  } else {
+    toast("Voiceover selected.", "success");
+  }
+
+  patch(updates);
+  setPickerTarget(null);
+  return;
+}
+```
+
+#### The "From Voiceover" Button
+
+In the CaptionEditor, add a small button next to the text area that pulls text from the
+current voiceover job. This handles the case where the user edits the text and wants to
+reset, or where they selected the voiceover before this feature existed:
+
+```
+┌─ Caption Text ────────────────────────────────┐
+│ Welcome to our brand new product launch...    │
+│                                               │
+│                            [↻ From Voiceover] │
+└───────────────────────────────────────────────┘
+```
+
+The button is only visible when `project.voiceJobId` is set. On click, it fetches the
+voice job's text and replaces the caption text.
+
+**Requires**: The voice job's source text must be accessible. Two options:
+1. **Best**: Store `text` on the MediaJob when it's created (the TTS endpoint already has it)
+2. **Fallback**: Fetch the job manifest from `/api/media/history` and read the `prompt` field
+
+**Effort**: ~25 lines in Compose.tsx + ~10 lines of "From Voiceover" button in CaptionEditor.
+
+---
+
+### 8.3 Smart Aspect Ratio Detection
+
+**Current**: Aspect ratio defaults to 16:9 and sits in the bottom bar. Users forget to change it.
+A 9:16 Veo video gets rendered into a 16:9 frame with huge black bars.
+
+**Proposed**: Aspect ratio auto-detects from the first media item added, with a visible
+suggestion the user can accept or override.
+
+#### Detection Logic
+
+```typescript
+function suggestAspectRatio(job: MediaJob): OutputConfig["aspectRatio"] | null {
+  // If the job has dimensions (from ffprobe/manifest), use them
+  if (job.width && job.height) {
+    const ratio = job.width / job.height;
+    if (ratio < 0.7) return "9:16";      // vertical video (0.5625)
+    if (ratio > 1.5) return "16:9";      // widescreen (1.778)
+    if (ratio > 0.9 && ratio < 1.1) return "1:1";  // square
+    if (ratio >= 0.7 && ratio <= 0.9) return "4:5"; // portrait
+  }
+
+  // If it's a video job, check the generation params
+  if (job.type === "video" && job.aspectRatio) {
+    return job.aspectRatio as OutputConfig["aspectRatio"];
+  }
+
+  return null; // can't determine — keep current setting
+}
+```
+
+#### When to Trigger
+
+1. **On first media added** (slide or video clip): auto-set the aspect ratio and show a
+   brief toast: "Aspect ratio set to 9:16 to match your video."
+2. **On subsequent media**: if the new media's aspect ratio differs from the current
+   setting, show a warning: "This image is 16:9 but your composition is set to 9:16.
+   It will be cropped/letterboxed."
+3. **Never force it**: the user can always override. The auto-detection is a suggestion,
+   not a lock.
+
+#### What the Agent Needs
+
+The compose API already accepts `output.aspectRatio`. For agent workflows, the smart
+default should live in the **auto-compose endpoint** (`POST /api/media/plan/:planId/auto-compose`):
+
+```typescript
+// In the auto-compose response, include aspect ratio reasoning:
+{
+  "outputConfig": {
+    "aspectRatio": "9:16",
+    "resolution": "1080p",
+    "fps": 30
+  },
+  "aspectRatioReason": "Target platform is TikTok/Reels. Source video is 9:16."
+}
+```
+
+**Requires**: `MediaJob` needs `width`, `height`, and optionally `aspectRatio` fields.
+These are already available from ffprobe (run on video jobs at creation) and from Veo's
+generation params. They just need to be surfaced in the history API response.
+
+**Effort**: ~20 lines detection logic + ~15 lines UI toast/warning + ~5 lines history API.
+
+---
+
+### 8.4 CaptionEditor Everywhere (Fix the Merge Mode Gap)
+
+**The bug**: CaptionEditor only renders in slideshow and captions modes. Merge mode shows
+video + audio controls but NO caption UI. The render API body *does* send `captionConfig`
+from merge mode (it's in the shared section of `handleRender()`), but users can't set it
+because the UI isn't shown.
+
+**The fix**: Show CaptionEditor in ALL modes when it's relevant. In the unified flow (8.1),
+this happens automatically. But even without the full 8.1 refactor, the immediate fix is:
+
+```tsx
+// In the merge mode section, after the trim controls, add:
+{project.mode === "merge" && (
+  <CaptionEditor
+    value={project.captionConfig ?? DEFAULT_CAPTION_CONFIG}
+    onChange={(cfg) => patch({ captionConfig: cfg })}
+  />
+)}
+```
+
+That's literally 5 lines of JSX. This single change unlocks the most requested workflow:
+video + voiceover + animated captions in one render.
+
+**For the agent**: No API changes needed. The compose endpoint already accepts `captions`
+alongside `videoJobId` and `audioTracks` for merge type. The agent can already do this —
+only the human UI is broken.
+
+**Effort**: 5 lines. This should be done immediately, before any other Tier 8 work.
+
+---
+
+### 8.5 Visual Caption Style Picker (Replace the Text Labels)
+
+**Current**: Caption styles are small text buttons: `[Clean] [Bold Outline] [Boxed] [Typewriter] [Word Highlight]`. Users don't know what these look like until they render.
+
+**Proposed**: Replace with visual preview cards showing what each style actually looks like.
+Each card is a small dark rectangle with sample text rendered in that style:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ Caption Style                                                     │
+│                                                                   │
+│ ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐│
+│ │         │  │         │  │         │  │         │  │         ││
+│ │  Hello  │  │ HELLO   │  │ █Hello█ │  │  H|ello │  │  HELLO  ││
+│ │  World  │  │ WORLD   │  │ █World█ │  │  W|orld │  │  *WORLD*││
+│ │         │  │         │  │         │  │         │  │         ││
+│ │  Clean  │  │Bold Out.│  │  Boxed  │  │Typewrite│  │Word High││
+│ └─────────┘  └─────────┘  └─────────┘  └─────────┘  └─────────┘│
+│    ↑ selected (indigo border)                                     │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+Each card uses CSS to approximate the ASS style:
+- **Clean**: white text, subtle drop shadow
+- **Bold Outline**: Impact-style font, thick black stroke (`-webkit-text-stroke`)
+- **Boxed**: text on a semi-transparent dark background
+- **Typewriter**: monospace font, cursor-blink animation
+- **Word Highlight**: one word in accent color, rest dimmed
+
+This is purely CSS — no canvas, no ASS rendering in the browser. The preview doesn't have
+to be pixel-perfect; it just has to communicate the *feel* of each style.
+
+**Effort**: ~40 lines of styled card components in CaptionEditor.tsx. No logic changes.
+
+---
+
+### 8.6 Caption Entrance Animations (The Missing Polish)
+
+Captions that just *appear* feel cheap. Captions that fade or pop in feel professional.
+This is already specced in 2.8.4 but not built. Adding it here because it's part of the
+caption UX overhaul.
+
+**UI**: A segmented control below the style picker:
+
+```
+Animation: [None] [Fade] [Pop] [Blur]
+```
+
+**Implementation in CaptionConfig**:
+
+```typescript
+interface CaptionConfig {
+  // ...existing fields...
+  animation?: "none" | "fade" | "pop" | "blur";
+}
+```
+
+**ASS tags per animation** (prepended to each subtitle event's text):
+
+| Animation | ASS tag | Visual effect |
+|-----------|---------|---------------|
+| None | (no tag) | Instant appear/disappear |
+| Fade | `\fad(300,200)` | Fade in 300ms, fade out 200ms |
+| Pop | `\t(0,150,\fscx110\fscy110)\t(150,300,\fscx100\fscy100)` | Scale up then settle |
+| Blur | `\t(0,300,\blur0)` with initial `\blur6` | Blur-in (soft entrance) |
+
+In `generateASS()` and `generateWordLevelASS()` in compose.ts, prepend the animation tag
+before the subtitle text in each dialogue line. ~15 lines of logic.
+
+**For the agent**: Add `animation` to the compose API's `captions` object. The agent can
+specify `"captions": { "text": "...", "style": "bold-outline", "animation": "pop" }`.
+
+**Effort**: ~10 lines UI + ~15 lines ASS generation + ~2 lines API passthrough.
+
+---
+
+### 8.7 Smart Defaults: The "What Do You Want to Make?" Empty State
+
+**Current**: Empty Compose page shows mode tabs and blank panels. New users don't know
+where to start.
+
+**Proposed**: When the composition is empty (no slides, no video, no audio), show a
+friendly empty state with quick-start options:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                                                               │
+│                   What do you want to make?                   │
+│                                                               │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌────────────┐ │
+│  │  📱               │  │  🎬               │  │  💬         │ │
+│  │  Short-Form Video │  │  Video + Voice    │  │  Add       │ │
+│  │                   │  │                   │  │  Captions  │ │
+│  │  Images → video   │  │  Merge a clip     │  │            │ │
+│  │  with voiceover   │  │  with narration   │  │  Burn text │ │
+│  │  + animated subs  │  │  + background     │  │  onto any  │ │
+│  │                   │  │  music             │  │  video     │ │
+│  │  Best for: Reels, │  │  Best for: demos, │  │            │ │
+│  │  TikTok, Shorts   │  │  explainers       │  │            │ │
+│  └──────────────────┘  └──────────────────┘  └────────────┘ │
+│                                                               │
+│  ─── or just start adding media from the panel on the left ──│
+│                                                               │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Clicking a card sets intelligent defaults:
+
+| Card | Defaults set |
+|------|-------------|
+| **Short-Form Video** | aspectRatio: 9:16, caption timing: word, caption style: bold-outline, opens picker filtered to images |
+| **Video + Voice** | aspectRatio: auto (from video), opens picker filtered to video |
+| **Add Captions** | opens picker filtered to video, expands CaptionEditor |
+
+These are not "modes" — they're starting points. After clicking, the user is in the same
+unified editor and can change anything. The card just saves 3-4 manual setting choices.
+
+**For the agent**: The agent doesn't need this — it sets all params explicitly. But the
+auto-compose endpoint could include a `quickStart` hint in its response that tells the
+frontend which defaults to apply.
+
+**Effort**: ~50 lines of empty-state JSX + ~15 lines of defaults-setting handlers.
+
+---
+
+### 8.8 "Auto-Fill from Voiceover" in CaptionEditor
+
+Expanding on 8.2, the CaptionEditor itself needs a visible connection to the voiceover
+track. When a voiceover is present, the CaptionEditor should:
+
+1. **Show "Voiceover detected" badge** at the top of the caption section
+2. **Show "Auto-fill from voiceover" button** next to the textarea
+3. **Show duration match indicator**: "Caption timing will match voiceover: 22.3s"
+4. **Warn on manual text edits**: "Caption text differs from voiceover. Timing may not
+   match spoken words." (informational, not blocking)
+
+The CaptionEditor component needs a new optional prop:
+
+```typescript
+interface CaptionEditorProps {
+  value: CaptionConfig;
+  onChange: (config: CaptionConfig) => void;
+  voiceText?: string;       // NEW: text from selected voiceover job
+  voiceDuration?: number;   // NEW: duration of voiceover in seconds
+}
+```
+
+Compose.tsx passes these when a voiceover is selected. The CaptionEditor uses them to
+show the badge, the auto-fill button, and the duration indicator.
+
+**Effort**: ~20 lines in CaptionEditor + ~5 lines in Compose.tsx to pass props.
+
+---
+
+### 8.9 Aspect Ratio Intelligence for the Agent
+
+When an agent calls the compose API, it currently has to specify `output.aspectRatio`
+explicitly. But the agent often doesn't know the right ratio — it depends on the source
+media and the target platform.
+
+**Proposal**: Accept `output.aspectRatio: "auto"` in the compose API.
+
+When `"auto"` is specified, the server:
+
+1. Probes the first video/image input for dimensions
+2. Picks the closest standard ratio
+3. Returns the chosen ratio in the response so the agent knows what was used
+
+```typescript
+// In POST /api/media/compose handler:
+if (body.output.aspectRatio === "auto") {
+  const firstAsset = body.slides?.[0]?.jobId || body.videoJobId;
+  if (firstAsset) {
+    const probe = await probeMedia(resolvedPath);
+    body.output.aspectRatio = inferAspectRatio(probe.width, probe.height);
+  } else {
+    body.output.aspectRatio = "9:16"; // default for auto when no media to probe
+  }
+}
+```
+
+The response includes: `"resolvedAspectRatio": "9:16"` so the agent can log/use it.
+
+**Effort**: ~20 lines in the compose endpoint.
+
+---
+
+### 8.10 The Compose Request: Agent-Friendly Shorthand
+
+Currently the agent has to build a verbose JSON body with separate fields for voiceover,
+music, captions, slides, etc. For the most common workflows, offer shorthand:
+
+```json
+// Shorthand: "make a video with voiceover and captions"
+{
+  "type": "quick",
+  "videoJobId": "job_abc",
+  "voiceJobId": "job_def",
+  "captions": "auto",
+  "output": { "aspectRatio": "auto" }
+}
+```
+
+When `captions: "auto"`:
+- Server reads the voice job's source text
+- Defaults to word-level timing, bold-outline style
+- Auto-detects aspect ratio from video
+
+When `captions` is a string (not "auto"):
+- Uses that string as the caption text
+- Defaults to word-level timing, bold-outline style
+
+This means an agent can compose a full short-form video in one line:
+
+```json
+{ "type": "quick", "videoJobId": "X", "voiceJobId": "Y", "captions": "auto", "output": { "aspectRatio": "auto" } }
+```
+
+The server expands the shorthand to the full config internally.
+
+**Effort**: ~30 lines of shorthand expansion in the compose endpoint.
+
+---
+
+### 8.11 Implementation Priority
+
+These are ordered by **impact on the most common workflow** (video + voiceover + captions):
+
+| Phase | Item | What changes | Effort | Unlocks |
+|-------|------|-------------|--------|---------|
+| **Now (5 lines)** | 8.4 CaptionEditor in merge mode | Add `<CaptionEditor>` to merge mode JSX | Tiny | Video+voice+captions in one render |
+| **Now (~25 lines)** | 8.2 Auto-fill captions from voiceover | `handleMediaSelect` reads voice text | Small | No more retyping text |
+| **Now (~20 lines)** | 8.3 Smart aspect ratio detection | Auto-set ratio from first media | Small | No more wrong-ratio renders |
+| **Next sprint** | 8.1 Kill mode tabs (adaptive flow) | Refactor conditional rendering | Medium | Unified editor, no confusion |
+| **Next sprint** | 8.6 Caption entrance animations | ASS tags + UI control | Small | Captions feel professional |
+| **Next sprint** | 8.5 Visual caption style cards | CSS preview cards | Small | Users know what they're picking |
+| **Next sprint** | 8.7 Smart empty state | Quick-start cards | Small | New users aren't lost |
+| **Next sprint** | 8.8 Voiceover ↔ CaptionEditor link | Props + badge + auto-fill button | Small | Clear connection between voice and text |
+| **Agent sprint** | 8.9 Aspect ratio "auto" | Server-side probe + infer | Small | Agent doesn't guess ratios |
+| **Agent sprint** | 8.10 Quick compose shorthand | Shorthand expansion in endpoint | Small | Agent composes in one call |
+
+**The first three items (8.4, 8.2, 8.3) are ~50 lines total and fix the core workflow.**
+They should be done before any other compose work.
+
+---
+
+### 8.12 The Ideal End State
+
+After Tier 8, the compose experience for a human looks like this:
+
+```
+1. Open Compose → see "What do you want to make?" (or resume previous)
+2. Click "Short-Form Video" → aspect ratio locks to 9:16, picker opens
+3. Add 5 images from Library → they appear as slides with smart defaults
+4. Click a voiceover from Library → captions auto-fill, style cards appear
+5. Tap "Bold Outline" style card → see visual preview
+6. Hit Render → done
+```
+
+For an agent, the same thing is:
+
+```json
+POST /api/media/compose
+{
+  "type": "slideshow",
+  "slides": [
+    { "jobId": "img1", "duration": 3, "transition": "fade", "kenBurns": true },
+    { "jobId": "img2", "duration": 3, "transition": "slideright", "kenBurns": true },
+    { "jobId": "img3", "duration": 3, "transition": "dissolve", "kenBurns": true }
+  ],
+  "voiceJobId": "voice1",
+  "captions": "auto",
+  "output": { "aspectRatio": "9:16", "resolution": "1080p" }
+}
+```
+
+Or with maximum shorthand:
+
+```json
+POST /api/media/compose
+{
+  "type": "quick",
+  "slideJobIds": ["img1", "img2", "img3"],
+  "voiceJobId": "voice1",
+  "captions": "auto",
+  "output": { "aspectRatio": "auto" }
+}
+```
+
+Both paths produce the same output. The human never has to think about modes. The agent
+never has to guess about aspect ratios or caption text. The system meets them where they are.
+
+---
+
+### 8.13 What This Does NOT Include
+
+Staying on the right side of the CapCut Line (Tier 6.9):
+
+- **No freeform text dragging** — use the position grid (top/center/bottom)
+- **No multi-track timeline** — the storyboard card view is enough
+- **No canvas-based preview** — CSS approximation + server render is fine
+- **No keyframe animation** — ASS entrance animations cover 90% of needs
+- **No waveform scrubbing** — duration mismatch warnings catch the problem
+
+The goal is to make the **common case effortless**, not to build an NLE. CapCut exists
+for the last 20%. We own the first 80% — and especially the "AI reads your brand and
+assembles a composition" part that CapCut will never have.

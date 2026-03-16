@@ -24,6 +24,8 @@ interface CaptionEditorProps {
   value: CaptionConfig;
   onChange: (config: CaptionConfig) => void;
   className?: string;
+  voiceText?: string;
+  voiceDuration?: number;
 }
 
 // ─── Style presets ────────────────────────────────────────────────────────────
@@ -100,7 +102,13 @@ function getPreviewStyle(config: CaptionConfig): React.CSSProperties {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function CaptionEditor({ value, onChange, className = "" }: CaptionEditorProps) {
+export default function CaptionEditor({ 
+  value, 
+  onChange, 
+  className = "",
+  voiceText,
+  voiceDuration
+}: CaptionEditorProps) {
   const [hexInput, setHexInput] = useState(value.color);
 
   function patch(partial: Partial<CaptionConfig>) {
@@ -115,27 +123,60 @@ export default function CaptionEditor({ value, onChange, className = "" }: Capti
   }
 
   const sampleText = value.text.trim() || "Your caption text preview";
+  const isMismatch = voiceText && value.text.trim() && value.text.trim().toLowerCase() !== voiceText.trim().toLowerCase();
 
   return (
     <div className={`bg-zinc-950 border border-zinc-800 rounded-2xl overflow-hidden ${className}`}>
       {/* Header */}
-      <div className="px-4 py-3 border-b border-zinc-800">
+      <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
         <h3 className="text-sm font-semibold text-white">Caption Editor</h3>
+        {voiceText && (
+          <div className="flex items-center gap-2">
+            <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-[10px] font-bold text-indigo-400 uppercase tracking-tight">
+              <span className="w-1 h-1 rounded-full bg-indigo-400 animate-pulse" />
+              Voiceover {voiceDuration ? `(${voiceDuration.toFixed(1)}s)` : ""}
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="p-4 space-y-4">
         {/* Text area */}
         <div>
-          <label className="block text-xs uppercase tracking-wider text-zinc-500 mb-1.5">
-            Caption Text
-          </label>
-          <textarea
-            value={value.text}
-            onChange={(e) => patch({ text: e.target.value })}
-            placeholder="Enter your caption text here..."
-            rows={3}
-            className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-sm text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
-          />
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="block text-xs uppercase tracking-wider text-zinc-500">
+              Caption Text
+            </label>
+            {voiceText && (
+              <button
+                onClick={() => patch({ text: voiceText })}
+                className="text-[10px] font-bold text-indigo-400 hover:text-indigo-300 transition-colors uppercase tracking-tight"
+              >
+                Auto-fill from voiceover
+              </button>
+            )}
+          </div>
+          <div className="relative">
+            <textarea
+              value={value.text}
+              onChange={(e) => patch({ text: e.target.value })}
+              placeholder="Enter your caption text here..."
+              rows={3}
+              className={`w-full bg-zinc-900 border rounded-xl px-3 py-2.5 text-sm text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none transition-colors ${
+                isMismatch ? "border-amber-500/50" : "border-zinc-800"
+              }`}
+            />
+            {isMismatch && (
+              <div className="absolute top-2 right-2 group">
+                <div className="text-amber-500 cursor-help">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                </div>
+                <div className="absolute right-0 top-full mt-2 w-48 p-2 bg-zinc-900 border border-amber-500/30 rounded-lg text-[10px] text-amber-200 shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 font-medium">
+                  Manual text differs from the generated voiceover content.
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Style presets */}
@@ -143,20 +184,57 @@ export default function CaptionEditor({ value, onChange, className = "" }: Capti
           <label className="block text-xs uppercase tracking-wider text-zinc-500 mb-2">
             Style
           </label>
-          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {STYLE_PRESETS.map((preset) => (
               <button
                 key={preset.key}
                 onClick={() => patch({ style: preset.key })}
                 title={preset.description}
-                className={`px-3 py-2 rounded-xl border text-xs font-medium transition-colors text-left ${
+                className={`group relative h-20 rounded-xl border transition-all overflow-hidden ${
                   value.style === preset.key
-                    ? "bg-indigo-600/20 border-indigo-500/60 text-indigo-300"
-                    : "border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-white bg-zinc-900"
+                    ? "border-indigo-500 ring-1 ring-indigo-500"
+                    : "border-zinc-800 hover:border-zinc-600 bg-zinc-900"
                 }`}
               >
-                <span className="block font-semibold">{preset.label}</span>
-                <span className="block text-[10px] opacity-60 mt-0.5">{preset.description}</span>
+                {/* Visual Preview Area */}
+                <div className="absolute inset-0 flex items-center justify-center p-2 pb-6 bg-black/40">
+                  <span 
+                    className="text-[10px] font-bold leading-tight line-clamp-2"
+                    style={{
+                      color: "white",
+                      fontFamily: preset.key === "typewriter" ? "ui-monospace, monospace" : "system-ui, sans-serif",
+                      ...(preset.key === "clean" && {
+                        textShadow: "0 1px 3px rgba(0,0,0,0.8)"
+                      }),
+                      ...(preset.key === "bold-outline" && {
+                        WebkitTextStroke: "0.5px black",
+                        textShadow: "0 0 4px rgba(0,0,0,0.5)"
+                      }),
+                      ...(preset.key === "boxed" && {
+                        backgroundColor: "rgba(0,0,0,0.7)",
+                        padding: "1px 4px",
+                        borderRadius: "2px"
+                      }),
+                      ...(preset.key === "word-highlight" && {
+                        display: "inline-block"
+                      }),
+                    }}
+                  >
+                    {preset.key === "word-highlight" ? (
+                      <>Sample <span className="text-indigo-400">Word</span></>
+                    ) : (
+                      "Sample Text"
+                    )}
+                    {preset.key === "typewriter" && <span className="animate-pulse ml-0.5">|</span>}
+                  </span>
+                </div>
+                
+                {/* Label Overlay */}
+                <div className={`absolute bottom-0 inset-x-0 py-1.5 px-2 text-center text-[9px] font-bold uppercase tracking-tighter transition-colors ${
+                  value.style === preset.key ? "bg-indigo-600 text-white" : "bg-zinc-800 text-zinc-400 group-hover:text-zinc-200"
+                }`}>
+                  {preset.label}
+                </div>
               </button>
             ))}
           </div>

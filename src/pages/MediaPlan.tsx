@@ -36,6 +36,7 @@ import {
   Filter,
   ChevronRight,
   Timer,
+  Type,
 } from "lucide-react";
 import { useProject } from "../context/ProjectContext";
 import { useToast } from "../context/ToastContext";
@@ -67,6 +68,12 @@ export interface MediaPlanItem {
   batchId?: string;
   batchIndex?: number;
   error?: string;
+  captionConfig?: {
+    style: "clean" | "bold-outline" | "boxed" | "typewriter" | "word-highlight";
+    timing: "sentence" | "word";
+    animation?: "none" | "fade" | "pop" | "blur";
+    position?: "top" | "center" | "bottom";
+  };
 }
 
 export interface MediaPlan {
@@ -75,6 +82,14 @@ export interface MediaPlan {
   createdAt: string;
   updatedAt: string;
   items: MediaPlanItem[];
+  compositionSuggestion?: {
+    captionStyle?: string;
+    captionAnimation?: string;
+    transitionStyle?: string;
+    aspectRatio?: string;
+    kenBurns?: boolean;
+    reasoning?: string;
+  };
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -112,6 +127,12 @@ const ASPECT_RATIOS = [
   { value: "16:9", label: "16:9 Widescreen" },
   { value: "1.91:1", label: "1.91:1 Landscape" },
   { value: "21:9", label: "21:9 Ultra-wide" },
+];
+
+// Veo only supports 16:9 and 9:16
+const VIDEO_ASPECT_RATIOS = [
+  { value: "16:9", label: "16:9 Widescreen" },
+  { value: "9:16", label: "9:16 Vertical" },
 ];
 
 // ─── W1: Item Presets ──────────────────────────────────────────────────────
@@ -370,7 +391,7 @@ function defaultConfig(type: MediaPlanItem["type"] = "image"): GenerationConfig 
       ? (import.meta.env.VITE_MODEL_TTS || "gemini-2.5-flash-preview-tts")
       : (import.meta.env.VITE_MODEL_IMAGE || "gemini-3-pro-image-preview"),
     size: type === "video" ? "1080p" : "1K",
-    aspectRatio: "1:1",
+    aspectRatio: type === "video" ? "9:16" : "1:1",
     count: 1,
     negativePrompt: "",
     voice: "Kore",
@@ -664,6 +685,166 @@ function BatchPromptModal({ onClose, onApply }: BatchPromptModalProps) {
   );
 }
 
+// ─── Lane 4: Plan Refinement Results Modal ───────────────────────────────────
+
+interface RefineResultsModalProps {
+  results: {
+    changes: Array<{
+      itemId?: string;
+      action: "added" | "updated" | "removed";
+      field?: string;
+      before?: string;
+      after?: string;
+      reason: string;
+      item?: MediaPlanItem;
+    }>;
+    compositionSuggestion?: MediaPlan["compositionSuggestion"];
+  };
+  acceptedIndexes: Set<number>;
+  onToggleAccept: (index: number) => void;
+  onClose: () => void;
+  onApply: () => void;
+}
+
+function RefineResultsModal({ results, acceptedIndexes, onToggleAccept, onClose, onApply }: RefineResultsModalProps) {
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl"
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800">
+          <div className="flex items-center gap-2">
+            <RefreshCw className="w-5 h-5 text-indigo-400" />
+            <h2 className="text-base font-semibold text-white">Plan Refinement Results</h2>
+          </div>
+          <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200 transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          <p className="text-sm text-zinc-400">
+            AI suggested {results.changes.length} changes to optimize your plan. Review and select which ones to apply.
+          </p>
+
+          <div className="space-y-3">
+            {results.changes.map((change, idx) => (
+              <div 
+                key={idx}
+                onClick={() => onToggleAccept(idx)}
+                className={`group relative border rounded-xl p-4 cursor-pointer transition-all ${
+                  acceptedIndexes.has(idx) 
+                    ? "bg-indigo-600/5 border-indigo-500/30 ring-1 ring-indigo-500/20" 
+                    : "bg-zinc-900/40 border-zinc-800 opacity-60 grayscale-[0.5]"
+                }`}
+              >
+                <div className="flex items-start gap-4">
+                  <div className={`mt-1 p-1.5 rounded-lg ${
+                    change.action === 'added' ? 'bg-emerald-500/20 text-emerald-400' :
+                    change.action === 'removed' ? 'bg-red-500/20 text-red-400' :
+                    'bg-amber-500/20 text-amber-400'
+                  }`}>
+                    {change.action === 'added' ? <Plus className="w-3.5 h-3.5" /> :
+                     change.action === 'removed' ? <Trash2 className="w-3.5 h-3.5" /> :
+                     <RefreshCw className="w-3.5 h-3.5" />}
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-bold uppercase tracking-wider text-zinc-500">
+                        {change.action} {change.field ? `· ${change.field}` : ""}
+                      </span>
+                      <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${
+                        acceptedIndexes.has(idx) ? "bg-indigo-600 border-indigo-500" : "border-zinc-700 bg-zinc-800"
+                      }`}>
+                        {acceptedIndexes.has(idx) && <CheckCircle2 className="w-3 h-3 text-white" />}
+                      </div>
+                    </div>
+                    
+                    <p className="text-sm font-medium text-white mb-2">{change.reason}</p>
+                    
+                    {change.action === "updated" && (
+                      <div className="grid grid-cols-2 gap-3 mt-3">
+                        <div className="bg-zinc-950/50 p-2.5 rounded-lg border border-zinc-800/50">
+                          <p className="text-[10px] text-zinc-500 uppercase mb-1">Before</p>
+                          <p className="text-xs text-zinc-400 line-clamp-3 italic truncate">{change.before || "None"}</p>
+                        </div>
+                        <div className="bg-indigo-950/20 p-2.5 rounded-lg border border-indigo-500/20">
+                          <p className="text-[10px] text-indigo-400 uppercase mb-1">After</p>
+                          <p className="text-xs text-indigo-100 line-clamp-3 font-medium">{change.after}</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {change.action === "added" && change.item && (
+                      <div className="mt-3 bg-emerald-950/10 border border-emerald-500/20 p-3 rounded-lg flex items-center gap-3">
+                        <div className="p-2 bg-emerald-500/20 rounded-lg">
+                          {typeIcon(change.item.type)}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium text-emerald-100">{change.item.label}</p>
+                          <p className="text-[10px] text-emerald-400/60 uppercase tracking-wider">{change.item.type}</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {results.compositionSuggestion && (
+            <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 mt-6">
+              <div className="flex items-center gap-2 mb-3">
+                <Layers className="w-4 h-4 text-indigo-400" />
+                <h3 className="text-sm font-bold text-white">Updated Composition Strategy</h3>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                <div className="bg-zinc-950/50 p-2 rounded-lg border border-zinc-800">
+                  <p className="text-[10px] text-zinc-500 pb-0.5">Ratio</p>
+                  <p className="text-xs text-indigo-300 font-medium">{results.compositionSuggestion.aspectRatio}</p>
+                </div>
+                <div className="bg-zinc-950/50 p-2 rounded-lg border border-zinc-800">
+                  <p className="text-[10px] text-zinc-500 pb-0.5">Style</p>
+                  <p className="text-xs text-emerald-300 font-medium">{results.compositionSuggestion.captionStyle}</p>
+                </div>
+                <div className="bg-zinc-950/50 p-2 rounded-lg border border-zinc-800">
+                  <p className="text-[10px] text-zinc-500 pb-0.5">Animation</p>
+                  <p className="text-xs text-amber-300 font-medium">{results.compositionSuggestion.captionAnimation}</p>
+                </div>
+                <div className="bg-zinc-950/50 p-2 rounded-lg border border-zinc-800">
+                  <p className="text-[10px] text-zinc-500 pb-0.5">Transition</p>
+                  <p className="text-xs text-sky-300 font-medium">{results.compositionSuggestion.transitionStyle}</p>
+                </div>
+              </div>
+              {results.compositionSuggestion.reasoning && (
+                <blockquote className="text-xs text-zinc-400 border-l-2 border-indigo-500/30 pl-3 italic">
+                  "{results.compositionSuggestion.reasoning}"
+                </blockquote>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-3 px-6 py-4 border-t border-zinc-800 bg-zinc-900/20">
+          <button onClick={onClose} className="flex-1 px-4 py-2.5 rounded-xl border border-zinc-700 text-zinc-300 text-sm hover:bg-zinc-800 transition-colors">
+            Cancel
+          </button>
+          <button
+            onClick={onApply}
+            disabled={acceptedIndexes.size === 0}
+            className="flex px-8 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold transition-all items-center justify-center gap-2"
+          >
+            Apply {acceptedIndexes.size} Selected Changes
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export default function MediaPlan() {
@@ -716,9 +897,29 @@ export default function MediaPlan() {
 
   // Single-item generation
   const [generatingSingleId, setGeneratingSingleId] = useState<string | null>(null);
+  const [optimizingNegativeId, setOptimizingNegativeId] = useState<string | null>(null);
 
   // Collect approved
   const [collectingApproved, setCollectingApproved] = useState(false);
+
+  // ── Lane 4 additions ────────────────────────────────────────────────────────
+  const [thinkingDepth, setThinkingDepth] = useState<"quick" | "deep">("quick");
+  const [showRefineModal, setShowRefineModal] = useState(false);
+  const [refineLoading, setRefineLoading] = useState(false);
+  const [refineResults, setRefineResults] = useState<{
+    refinedItems: MediaPlanItem[];
+    changes: Array<{
+      itemId?: string;
+      action: "added" | "updated" | "removed";
+      field?: string;
+      before?: string;
+      after?: string;
+      reason: string;
+      item?: MediaPlanItem;
+    }>;
+    compositionSuggestion?: MediaPlan["compositionSuggestion"];
+  } | null>(null);
+  const [acceptedChangeIndexes, setAcceptedChangeIndexes] = useState<Set<number>>(new Set());
 
   // ── Lane 3 additions ────────────────────────────────────────────────────────
 
@@ -1033,6 +1234,7 @@ export default function MediaPlan() {
             brandVoice: activeProject?.brandVoice,
             styleKeywords: activeProject?.styleKeywords,
           },
+          depth: thinkingDepth,
         }),
       });
       if (!res.ok) {
@@ -1040,7 +1242,24 @@ export default function MediaPlan() {
         throw new Error(err.error || `Server error ${res.status}`);
       }
       const data = await res.json();
-      const suggested = (data.items ?? []).map((x: any) => newItem(x));
+      
+      // Store composition suggestion if returned
+      if (data.compositionSuggestion && activePlan) {
+        patchPlan(activePlan.id, { compositionSuggestion: data.compositionSuggestion });
+      }
+
+      const suggested = (data.items ?? []).map((x: any) => {
+        const cfg = defaultConfig(x.type);
+        if (x.size) cfg.size = x.size;
+        if (x.model) cfg.model = x.model;
+        if (x.aspectRatio) {
+          const isValidForVideo = x.type === "video"
+            ? VIDEO_ASPECT_RATIOS.some((ar) => ar.value === x.aspectRatio)
+            : true;
+          if (isValidForVideo) cfg.aspectRatio = x.aspectRatio;
+        }
+        return newItem({ ...x, generationConfig: cfg });
+      });
       if (suggested.length === 0) throw new Error("AI returned an empty plan — try a more detailed description.");
       saveItems(activePlan.id, [...activePlan.items, ...suggested]);
       toast(`Added ${suggested.length} AI-suggested items.`, "success");
@@ -1050,6 +1269,111 @@ export default function MediaPlan() {
     } finally {
       setSuggestLoading(false);
     }
+  };
+
+  const optimizeNegative = async (itemId: string, prompt: string) => {
+    if (!prompt.trim()) return;
+    setOptimizingNegativeId(itemId);
+    try {
+      const res = await fetch("/api/agent/optimize-negative", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          apiKey: import.meta.env.VITE_GEMINI_API_KEY
+        })
+      });
+      if (!res.ok) throw new Error("Optimization failed");
+      const data = await res.json();
+      patchItemConfig(itemId, { negativePrompt: data.negative });
+      toast("Negative prompt optimized ✨", "success");
+    } catch (err: any) {
+      toast(err.message, "error");
+    } finally {
+      setOptimizingNegativeId(null);
+    }
+  };
+
+  const handleThinkAgain = async () => {
+    if (!activePlan || activePlan.items.length === 0) return;
+    setRefineLoading(true);
+    try {
+      const res = await fetch(`/api/media/plan/${activePlan.id}/refine`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: activePlan.items,
+          apiKey: import.meta.env.VITE_GEMINI_API_KEY || undefined,
+          projectContext: {
+            brandName: activeProject?.brandName,
+            brandDescription: activeProject?.brandDescription,
+            targetAudience: activeProject?.targetAudience,
+            brandVoice: activeProject?.brandVoice,
+            styleKeywords: activeProject?.styleKeywords,
+          },
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Server error ${res.status}`);
+      }
+      const data = await res.json();
+      
+      // Ensure IDs are unique for added items if they don't have them
+      const processedResults = {
+        ...data,
+        changes: data.changes?.map((c: any) => ({
+          ...c,
+          item: c.item ? { ...c.item, id: c.item.id || genId() } : undefined
+        }))
+      };
+
+      setRefineResults(processedResults);
+      setShowRefineModal(true);
+      // Auto-accept all by default? Or let user pick. Spec says user can accept/reject individual.
+      // We'll initialize with all indexes selected.
+      setAcceptedChangeIndexes(new Set(processedResults.changes.map((_: any, i: number) => i)));
+    } catch (err: any) {
+      toast(err?.message || "Think Again failed — check your API key or try again.", "error");
+    } finally {
+      setRefineLoading(false);
+    }
+  };
+
+  const applyRefinedChanges = () => {
+    if (!refineResults || !activePlan) return;
+    
+    let newItems = [...activePlan.items];
+    const changes = refineResults.changes;
+    
+    // Sort changes so we process removals from tail or in a way that doesn't break indexes
+    // But we are matching by itemId, so it's safer.
+    
+    acceptedChangeIndexes.forEach((idx) => {
+      const change = changes[idx];
+      if (change.action === "added" && change.item) {
+        newItems.push(change.item);
+      } else if (change.action === "updated" && change.itemId) {
+        newItems = newItems.map(item => 
+          item.id === change.itemId 
+            ? { ...item, ...(change.field ? { [change.field]: change.after } : change.item) } 
+            : item
+        );
+      } else if (change.action === "removed" && change.itemId) {
+        newItems = newItems.filter(item => item.id !== change.itemId);
+      }
+    });
+
+    // Also update composition suggestion if returned
+    const patch: Partial<MediaPlan> = { items: newItems };
+    if (refineResults.compositionSuggestion) {
+      patch.compositionSuggestion = refineResults.compositionSuggestion;
+    }
+
+    patchPlan(activePlan.id, patch);
+    setShowRefineModal(false);
+    setRefineResults(null);
+    toast("Refined plan applied.", "success");
   };
 
   // W7/CHECK-008: Use a ref to always hold the latest activePlan in the polling callback,
@@ -1277,9 +1601,9 @@ export default function MediaPlan() {
   const handleCollectApproved = useCallback(async () => {
     if (!activePlan || !activeProject) return;
     const approvedJobIds = activePlan.items
-      .filter((i) => i.status === "approved" && i.generatedJobIds.length > 0)
+      .filter((i) => i.status === "approved" && i.generatedJobIds && i.generatedJobIds.length > 0)
       .flatMap((i) => i.generatedJobIds);
-    if (approvedJobIds.length === 0) {
+    if (!approvedJobIds || approvedJobIds.length === 0) {
       toast("No approved items with generated outputs to collect.", "warning");
       return;
     }
@@ -1650,6 +1974,56 @@ export default function MediaPlan() {
             </div>
           )}
 
+          {/* Composition Strategy Card (Lane 4) */}
+          {activePlan?.compositionSuggestion && (
+            <div className="mb-6 bg-indigo-900/10 border border-indigo-500/20 rounded-2xl overflow-hidden">
+              <details className="group">
+                <summary className="flex items-center gap-3 px-6 py-4 cursor-pointer hover:bg-indigo-500/5 transition-colors">
+                  <div className="p-2 bg-indigo-500/20 rounded-lg">
+                    <Layers className="w-4 h-4 text-indigo-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">AI Composition Strategy</h3>
+                    <p className="text-xs text-indigo-300/60">Suggested formatting and assembly logic</p>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-zinc-600 ml-auto transition-transform group-open:rotate-90" />
+                </summary>
+                <div className="px-6 pb-5 pt-1 grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="bg-zinc-900/50 rounded-xl p-3 border border-zinc-800/50">
+                        <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Aspect Ratio</p>
+                        <p className="text-sm font-medium text-indigo-300">{activePlan.compositionSuggestion.aspectRatio ?? "9:16"}</p>
+                      </div>
+                      <div className="bg-zinc-900/50 rounded-xl p-3 border border-zinc-800/50">
+                        <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Captions</p>
+                        <p className="text-sm font-medium text-emerald-300">{activePlan.compositionSuggestion.captionStyle ?? "word-highlight"}</p>
+                      </div>
+                      <div className="bg-zinc-900/50 rounded-xl p-3 border border-zinc-800/50">
+                        <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Animation</p>
+                        <p className="text-sm font-medium text-amber-300">{activePlan.compositionSuggestion.captionAnimation ?? "pop"}</p>
+                      </div>
+                      <div className="bg-zinc-900/50 rounded-xl p-3 border border-zinc-800/50">
+                        <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Transition</p>
+                        <p className="text-sm font-medium text-sky-300">{activePlan.compositionSuggestion.transitionStyle ?? "dissolve"}</p>
+                      </div>
+                    </div>
+                  </div>
+                  {activePlan.compositionSuggestion.reasoning && (
+                    <div className="bg-zinc-900/50 rounded-xl p-4 border border-zinc-800/50">
+                      <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2 flex items-center gap-1.5">
+                        <Sparkles className="w-3 h-3 text-indigo-400" /> AI Reasoning
+                      </p>
+                      <blockquote className="text-xs text-zinc-400 italic leading-relaxed">
+                        "{activePlan.compositionSuggestion.reasoning}"
+                      </blockquote>
+                    </div>
+                  )}
+                </div>
+              </details>
+            </div>
+          )}
+
           {/* Natural language input */}
           <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-6 mb-6">
             <label className="block text-sm font-medium text-zinc-300 mb-3">
@@ -1664,25 +2038,56 @@ export default function MediaPlan() {
                 placeholder='e.g. "I need assets for a SaaS product launch — website hero, 3 social posts, and a video intro"'
                 className="flex-1 min-w-0 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
               />
-              <div className="self-start flex flex-col gap-2">
-                <button
-                  onClick={handleSuggest}
-                  disabled={suggestLoading || boardroomLoading || !naturalInput.trim()}
-                  className="px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center gap-2"
-                >
-                  {suggestLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                  Quick Plan
-                </button>
-                <button
-                  onClick={handleBoardroomPlan}
-                  disabled={suggestLoading || boardroomLoading || !naturalInput.trim()}
-                  className="px-5 py-3 rounded-xl bg-violet-700 hover:bg-violet-600 border border-violet-500/30 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center gap-2"
-                  title="Open a Boardroom session to strategically plan your media assets — results come back to this plan"
-                >
-                  {boardroomLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Users className="w-4 h-4" />}
-                  Boardroom Plan
-                </button>
-              </div>
+                <div className="flex flex-col gap-2">
+                  <div className="flex p-1 bg-zinc-800 rounded-xl">
+                    <button
+                      onClick={() => setThinkingDepth("quick")}
+                      className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                        thinkingDepth === "quick" ? "bg-indigo-600 text-white" : "text-zinc-500 hover:text-zinc-300"
+                      }`}
+                    >
+                      Quick
+                    </button>
+                    <button
+                      onClick={() => setThinkingDepth("deep")}
+                      className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                        thinkingDepth === "deep" ? "bg-indigo-600 text-white" : "text-zinc-500 hover:text-zinc-300"
+                      }`}
+                    >
+                      Deep
+                    </button>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleSuggest}
+                      disabled={suggestLoading || boardroomLoading || refineLoading || !naturalInput.trim()}
+                      className="flex-1 px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
+                    >
+                      {suggestLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                      {thinkingDepth === "quick" ? "Quick Plan" : "Deep Plan"}
+                    </button>
+                    {activePlan && activePlan.items.length > 0 && (
+                      <button
+                        onClick={handleThinkAgain}
+                        disabled={suggestLoading || boardroomLoading || refineLoading}
+                        className="px-4 py-3 rounded-xl bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 disabled:opacity-50 text-zinc-300 text-sm font-medium transition-colors flex items-center gap-2"
+                        title="Refine the current plan using AI"
+                      >
+                        {refineLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                        Think Again
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleBoardroomPlan}
+                    disabled={suggestLoading || boardroomLoading || refineLoading || !naturalInput.trim()}
+                    className="px-5 py-3 rounded-xl bg-violet-700 hover:bg-violet-600 border border-violet-500/30 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
+                    title="Open a Boardroom session to strategically plan your media assets — results come back to this plan"
+                  >
+                    {boardroomLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Users className="w-4 h-4" />}
+                    Boardroom Plan
+                  </button>
+                </div>
             </div>
             {suggestLoading && (
               <div className="mt-4 space-y-2 animate-pulse">
@@ -1894,6 +2299,15 @@ export default function MediaPlan() {
                             <Timer className="w-2.5 h-2.5" />
                             {itemTimeBadge(item.type)}
                           </span>
+                          {item.type === "voice" && item.captionConfig && (
+                            <span 
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20"
+                              title={`Captions: ${item.captionConfig.style} · ${item.captionConfig.timing}`}
+                            >
+                              <Type className="w-2.5 h-2.5" />
+                              {item.captionConfig.style}
+                            </span>
+                          )}
                         </div>
                         {item.purpose && (
                           <p className="text-xs text-zinc-500 mt-0.5 truncate">{item.purpose}</p>
@@ -2041,11 +2455,15 @@ export default function MediaPlan() {
                                   <div>
                                     <label className="block text-xs text-zinc-500 mb-1">Aspect Ratio</label>
                                     <select
-                                      value={item.generationConfig.aspectRatio}
+                                      value={
+                                        item.type === "video" && !VIDEO_ASPECT_RATIOS.some((ar) => ar.value === item.generationConfig.aspectRatio)
+                                          ? "9:16"
+                                          : item.generationConfig.aspectRatio
+                                      }
                                       onChange={(e) => patchItemConfig(item.id, { aspectRatio: e.target.value })}
                                       className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                     >
-                                      {ASPECT_RATIOS.map((ar) => (
+                                      {(item.type === "video" ? VIDEO_ASPECT_RATIOS : ASPECT_RATIOS).map((ar) => (
                                         <option key={ar.value} value={ar.value}>{ar.label}</option>
                                       ))}
                                     </select>
@@ -2066,7 +2484,17 @@ export default function MediaPlan() {
                                 </div>
                                 {/* Negative prompt */}
                                 <div className="mt-3">
-                                  <label className="block text-xs text-zinc-500 mb-1">Negative Prompt</label>
+                                  <div className="flex justify-between items-center mb-1">
+                                    <label className="block text-xs text-zinc-500">Negative Prompt</label>
+                                    <button
+                                      onClick={() => optimizeNegative(item.id, item.promptTemplate)}
+                                      disabled={!item.promptTemplate || optimizingNegativeId === item.id}
+                                      className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1 disabled:opacity-50"
+                                    >
+                                      {optimizingNegativeId === item.id ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Sparkles className="w-2.5 h-2.5" />}
+                                      Auto-fill
+                                    </button>
+                                  </div>
                                   <input
                                     value={item.generationConfig.negativePrompt}
                                     onChange={(e) => patchItemConfig(item.id, { negativePrompt: e.target.value })}
@@ -2105,7 +2533,10 @@ export default function MediaPlan() {
                                 <label className="block text-xs text-zinc-400 mb-1.5">Type</label>
                                 <select
                                   value={item.type}
-                                  onChange={(e) => patchItem(item.id, { type: e.target.value as MediaPlanItem["type"] })}
+                                  onChange={(e) => {
+                                    const newType = e.target.value as MediaPlanItem["type"];
+                                    patchItem(item.id, { type: newType, generationConfig: defaultConfig(newType) });
+                                  }}
                                   className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                 >
                                   <option value="image">Image</option>
@@ -2155,17 +2586,56 @@ export default function MediaPlan() {
 
                             {/* Type-specific config */}
                             {item.type === "voice" && (
-                              <div>
-                                <label className="block text-xs text-zinc-400 mb-1.5">Voice</label>
-                                <select
-                                  value={item.generationConfig.voice || "Kore"}
-                                  onChange={(e) => patchItem(item.id, { generationConfig: { ...item.generationConfig, voice: e.target.value } })}
-                                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                >
-                                  {["Kore", "Puck", "Charon", "Fenrir", "Zephyr", "Aoede", "Leda", "Orus", "Perseus"].map((v) => (
-                                    <option key={v} value={v}>{v}</option>
-                                  ))}
-                                </select>
+                              <div className="space-y-4">
+                                <div>
+                                  <label className="block text-xs text-zinc-400 mb-1.5">Voice</label>
+                                  <select
+                                    value={item.generationConfig.voice || "Kore"}
+                                    onChange={(e) => patchItem(item.id, { generationConfig: { ...item.generationConfig, voice: e.target.value } })}
+                                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                  >
+                                    {["Kore", "Puck", "Charon", "Fenrir", "Zephyr", "Aoede", "Leda", "Orus", "Perseus"].map((v) => (
+                                      <option key={v} value={v}>{v}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                  <div>
+                                    <label className="block text-xs text-zinc-400 mb-1.5">Caption Style</label>
+                                    <select
+                                      value={item.captionConfig?.style || "word-highlight"}
+                                      onChange={(e) => patchItem(item.id, { 
+                                        captionConfig: { 
+                                          style: e.target.value as any, 
+                                          timing: item.captionConfig?.timing || "word" 
+                                        } 
+                                      })}
+                                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                    >
+                                      <option value="clean">Clean</option>
+                                      <option value="bold-outline">Bold Outline</option>
+                                      <option value="boxed">Boxed</option>
+                                      <option value="typewriter">Typewriter</option>
+                                      <option value="word-highlight">Word Highlight</option>
+                                    </select>
+                                  </div>
+                                  <div>
+                                    <label className="block text-xs text-zinc-400 mb-1.5">Caption Timing</label>
+                                    <select
+                                      value={item.captionConfig?.timing || "word"}
+                                      onChange={(e) => patchItem(item.id, { 
+                                        captionConfig: { 
+                                          timing: e.target.value as any, 
+                                          style: item.captionConfig?.style || "word-highlight" 
+                                        } 
+                                      })}
+                                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                    >
+                                      <option value="word">Per Word</option>
+                                      <option value="sentence">Per Sentence</option>
+                                    </select>
+                                  </div>
+                                </div>
                               </div>
                             )}
                             {item.type === "music" && (
@@ -2377,6 +2847,28 @@ export default function MediaPlan() {
               </div>
             </motion.div>
           </div>
+        )}
+      </AnimatePresence>
+
+      {/* Plan Refinement Results Modal (Lane 4) */}
+      <AnimatePresence>
+        {showRefineModal && refineResults && (
+          <RefineResultsModal
+            results={refineResults}
+            acceptedIndexes={acceptedChangeIndexes}
+            onToggleAccept={(idx) => {
+              setAcceptedChangeIndexes((prev) => {
+                const next = new Set(prev);
+                next.has(idx) ? next.delete(idx) : next.add(idx);
+                return next;
+              });
+            }}
+            onClose={() => {
+              setShowRefineModal(false);
+              setRefineResults(null);
+            }}
+            onApply={applyRefinedChanges}
+          />
         )}
       </AnimatePresence>
     </motion.div>

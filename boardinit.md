@@ -163,8 +163,10 @@ Always include:
 ## Handoff Protocol
 1. Mark W items ⬜→🟡→✅ as you go
 2. Run tsc + vitest before marking ✅
-3. Never touch files owned by other lanes
-4. Never push/pull from git
+3. **DO NOT perform visual browser checks**. Parallel agents on the same repo cause Vite HMR and port conflicts.
+4. If a visual check is needed, mark as "✅ (Pending Visual Verification)" and the coordinator will check at the end.
+5. Never touch files owned by other lanes
+6. Never push/pull from git
 ```
 
 ---

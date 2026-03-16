@@ -20,6 +20,7 @@ import {
   Loader2,
   Music,
   Clapperboard,
+  Sparkles,
 } from "lucide-react";
 
 interface ToolCard {
@@ -229,6 +230,7 @@ function RecentActivity() {
 }
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -256,6 +258,48 @@ export default function Dashboard() {
           </Link>
         </div>
         <RecentActivity />
+      </div>
+
+      {/* Quick Generate */}
+      <div className="mb-10">
+        <h2 className="text-sm font-semibold uppercase tracking-widest text-zinc-500 mb-4 flex items-center gap-2">
+          <Sparkles className="w-3.5 h-3.5" />
+          Quick Image Generation
+        </h2>
+        <div className="bg-gradient-to-br from-zinc-900 to-zinc-950 p-6 rounded-2xl border border-zinc-800 shadow-xl relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/5 blur-3xl rounded-full -mr-32 -mt-32 group-hover:bg-indigo-500/10 transition-colors" />
+          <div className="relative flex flex-col md:flex-row gap-4 items-center">
+            <div className="flex-1 w-full">
+              <input 
+                type="text" 
+                placeholder="A futuristic cybernetic tiger in a neon jungle..."
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-5 py-4 text-white placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all font-medium"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    navigate(`/social?prompt=${encodeURIComponent(e.currentTarget.value)}`);
+                  }
+                }}
+              />
+            </div>
+            <button 
+              onClick={(e) => {
+                const input = e.currentTarget.previousElementSibling?.querySelector("input") as HTMLInputElement;
+                if (input?.value) {
+                  navigate(`/social?prompt=${encodeURIComponent(input.value)}`);
+                } else {
+                  navigate("/social");
+                }
+              }}
+              className="w-full md:w-auto px-8 py-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-semibold transition-all shadow-lg shadow-indigo-900/20 active:scale-95 flex items-center justify-center gap-2"
+            >
+              <ImageIcon className="w-5 h-5" />
+              Generate
+            </button>
+          </div>
+          <p className="mt-3 text-[10px] text-zinc-600 font-medium tracking-wide uppercase">
+            Press Enter to jump into Social Media Lab with this prompt
+          </p>
+        </div>
       </div>
 
       {/* Create & Generate */}

@@ -10,6 +10,8 @@ import {
   RefreshCw,
   LayoutGrid,
   AlertCircle,
+  Check,
+  X,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -23,6 +25,10 @@ export interface MediaJob {
   outputs?: string[];
   tags?: string[];
   score?: number;
+  duration?: number;
+  width?: number;
+  height?: number;
+  aspectRatio?: string;
   createdAt?: string;
 }
 
@@ -106,6 +112,8 @@ export default function MediaPickerPanel({
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterType>(initialFilter ?? "all");
   const [search, setSearch] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
 
   // Sync filter when parent changes pickerTarget (e.g., voice → only voice)
   useEffect(() => {
@@ -150,6 +158,60 @@ export default function MediaPickerPanel({
     }
     return true;
   });
+
+  const handleItemClick = (job: MediaJob, e: React.MouseEvent) => {
+    const isMultiSelect = e.ctrlKey || e.metaKey;
+    const isRangeSelect = e.shiftKey;
+
+    if (isRangeSelect && lastSelectedId) {
+      const currentIdx = filtered.findIndex((j) => j.id === job.id);
+      const lastIdx = filtered.findIndex((j) => j.id === lastSelectedId);
+      if (currentIdx !== -1 && lastIdx !== -1) {
+        const start = Math.min(currentIdx, lastIdx);
+        const end = Math.max(currentIdx, lastIdx);
+        const rangeIds = filtered.slice(start, end + 1).map((j) => j.id);
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          rangeIds.forEach((rid) => next.add(rid));
+          return next;
+        });
+      }
+    } else if (isMultiSelect) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(job.id)) next.delete(job.id);
+        else next.add(job.id);
+        return next;
+      });
+    } else {
+      // If we have a selection, regular click toggles/adds?
+      // For picker, usually regular click selects one and closes.
+      // But if we want multi-select, maybe it should just be part of the selection.
+      if (selectedIds.size > 0) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(job.id)) next.delete(job.id);
+          else next.add(job.id);
+          return next;
+        });
+      } else {
+        onSelect(job);
+      }
+    }
+    setLastSelectedId(job.id);
+  };
+
+  const handleBatchSelect = () => {
+    const selectedJobs = jobs.filter(j => selectedIds.has(j.id));
+    selectedJobs.forEach(job => onSelect(job));
+    setSelectedIds(new Set());
+    setLastSelectedId(null);
+  };
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+    setLastSelectedId(null);
+  };
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -252,16 +314,40 @@ export default function MediaPickerPanel({
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.9 }}
                     transition={{ delay: i * 0.02 }}
-                    onClick={() => onSelect(job)}
+                    onClick={(e) => handleItemClick(job, e)}
                     title={label}
-                    className="group relative aspect-square rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800 hover:border-indigo-500/60 transition-all hover:scale-[1.03] focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className={`group relative aspect-square rounded-xl overflow-hidden bg-zinc-900 border transition-all hover:scale-[1.03] focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                      selectedIds.has(job.id) ? "border-indigo-500 ring-2 ring-indigo-500/20" : "border-zinc-800 hover:border-indigo-500/60"
+                    }`}
                   >
+                    {/* Selection Checkbox Overlay */}
+                    <div className={`absolute top-1.5 right-1.5 z-20 w-4 h-4 rounded border flex items-center justify-center transition-all ${
+                      selectedIds.has(job.id) 
+                        ? "bg-indigo-600 border-indigo-500 scale-110" 
+                        : "bg-black/40 border-white/20 opacity-0 group-hover:opacity-100"
+                    }`}>
+                      {selectedIds.has(job.id) && <Check className="w-2.5 h-2.5 text-white" />}
+                    </div>
                     {thumb ? (
-                      <img
-                        src={thumb}
-                        alt={label}
-                        className="w-full h-full object-cover"
-                      />
+                      job.type === "video" ? (
+                        <video
+                          src={thumb}
+                          className="w-full h-full object-cover"
+                          muted
+                          playsInline
+                          onMouseOver={(e) => e.currentTarget.play()}
+                          onMouseOut={(e) => {
+                            e.currentTarget.pause();
+                            e.currentTarget.currentTime = 0;
+                          }}
+                        />
+                      ) : (
+                        <img
+                          src={thumb}
+                          alt={label}
+                          className="w-full h-full object-cover"
+                        />
+                      )
                     ) : (
                       <div className="w-full h-full flex items-center justify-center">
                         <TypeIconPlaceholder type={job.type} />
@@ -269,8 +355,13 @@ export default function MediaPickerPanel({
                     )}
 
                     {/* Type badge overlay */}
-                    <div className="absolute top-1 left-1">
+                    <div className="absolute top-1 left-1 flex flex-col gap-1 items-start">
                       <TypeBadge type={job.type} />
+                      {job.duration !== undefined && job.type !== "image" && (
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border bg-black/60 text-white border-white/20">
+                          {job.duration.toFixed(1)}s
+                        </span>
+                      )}
                     </div>
 
                     {/* Hover overlay */}
@@ -297,6 +388,39 @@ export default function MediaPickerPanel({
           </p>
         </div>
       )}
+
+      {/* Floating Selection Badge */}
+      <AnimatePresence>
+        {selectedIds.size > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 10 }}
+            className="absolute bottom-12 left-2 right-2 z-30 flex items-center justify-between gap-2 bg-indigo-600 px-3 py-2 rounded-xl shadow-xl border border-indigo-400/30"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold bg-white text-indigo-600 px-1.5 py-0.5 rounded-full">
+                {selectedIds.size}
+              </span>
+              <span className="text-[11px] font-semibold text-white">Selected</span>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={clearSelection}
+                className="text-[10px] text-indigo-100 hover:text-white underline underline-offset-2"
+              >
+                Clear
+              </button>
+              <button
+                onClick={handleBatchSelect}
+                className="text-[10px] bg-white text-indigo-600 font-bold px-2 py-1 rounded-lg hover:bg-zinc-100 transition-colors"
+              >
+                Add Items
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

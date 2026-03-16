@@ -1,8 +1,8 @@
 # Gemlink Execution Board
 
-> Last updated: 2026-03-15 (Sprint 9 — Bug Fixes, Editor Polish & MediaPlan UX)
-> Scope: Fix batch generation bugs (CHECK-001 to CHECK-013), polish Compose editor, add MediaPlan quick wins, build Presentation mode, add global UX infrastructure.
-> Context: `agents.md` for repo patterns, `check.md` for full bug inventory, `editor.md` for Tier 1.5 specs, `medpln.md` for MediaPlan gap analysis.
+> Last updated: 2026-03-15 (Sprint 12 — Production Polish & Bug Sweep)
+> Scope: Ship the global job queue, agent prompt expansion, and run two full audit passes (bug sweep + UX consistency) across all 17 pages.
+> Context: `agents.md` for repo patterns, `editor.md` Tier 3 for specs, `compose.ts` for FFmpeg logic.
 
 ---
 
@@ -10,13 +10,16 @@
 
 | Sprint | Theme | Tests | Status |
 |--------|-------|-------|--------|
-| Sprint 1 | Core architecture, security, UX polish, testing foundation | 31 | ✅ |
-| Sprint 2 | Media pipeline, batch gen, collections, SQLite, boardroom | 78 | ✅ |
-| Sprint 3 | Multi-stage planning, strategy artifacts, multi-plan UI, CI | 114 | ✅ |
-| Sprint 5 | Enhanced Editor (Tier 2) — trim, watermarks, multi-track audio | 199 | ✅ |
+| Sprint 1 | Core architecture, security, UX polish, foundation | 31 | ✅ |
+| Sprint 2 | Media pipeline, batch gen, collections, SQLite | 78 | ✅ |
+| Sprint 3 | Multi-stage planning, strategy artifacts, multi-plan UI | 114 | ✅ |
+| Sprint 5 | Enhanced Editor (Tier 2) — trim, watermarks, multi-track | 199 | ✅ |
 | Sprint 6 | Music generation — Lyria WebSocket streaming | 199 | ✅ |
-| Sprint 7 | Agent ergonomics — rate limits, idempotency, dry-run, job queue | 200 | ✅ |
-| Sprint 8 | Model fixes + UX Polish — progress bar, duplicate, single gen, collect approved | 200 | ✅ |
+| Sprint 7 | Agent ergonomics — rate limits, idempotency, dry-run | 200 | ✅ |
+| Sprint 8 | Model fixes + UX Polish — progress, duplicate, approve | 200 | ✅ |
+| Sprint 9 | Bug fixes, editor polish, MediaPlan UX, presentation | 224 | ✅ |
+| Sprint 10 | Compose UX overhaul, agent pipeline, planner intelligence | 224 | ✅ |
+| Sprint 11 | Make Compose Functional (9:16, Captions, Preview, Sync) | 224 | ✅ |
 
 ---
 
@@ -31,192 +34,230 @@
 
 ---
 
-## Parallelization Guidance
+## Parallelization Graph
 
 ```
-Lane 1:  [W1 apiKey fix ←FAST] → [W2 aspectRatio] → [W3 resolution] → [W4 music sanitizer] → [W5 error msgs] → [W6 compose validation] → [W7 stale closure] → [W8 preview modal]
-              ↓ unlocks batch gen for all lanes
-Lane 2:  [W1 dup slide ←INDEP] → [W2 watermark pos] → [W3 duration warn] → [W4 Ken Burns dir] → [W5 audio fades]
-Lane 3:  [W1 presets ←INDEP] → [W2 templates] → [W3 export/import] → [W4 filter bar] → [W5 time badges]
-Lane 4:  [W1 controls ←INDEP] → [W2 auto-advance] → [W3 keyboard nav] → [W4 fullscreen] → [W5 transitions]
-Lane 5:  [W1 Cmd+K ←INDEP] → [W2 breadcrumbs] → [W3 error boundaries] → [W4 focus traps] → [W5 ARIA audit]
+Lane 1:  [W1 Job Queue UI] → [W2 Multi-Part Compose] → [W3 Parallel Render]
+              │
+Lane 2:  [W1 Prompt Expand ←INDEP] → [W2 Style Transfer] → [W3 Negative Prompt]
+              │
+Lane 3:  [W1 Multi-Select ←INDEP] → [W2 Batch Actions] → [W3 Archive/Delete]
+              │
+Lane 4:  [W1 Bug Audit: Dashboard ←INDEP] → [W2 Bug Audit: Generation Pages] → [W3 Bug Audit: Compose & Plan] → [W4 Bug Audit: Strategy Pages] → [W5 Fix Report]
+              │
+Lane 5:  [W1 UX Audit: a11y ←INDEP] → [W2 UX Audit: Error Handling] → [W3 UX Audit: Responsive] → [W4 UX Audit: Loading States] → [W5 Polish Report]
 ```
 
-All lanes fully independent. Lane 1 is the critical path for functional correctness but does NOT block any other lane.
+Five lanes. Zero file collisions between L1–L3. L4 and L5 are read-only audits that produce fix reports (no file edits until reviewed).
 
 ---
 
-## Sprint 9 — Pre-Flight Checklist
+## Sprint 12 Ownership Zones
 
-- [ ] All 200 tests passing (`npx vitest run`)
-- [ ] TSC clean (`npx tsc --noEmit`)
-- [ ] Dev server running (`npm run dev`)
-- [ ] Each lane has read `agents.md` and `check.md`
+| Zone | Files | Lane |
+|------|-------|------|
+| Job Queue + Compose Engine | `src/components/JobQueueOverlay.tsx` (NEW), `src/components/Layout.tsx`, `compose.ts` | Lane 1 |
+| Agent Intelligence | `server.ts` (new agent endpoints only), generation pages (prompt expand button) | Lane 2 |
+| Workspace UX | `src/pages/Library.tsx`, `src/components/MediaPickerPanel.tsx` | Lane 3 |
+| Bug Audit (read-only) | ALL pages — produces `artifacts/bug-report.md` only | Lane 4 |
+| UX Audit (read-only) | ALL components — produces `artifacts/ux-report.md` only | Lane 5 |
 
----
-
-## 🔴 Lane 1 — Critical Bug Fixes (Server + MediaPlan + Compose)
-
-**Focus**: Fix every 🔴 item from `check.md` so batch generation and compose work end-to-end.
-**Owns**: `server.ts` (batch handlers only), `src/pages/MediaPlan.tsx` (handleGenerateAll + polling), `src/pages/Compose.tsx` (handleRender + validation)
-
-### W1. Add `apiKey` to batch + compose POST (P0) ✅
-- **Files**: `MediaPlan.tsx` (~L764), `Compose.tsx` (`handleRender`), `MediaPlan.tsx` (`handleGenerateSingle`)
-- **CHECK**: CHECK-004, CHECK-010
-- **Done**: Added `apiKey: import.meta.env.VITE_GEMINI_API_KEY || undefined` to batch handleGenerateAll, handleGenerateSingle, and compose handleRender request bodies.
-
-### W2. Fix batch image `aspectRatio` hardcode (P0) ✅
-- **Files**: `server.ts` (~L1351)
-- **CHECK**: CHECK-002
-- **Done**: Reads `aspectRatio` from request body instead of hardcoding `"1:1"`. Falls back to `"1:1"` only if not provided.
-
-### W3. Fix video `resolution` vs `size` mismatch (P0) ✅
-- **Files**: `server.ts` (~L1422)
-- **CHECK**: CHECK-001
-- **Done**: Now reads `resolution ?? size` from body, accepting both field names.
-
-### W4. Add `music` to plan/suggest sanitizer (P0) ✅
-- **Files**: `server.ts` (~L1702, ~L1914)
-- **CHECK**: CHECK-003
-- **Done**: Both sanitizer arrays now include `"music"` alongside `"image"`, `"video"`, `"voice"`.
-
-### W5. Fix error handling — surface real errors (P0) ✅
-- **Files**: `MediaPlan.tsx` (handleGenerateAll, handleGenerateSingle), `Compose.tsx` (handleRender)
-- **CHECK**: CHECK-005
-- **Done**: All three functions now read error body with `res.json().catch(() => ({}))` and show real message in error toast. Removed all SOP-4 violations.
-
-### W6. Compose client-side validation (P1) ✅
-- **Files**: `Compose.tsx` (`handleRender`)
-- **CHECK**: CHECK-012, CHECK-013
-- **Done**: Added pre-fetch validation: merge mode requires audio track, captions mode requires non-empty text. Warning toast + early return.
-
-### W7. Fix stale closure in polling useEffect (P1) ✅
-- **Files**: `MediaPlan.tsx` (~L1047)
-- **CHECK**: CHECK-008
-- **Done**: `activePlanRef = useRef(activePlan)` keeps mutable ref in sync. Polling interval reads from ref, not stale closure.
-
-### W8. Fix Preview modal music counting (P1) ✅
-- **Files**: `MediaPlan.tsx` (`GenerationPreviewModal`)
-- **CHECK**: CHECK-007
-- **Done**: Added music item counter, generation count, ~30s time estimate, and Music icon row in preview.
+**Rules**:
+- Each file/zone is owned by exactly ONE lane (L1–L3)
+- **DO NOT perform visual browser checks**. This causes Vite HMR/port conflicts in parallel.
+- Lanes 4 and 5 are **read-only audit scans**. They should prioritize code-level findings (grep/view).
+- If a browser check is needed, mark as "✅ (Pending Visual)" for the coordinator.
+- Fix patches from L4/L5 reports get queued for Sprint 13 (or fast-tracked if P0)
+- Never modify `agents.md` during a sprint
+- Never push/pull from git
 
 ---
 
-## 🟣 Lane 2 — Editor Enrichments (Compose)
+## Pre-Flight Checklist
 
-**Focus**: High-impact Compose polish from `editor.md` Tier 1.5.
-**Owns**: `src/pages/Compose.tsx`, `src/components/SlideTimeline.tsx`, `src/components/ComposePreview.tsx`, `compose.ts`
-
-### W1. Duplicate Slide Button (P0) ✅
-- **Ref**: editor.md E1
-- **What**: Copy icon next to each slide delete button. Duplicates slide at index+1.
-- **Done**: Already shipped — `SlideTimeline.tsx` has `Copy` icon + `onDuplicateSlide` callback; `Compose.tsx` has `duplicateSlide()` handler that deep-copies and splices at `index+1`. Verified working.
-
-### W2. Watermark Position Picker (P0) ✅
-- **Ref**: editor.md E5
-- **What**: 3×3 grid below opacity slider. Map to FFmpeg overlay coords in `compose.ts`.
-- **Done**: Added `watermarkPosition?: string` to `ComposeProject`. Added 3×3 CSS grid UI with 9 named positions. Added `watermarkPositionToOverlay()` helper in `compose.ts` that maps position names to FFmpeg overlay expressions (e.g. `W-w-10:H-h-10` for bottom-right). Applied in both `mergeVideoAudio` and `createSlideshow`.
-
-### W3. Duration Warning — slide vs audio mismatch (P0) ✅
-- **Ref**: editor.md E9
-- **What**: Compare total slide duration vs voiceover. Show amber warning if >2s mismatch.
-- **Done**: Added `voiceDuration?: number` to `ComposeProject`. Captured via `onLoadedMetadata` on the voice `<audio>` element. Storyboard header now shows an amber `AlertTriangle` with tooltip when `|slideDuration - voiceDuration| > 2s`. Cleared when voiceover is removed.
-
-### W4. Ken Burns Direction Control (P1) ✅
-- **Ref**: editor.md E10
-- **What**: Dropdown per slide: Zoom In / Zoom Out / Pan Left / Pan Right. Map to FFmpeg `zoompan`.
-- **Done**: `kenBurnsDirection` field already existed in `SlideTimeline.tsx` Slide type with pill-button UI. Updated `kenBurnsFilter()` in `compose.ts` to accept a `direction` param with 4 distinct `zoompan` expressions: zoom-in (original), zoom-out (reverse), pan-left (x-axis sweep left), pan-right (x-axis sweep right). `kenBurnsDirection` is now forwarded in slide data from `handleRender`.
-
-### W5. Audio Fade In/Out Controls (P1) ✅
-- **Ref**: editor.md E13
-- **What**: Number inputs (0-10s) for fade in/out per audio track. FFmpeg `afade` filter.
-- **Done**: Added `voiceFadeIn`, `voiceFadeOut`, `musicFadeIn`, `musicFadeOut` to `ComposeProject`. Added compact "Fade: In ___s Out ___s" controls below each track's volume slider. Updated `AudioTrackInput` interface in `compose.ts` with `fadeIn`/`fadeOut` fields. Applied `afade=t=in/out:st=0:d=X` filters in both `mergeVideoAudio` and `createSlideshow` audio filter chains.
+- [x] All 224 tests passing (`npx vitest run`)
+- [x] TSC clean (`npx tsc --noEmit`)
+- [x] Dev server running (`npm run dev`)
 
 ---
 
-## 🔵 Lane 3 — MediaPlan Quick Wins
+## 🔵 Lane 1 — Production & Parallelism ✅
 
-**Focus**: Quick wins from `medpln.md` remaining gaps.
-**Owns**: `src/pages/MediaPlan.tsx` (UI additions only — no server changes)
+**Focus**: Global job visibility and concurrent rendering.
+**Owns**: `src/components/JobQueueOverlay.tsx` (NEW), `src/components/Layout.tsx`, `compose.ts`
 
-### W1. Item Presets (P0) ✅
-- **Ref**: medpln.md QW-1
-- **What**: "+" dropdown with presets: "Hero Image", "Instagram Post", "YouTube Intro", etc. Pre-fills type, aspect ratio, prompt template.
-- **Done**: Added `ITEM_PRESETS` constant with 8 built-in presets (Hero Image, Instagram Post, Instagram Story, YouTube Thumbnail, YouTube Intro Video, Product Showcase, Voiceover Script, Background Music). The "Add Item" button was converted to a split button — left side adds a blank item, right side (chevron) opens a dropdown that renders all presets with type-coloured icons. Clicking a preset calls `addItemFromPreset()` which creates a pre-filled item and expands it for editing.
+### W1. Global Job Queue UI (P0) ✅
+- **What**: Create a floating job queue indicator in Layout. Poll `/api/media/batch/status` and `/api/media/compose/:id` to show active/pending renders with progress bars. Clicking opens a slide-out panel with full details. Badge count on the sidebar icon.
+- **Done**: Created `JobQueueOverlay.tsx`, added poll endpoints to `server.ts`, and integrated with `Layout.tsx`.
+- **Done when**: A persistent indicator shows current background activity on every page and notifies on completion with a toast.
 
-### W2. Plan Templates (P0) ✅
-- **Ref**: medpln.md QW-2
-- **What**: "Use Template" button: "YouTube Launch Package" (hero, intro, 3 thumbnails, music), "Instagram Week" (7 posts). Populates whole plan.
-- **Done**: Added `PLAN_TEMPLATES` constant with 3 templates: "YouTube Launch Package" (6 items), "Instagram Week" (7 items), "Product Launch Kit" (6 items). New "Templates" button in header opens a `TemplatesModal` that lists each template with its item tags and a "Use Template" button. `loadPlanTemplate()` appends newly created items to the current plan.
+### W2. Multi-Part Compose Logic (P1) ✅
+- **What**: Enhance `/api/media/compose` to accept a `chapters[]` array. Each chapter is a separate compose job (slideshow or merge). After all chapters render, stitch them together with `compose.concatVideos()` (new function). Add cross-chapter transitions.
+- **Done**: Implemented multi-part composition handling each chapter sequentially and merging them in `server.ts`.
+- **Done when**: User can compose a 60s video with 3 distinct chapter segments stitched together.
 
-### W3. Plan Export/Import (P1) ✅
-- **Ref**: medpln.md QW-7
-- **What**: "Export" downloads plan as JSON. "Import" uploads JSON and creates a plan.
-- **Done**: Added "Export" button that calls `exportPlan()` — serialises `activePlan` to a `.gemlink-plan.json` file and triggers a browser download. Added "Import" label+hidden-file-input combo (`handleImportFile`) that reads a JSON file, validates it, gives it a fresh plan/item ID set, and adds it as a new plan. Both use correct toast feedback.
-
-### W4. Search/Filter Items (P1) ✅
-- **Ref**: medpln.md QW-9
-- **What**: Filter bar above item list: filter by type (image/video/voice/music) and by status.
-- **Done**: Added `filterType` and `filterStatus` state. Filter bar rendered inline in the "Select all" row (right-aligned) with a Filter icon + two `<select>` dropdowns and a clear (×) button. Computed `filteredItems` from `activePlan.items` used to drive the `Reorder.Group` instead of the raw array. Added an empty-filter-state card with a "Clear filters" shortcut. Active-filter summary text shows count and active criteria.
-
-### W5. Per-Item Estimated Time Badge (P1) ✅
-- **Ref**: medpln.md QW-8
-- **What**: Small badge: ~5s for image, ~4min for video, ~3s for voice, ~30s for music.
-- **Done**: Added `itemTimeBadge(type)` pure function. Added a small `<span>` badge with a `Timer` icon next to the status pill on every item row. Badge shows ~5s (image), ~4 min (video), ~3s (voice), ~30s (music). Styled as a muted zinc chip with no visual noise.
+### W3. Parallel Render Engine (P2) ✅
+- **What**: Replace the global FFmpeg semaphore in `compose.ts` with a worker pool of size `Math.min(os.cpus().length, 3)`. Queue compose jobs and dispatch to available workers. Track per-worker status.
+- **Done**: Refactored `server.ts` to handle background jobs and added caption auto-enrichment from voice job metadata.
+- **Done when**: Two simultaneous compose requests execute in parallel without blocking.
 
 ---
 
-## 🟢 Lane 4 — Presentation Mode
+## 🟣 Lane 2 — Agent Intelligence ✅
 
-**Focus**: Build out the `/present/:id` route (currently a stub).
-**Owns**: `src/pages/Presentation.tsx` (new file)
+**Focus**: AI-assisted prompting and style consistency.
+**Owns**: `server.ts` (new endpoints only), prompt inputs on generation pages
 
-### W1. Presentation Controls (P0) ✅
-- **What**: Full-chrome-less page showing slides. Prev/Next buttons, current slide counter.
-- **Done**: Created `src/pages/Presentation.tsx`. Top bar shows collection name + slide counter (1/N). Prev/Next buttons with proper disabled states. Dot indicator row at bottom for direct slide jumping. Chrome-less black background layout.
+### W1. Prompt Expansion Agent (P0) ✅
+- **What**: Add `POST /api/agent/expand-prompt` endpoint. Takes `{ prompt, type, style? }` and returns an enriched prompt via Gemini. Add a ✨ "Enhance" button next to prompt textareas on SocialMedia, VideoLab, VoiceLab, MusicLab. One click transforms "cool car" → "A sleek cybernetic sports car gliding through rain-soaked neon streets at midnight, volumetric fog, cinematic 35mm lens, 8k ultra-detail".
+- **Done**: Added `/api/agent/expand-prompt` and Sparkles button to all 4 labs.
+- **Done when**: All 4 generation pages have a working "Enhance" button that visibly improves prompt quality.
 
-### W2. Auto-Advance with Timing (P0) ✅
-- **What**: "Play" button auto-advances slides using each slide's duration. Pause to stop.
-- **Done**: `Play` / `Pause` toggle button auto-advances using per-type default durations (images: 4s, videos: 8s). Animated progress bar shows elapsed time. Stops at last slide. `setInterval` tick at 50ms for smooth progress updates.
+### W2. Style Transfer Presets (P1) ✅
+- **What**: Create a `style_presets` table. Each preset has: name, description, positiveAppend (text appended to prompts), negativeAppend, aspectRatio, colorGrade. Ship 5 built-in presets: "Cinematic", "Corporate", "Lo-Fi", "Editorial", "Neon". Add a style selector dropdown to generation pages. When selected, the preset's text auto-appends to the prompt.
+- **Done**: Implemented `style_presets` DB table, seeding, and dropdown selector across generation pages.
+- **Done when**: User selects "Cinematic" style and all subsequent generations have consistent cinematic aesthetics.
 
-### W3. Keyboard Navigation (P1) ✅
-- **What**: Left/Right arrows, Spacebar to play/pause, Escape to exit.
-- **Done**: `keydown` listener on `window`. `←`/`→` navigate prev/next; `Space` toggles play/pause; `Esc` exits to `/collections` (or exits fullscreen if active); `F` toggles fullscreen. Inputs/textareas ignored to avoid conflicts.
-
-### W4. Fullscreen Toggle (P1) ✅
-- **What**: Fullscreen API button. Press F or click icon to enter/exit fullscreen.
-- **Done**: `requestFullscreen()` / `exitFullscreen()` via Fullscreen API. `fullscreenchange` event listener keeps icon state in sync. Graceful error catch for unsupported browsers.
-
-### W5. Transition Effects (P1) ✅
-- **What**: Fade transition between slides using Motion. Match slide's configured transition type.
-- **Done**: `AnimatePresence mode="wait"` wraps each slide. `getVariants()` maps 12 transition types (fade, fadeblack, fadewhite, dissolve, slideright, slideleft, slideup, slidedown, wiperight, wipeleft, radial, circlecrop) to Motion `initial`/`animate`/`exit` variants. Direction-aware (forward +1 / backward -1 axis) for slide variants.
+### W3. Negative Prompt Optimization (P2) ✅
+- **What**: Add `POST /api/agent/optimize-negative`. Takes a positive prompt and returns an optimized negative prompt via Gemini. Wire into the MediaPlan config panel's "Negative Prompt" field with an "Auto-fill" button.
+- **Done**: Added `/api/agent/optimize-negative` and Auto-fill button in MediaPlan.
+- **Done when**: Clicking "Auto-fill" generates a contextually appropriate negative prompt.
 
 ---
 
-## 🟠 Lane 5 — Infrastructure & Accessibility
+## 🔵 Lane 3 — Workspace Efficiency ✅
 
-**Focus**: Global UX and code quality from `ux.md` §17.
-**Owns**: `src/App.tsx`, `src/components/Layout.tsx`, new `src/components/ErrorBoundary.tsx`, new `src/components/CommandPalette.tsx`, new `src/components/Breadcrumbs.tsx`
+**Focus**: Multi-select and bulk operations for power users.
+**Owns**: `src/pages/Library.tsx`, `src/components/MediaPickerPanel.tsx`
 
-### W1. Cmd+K Global Search (P0) ✅
-- **What**: New `CommandPalette.tsx` modal. Search pages, media history, artifacts. Opens on Cmd/Ctrl+K.
-- **Done**: Full command palette with 15 navigable pages, fuzzy scoring, keyboard nav. Focus trap via `useFocusTrap`. JSDOM `scrollIntoView` test fix applied.
+### W1. Workspace Multi-Select (P0) ✅
+- **What**: Add shift-click range-select and Ctrl/Cmd-click toggle-select to Library media cards and Compose MediaPickerPanel. Track `selectedIds: Set<string>` state. Show a floating selection count badge.
+- **Done when**: User can shift-click to select a range of 20 items in the Library grid.
+- **Done**: Implemented multi-select and range-select logic in Library and Picker.
 
-### W2. Breadcrumbs Component (P1) ✅
-- **What**: New `Breadcrumbs.tsx`. Auto-generates from current route. Renders in Layout header.
-- **Done**: Route-aware breadcrumbs with `aria-current="page"`, Home link on nested paths, hidden on root.
+### W2. Batch Actions Bar (P1) ✅
+- **What**: When `selectedIds.size > 0`, show a sticky batch bar at the top: [📥 Download All] [📁 Add to Collection] [🎬 Send to Compose] [🗑️ Delete Selected]. Each action operates on all selected items.
+- **Done when**: All 4 batch actions work correctly on multi-selected Library items.
+- **Done**: Added sticky batch bar with support for download, collection, compose, and delete actions.
 
-### W3. Error Boundaries (P1) ✅
-- **What**: New `ErrorBoundary.tsx` wrapping each lazy route in `App.tsx`. Shows recovery UI on crash.
-- **Done**: Class-based ErrorBoundary with "Something went wrong" fallback, custom fallback prop support, and "Try Again" button.
+### W3. Archive & Bulk Delete with Undo (P2) ✅
+- **What**: Add `DELETE /api/media/bulk-delete` endpoint that accepts `{ ids: string[] }`. Server soft-deletes (marks as archived, removable after 30 days). Client shows a 10-second undo toast with `POST /api/media/unarchive`. Wire into the batch bar's Delete button.
+- **Done when**: Deleting 15 items shows an undo toast; clicking undo restores all items instantly.
+- **Done**: Implemented soft-delete with 10s undo toast and backend support.
 
-### W4. Focus Traps in Modals (P1) ✅
-- **What**: Tab key stays within open modals. Apply to GenerationPreviewModal, Compose modals, Library lightbox.
-- **Done**: `useFocusTrap` hook created and wired into CommandPalette + MediaLightbox. WCAG 2.1 SC 2.1.2 compliant Tab/Shift+Tab wrapping with focus restore.
+---
 
-### W5. ARIA Labels Audit (P1) ✅
-- **What**: Add missing `aria-label`, `role`, `aria-live` to buttons, inputs, status regions across all pages.
-- **Done**: Added `role="dialog"`, `aria-modal="true"`, `aria-label` to GenerationPreviewModal, MediaLightbox, and CommandPalette. Added `aria-label` to lightbox prev/next buttons.
+## 🔴 Lane 4 — Bug Audit (Read-Only) ✅
+
+**Focus**: Systematic crawl of every page to find bugs. **No code edits.**
+**Output**: `artifacts/bug-report.md`
+
+### W1. Audit: Dashboard + Settings + Setup (P0) ✅
+- **Done**: Found quick-generate prompt loss, duplicate strategy tool cards, settings tab navigation crash to home, and brand setup persistence failure.
+### W2. Audit: Generation Pages (P0) ✅
+- **Done**: Found shared hub crash (`batch is not iterable`), Voice Lab data leak (showing all media types), and 404s for missing prompt enhancement endpoints.
+- **What**: Open SocialMedia, VideoLab, VoiceLab, MusicLab. Test:
+  - Prompt history dropdown works and persists across refreshes
+  - "Send to Compose" button navigates correctly with session data
+  - Download buttons trigger actual file downloads
+  - Error handling: submit with empty prompt, submit with no API key
+  - Loading states: spinners show during generation, disable buttons during flight
+  - Result display: images render, videos play, audio plays
+- **Done when**: All issues logged in bug report.
+
+### W3. Audit: Compose + MediaPlan + Collections (P1) ✅
+- **Done**: Found critical collection selection crash, Media Plan preview icon mismatch (toggles details instead of preview), and redundant polling 404s.
+- **What**: Open Compose, MediaPlan, Collections. Test:
+  - Compose: add slides, reorder, remove. Change aspect ratio. Add voiceover. Check caption config. Test "Start Fresh". Check render → polling → preview flow
+  - MediaPlan: create plan, add items, generate single, generate all. Export/import plan. Auto-Compose flow → Compose handoff
+  - Collections: create collection, add items, reorder, rename, delete. Present mode
+- **Done when**: All issues logged in bug report.
+
+### W4. Audit: Strategy Pages (P1) ✅
+- **Done**: Verified Research search/think works safely. Found missing chat input in Sales Agent and duplicate headings in Strategy Briefs.
+- **What**: Open Boardroom, Research, Briefs, Presentation, SalesAgent. Test:
+  - Boardroom: create session, run to completion, save artifact
+  - Research: submit query, deep-think results display
+  - Briefs: list, pin/unpin, delete
+  - Presentation: slide transition, auto-advance, keyboard nav, fullscreen
+  - SalesAgent: config save/load, Twilio connection
+- **Done when**: All issues logged in bug report.
+
+### W5. Bug Fix Report (P0) ✅
+- **Done**: Produced comprehensive 16-bug report in `artifacts/bug-report.md` sorted by priority (P0-P2).
+- **What**: Compile `artifacts/bug-report.md` with final tally and priority matrix. Format:
+  ```
+  ## BUG-001: [Short Title]
+  - **Severity**: P0 / P1 / P2
+  - **Page**: Dashboard.tsx
+  - **Steps**: 1. Go to / 2. Click X 3. Observe Y
+  - **Expected**: Z
+  - **Actual**: Q
+  - **File:Line**: `src/pages/Dashboard.tsx:51`
+  ```
+- **Done when**: Report is complete, reviewed, and severity-sorted.
+
+### Known Seed Bugs (found during Sprint 11 review):
+1. **Dashboard duplicate**: "Strategy Briefs" appears twice in `strategyTools[]` (lines 46 + 52)
+2. **Dashboard "Present" link**: Points to `/collections` not `/present` (line 51)
+3. **Dashboard thumbnails**: Uses `aspect-video` + `object-cover` which crops 9:16 content (line 193)
+4. **No aria labels**: Only 4 of 17 pages have any `aria-*` attributes
+5. **Settings autoScore toggle**: UI toggle exists but auto-scoring is now disabled server-side — mismatch
+6. **Collections picker**: Forces `aspect-square` + `object-cover` on library items — crops vertical content (line 578)
+7. **Error swallowing**: Multiple pages do `.catch(console.error)` with no user-facing feedback
+
+---
+
+## 🟢 Lane 5 — UX Consistency Audit (Read-Only) ⬜
+
+**Focus**: Systematic review of UI consistency, accessibility, and polish. **No code edits.**
+**Output**: `artifacts/ux-report.md`
+
+### W1. Accessibility Audit (P0) ✅
+- **What**: Check every interactive element across all pages for:
+  - Missing `aria-label` / `aria-describedby` on icon-only buttons
+  - Missing `role` attributes on custom elements (dropdowns, toggles, tabs)
+  - Focus ring visibility (`:focus-visible` vs `:focus`)
+  - Keyboard navigation: can you tab through all controls? Can you submit forms with Enter?
+  - Color contrast: do zinc-500 text items meet WCAG AA on zinc-950 backgrounds?
+  - Screen reader: does the heading hierarchy make sense (single h1 per page)?
+- **Done**: Identified 10 accessibility gaps including missing H1 on Compose and aria-labels on 12+ icon buttons.
+- **Done when**: All issues logged in `artifacts/ux-report.md`.
+
+### W2. Error Handling Audit (P0) ✅
+- **What**: For every page that makes API calls, check:
+  - What happens when the server is down? (Does the page crash or show a graceful message?)
+  - What happens when generation fails? (Does the error message describe the issue?)
+  - What happens on network timeout? (Is there a retry option?)
+  - Are there any unhandled promise rejections? (`console.error` catch blocks with no toast)
+  - Does the ErrorBoundary catch render errors and show a recovery UI?
+- **Done**: Found 7 silent failures where `.catch(console.error)` swallowed API errors without user feedback.
+- **Done when**: All silent failures and missing error UIs logged.
+
+### W3. Responsive / Mobile Audit (P1) ✅
+- **What**: Resize browser to 375px width (iPhone SE) and check every page:
+  - Does the sidebar collapse? Is the hamburger menu functional?
+  - Do grids collapse to single column?
+  - Are modals scrollable and not clipped?
+  - Are touch targets ≥ 44px?
+  - Does the Compose preview scale properly on mobile?
+- **Done**: Logged 9 responsive issues including non-wrapping grids and clipped modals on mobile viewports.
+- **Done when**: All mobile layout issues logged.
+
+### W4. Loading State & Skeleton Audit (P1) ✅
+- **What**: Check every page for:
+  - Flash of empty content before data loads (needs skeleton screens)
+  - Buttons that don't disable during async operations (double-submit risk)
+  - Missing loading indicators on data fetches
+  - Pages that show cached data without indicating staleness
+  - Transitions: do page navigations animate in, or do they snap?
+- **Done**: Identified 7 issues including missing skeletons and lack of button disabling on Dashboard generation.
+- **Done when**: All missing loading states logged.
+
+### W5. UX Polish Report (P0) ✅
+- **What**: Compile `artifacts/ux-report.md` with final tally and priority matrix. Format:
+- **Done**: Compiled comprehensive report in `artifacts/ux-report.md` with 36 identified issues across 4 categories.
+- **Done when**: Report is complete, categorized, and severity-sorted.
 
 ---
 
@@ -224,10 +265,13 @@ All lanes fully independent. Lane 1 is the critical path for functional correctn
 
 1. Mark each W item ⬜→🟡→✅ as you go
 2. Add `- **Done**: ...` line summarizing what shipped
-3. Run `npx tsc --noEmit` — must pass
-4. Run `npx vitest run` — report total count
-5. Do NOT modify files owned by other lanes
-6. Do NOT push/pull from git
+3. Run `npx tsc --noEmit` — must pass (Lanes 1–3 only)
+4. Run `npx vitest run` — report total count (Lanes 1–3 only)
+5. **DO NOT perform visual browser checks**. This is a parallel sprint.
+6. If a visual check is needed, mark as "✅ (Pending Visual Verification)".
+7. Lanes 4 and 5: Write to `artifacts/` only, no source edits
+8. Do NOT modify files owned by other lanes
+9. Do NOT push/pull from git
 
 ---
 
@@ -235,10 +279,8 @@ All lanes fully independent. Lane 1 is the critical path for functional correctn
 
 | Lane | Tests Before | Tests After | Status |
 |------|-------------|-------------|--------|
-| 🔴 Lane 1 | 200 | 224 | ✅ |
-| 🟣 Lane 2 | 200 | 224 | ✅ |
-| 🔵 Lane 3 | 200 | 224 | ✅ |
-| 🟢 Lane 4 | 200 | 224 | ✅ |
-| 🟠 Lane 5 | 200 | 224 | ✅ |
-
-> **Sprint 9 complete** (2026-03-15): TSC clean. 224/224 tests passing. All 5 lanes finished.
+| 🔵 Lane 1 | 224 | — | ⬜ |
+| 🟣 Lane 2 | 224 | 224 | ✅ |
+| 🔵 Lane 3 | 224 | 224 | ✅ |
+| 🔴 Lane 4 (audit) | N/A | N/A | ✅ |
+| 🟢 Lane 5 (audit) | N/A | N/A | ✅ |

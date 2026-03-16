@@ -379,3 +379,336 @@ DELETE /api/collections/:id/items/bulk
 ---
 
 *Suggestions focus on agent ergonomics: self-describing APIs, safe retries, real-time feedback, and collision avoidance. None of these require changes to the Gemini integration — they're all Express/architecture-level improvements.*
+
+---
+
+## 16. Auto-Compose Handoff is Broken — Compose Never Reads the Data
+
+**Current state:** `POST /api/media/plan/:planId/auto-compose` returns composition groups. MediaPlan stores them in `sessionStorage("auto-compose-groups")` and navigates to `/compose`. **But Compose.tsx never reads that key.** It only reads `compose-send-item`. The user (or agent) lands on a blank Compose page. For agents, the situation is even worse — there's no API that takes an auto-compose result and returns a fully assembled `ComposeProject` JSON.
+
+**Suggestion:** Two fixes:
+
+1. **Frontend:** Add a `useEffect` in Compose.tsx to read `auto-compose-groups` and pre-fill the project.
+
+2. **Agent endpoint:** `POST /api/compose/from-plan`
+
+```json
+{
+  "compositions": [{ "slideJobIds": [...], "voiceJobId": "...", "template": {...} }]
+}
+→ 200 {
+  "projects": [{
+    "mode": "slideshow",
+    "title": "Product Showcase (Group 1)",
+    "slides": [{ "jobId": "...", "thumbnail": "/jobs/images/.../output.png", "duration": 3, "transition": "fade" }],
+    "voiceJobId": "...",
+    "captionConfig": { "text": "...", "style": "bold-outline", "timing": "word" },
+    "outputConfig": { "aspectRatio": "9:16", "resolution": "1080p", "fps": 30 }
+  }]
+}
+```
+
+An agent calling auto-compose → from-plan → `/api/compose/render` can orchestrate the entire pipeline without the UI.
+
+**Why it matters for agents:** Right now the pipeline is: plan → auto-compose → (broken handoff) → empty compose page → manual setup → render. An agent literally cannot complete this flow via API.
+
+---
+
+## 17. History API Missing `duration` — Video Slides Default to 3s
+
+**Current state:** `GET /api/media/history` returns job manifests but does NOT include `duration` for video/voice/music jobs, even though the DB schema has a `duration` column and `probeMedia()` can provide it. Without duration data, `jobToSlide()` hardcodes `duration: 3` for all slides — a 10-second Veo clip becomes a 3-second slide.
+
+**Suggestion:** Add `duration` to the history API response:
+
+```typescript
+// In collectHistory() — flat-file path:
+{
+  ...manifest,
+  duration: manifest.duration ?? undefined,
+}
+
+// In collectHistory() — DB path:
+{
+  ...row,
+  duration: row.duration ?? undefined,
+}
+```
+
+Also probe for duration at generation time. When a video job completes, call `probeMedia()` and store the result in the manifest/DB.
+
+**Why it matters for agents:** An agent building a composition needs to know how long each video clip is to set slide durations, calculate total composition time, match voiceover duration, and warn about mismatches. Without this, every agent-built slideshow has wrong timing.
+
+---
+
+## 18. Plan Suggest Endpoint Has No Duration/Format Awareness
+
+**Current state:** `POST /api/media/plan/suggest` prompt tells the AI to generate items but says nothing about:
+- Veo clips are max ~8 seconds
+- Music tracks are max ~30 seconds
+- Video only supports 16:9 and 9:16
+- Voice duration depends on text length
+
+So the AI might plan a "30-second product demo" as one video item, which silently fails.
+
+**Suggestion:** Add duration and format constraints to the system prompt:
+
+```typescript
+"- VIDEO: max 8 seconds per clip. For longer content, use multiple video items or an image slideshow with voiceover.",
+"- MUSIC: max 30 seconds per track.",
+"- VOICE: duration scales with text length (~150 words/minute).",
+"- VIDEO ASPECT RATIOS: only 16:9 or 9:16. Images support any ratio.",
+```
+
+Also accept and pass back `estimatedDuration` per item so agents can compute total duration before generation.
+
+**Why it matters for agents:** An agent trusts the planner's output. If the planner says "1 video, 30 seconds" and Veo produces 8 seconds, the agent has no way to recover. Duration awareness prevents impossible plans.
+
+---
+
+## 19. Plan Suggest Should Return Composition Metadata
+
+**Current state:** `POST /api/media/plan/suggest` returns `{ items: [...] }` — just a list of assets. It doesn't suggest anything about how to assemble them: no caption style, no transition preference, no aspect ratio, no slide duration, no composition order.
+
+**Suggestion:** Extend the return schema:
+
+```json
+{
+  "items": [ ... ],
+  "compositionSuggestion": {
+    "captionStyle": "word-highlight",
+    "captionAnimation": "pop",
+    "transitionStyle": "dissolve",
+    "aspectRatio": "9:16",
+    "slideDuration": 3,
+    "kenBurns": true,
+    "targetPlatform": "instagram-reels",
+    "reasoning": "Gen Z audience → vertical, fast cuts, bold captions"
+  }
+}
+```
+
+The planner prompt already knows the brand context — it should think about formatting too.
+
+**Why it matters for agents:** An agent going from plan → compose needs these parameters. Without them, every composition uses generic defaults. With them, the agent can programmatically build a brand-appropriate composition without guessing.
+
+---
+
+## 20. Add Thinking Depth Parameter to Plan Suggest
+
+**Current state:** Plan suggest uses a single Gemini call with `gemini-2.5-flash`. No way to request deeper analysis. The multi-stage pipeline endpoint exists at `/api/media/plan/pipeline` but it's a separate path with different semantics.
+
+**Suggestion:** Add `depth` parameter to suggest:
+
+```json
+POST /api/media/plan/suggest
+{
+  "description": "...",
+  "depth": "quick" | "deep" | "refine",
+  "existingItems": []   // optional, for "refine" mode
+}
+```
+
+- **quick** — current behavior, single Flash call
+- **deep** — two-pass: analysis → plan generation, uses Pro or thinking model
+- **refine** — takes existing items, critiques them, suggests improvements
+
+```json
+// "refine" mode response
+{
+  "items": [ ... ],        // revised items
+  "removedItems": ["item_abc"],
+  "addedItems": ["item_xyz"],
+  "reasoning": "Added a voiceover to tie the 5 images into a cohesive narrative. Removed duplicate product shot."
+}
+```
+
+**Why it matters for agents:** An orchestrating agent can decide how much thinking to invest based on the importance of the plan. Quick for iteration, deep for final plans, refine for revision loops.
+
+---
+
+## 21. Add Plan Refinement Endpoint ("Think Again")
+
+**Current state:** No endpoint to critique an existing plan. The only option is to generate a fresh plan from scratch with `/api/media/plan/suggest`.
+
+**Suggestion:** `POST /api/media/plan/:planId/refine`
+
+```json
+{
+  "items": [ <current plan items> ],
+  "focus": "improve prompts" | "add missing items" | "optimize for platform" | "all",
+  "platform": "tiktok" | "instagram" | "youtube-shorts" | "linkedin"
+}
+→ 200 {
+  "refinedItems": [ ... ],
+  "changes": [
+    { "itemId": "item_abc", "field": "promptTemplate", "before": "...", "after": "...", "reason": "More specific lighting description" },
+    { "action": "added", "item": { ... }, "reason": "Missing voiceover for cohesive narrative" }
+  ],
+  "compositionSuggestion": { ... }
+}
+```
+
+**Why it matters for agents:** An agent reviewing a batch of generated media can send the underperforming items back for prompt refinement before re-generating. This creates a self-improving loop: generate → score → refine → re-generate.
+
+---
+
+## 22. Voice→Caption Auto-Fill is Missing
+
+**Current state:** When a voice job is selected as the voiceover track, the caption text field stays empty. The user (or agent) has to manually type the same narration text into the caption config. The voice job's `text` field contains the script, but no endpoint or logic copies it to caption config.
+
+**Suggestion:** Two changes:
+
+1. **Auto-compose endpoint** should include `captionText` derived from the voice job's source text (it partially does this, but the wiring to Compose is broken — see #16).
+
+2. **New endpoint:** `GET /api/media/job/:type/:id/text`
+
+```json
+→ 200 { "text": "Welcome to our brand new product...", "wordCount": 45, "estimatedDuration": 18 }
+```
+
+This returns the source text of any voice job, so an agent (or the frontend) can fetch it and populate captions without needing the full manifest.
+
+3. **Compose render endpoint** should accept `captionSource: "voice"` and auto-pull text from the voice job:
+
+```json
+POST /api/compose/render
+{
+  "mode": "slideshow",
+  "slides": [...],
+  "voiceJobId": "job_abc",
+  "captionSource": "voice",  // ← auto-populate from voice job text
+  "captionStyle": "word-highlight",
+  "captionTiming": "word"
+}
+```
+
+**Why it matters for agents:** This is the biggest UX gap. Agents generating videos with voiceovers currently produce silent videos (no burned captions) because there's no automated path from voice text → caption text. Every TikTok/Reels video needs captions.
+
+---
+
+## 23. Video Slides Need Separate FFmpeg Handling
+
+**Current state:** `createSlideshow()` in compose.ts processes all slides the same way. Image slides get `tpad=stop_mode=clone:stop_duration=X` (which extends a still image to fill the duration). Video slides also get this filter, which is wrong — it pads a video with frozen frames instead of playing the actual video content. Separately, video slides use `-stream_loop -1` on input, which loops them indefinitely, then the `tpad` filter clips them wrong.
+
+**Suggestion:** In `createSlideshow()`, branch the filter logic:
+
+```typescript
+if (isImageFile(slide.imagePath)) {
+  // Current logic: scale + tpad + optional kenBurns
+  filterParts.push(`[${i}:v]${scaleFilter},tpad=...[v${i}]`);
+} else {
+  // Video slide: scale + trim (no tpad, no kenBurns)
+  filterParts.push(`[${i}:v]${scaleFilter},trim=duration=${dur},setpts=PTS-STARTPTS,fps=${fps}[v${i}]`);
+}
+```
+
+Also expose this as a parameter in the compose API so agents can set `slideType: "video" | "image"` per slide, avoiding auto-detection failures.
+
+**Why it matters for agents:** An agent building a slideshow with video clips produces broken output. The videos freeze/loop/pad incorrectly. This makes mixed-media compositions (images + video clips) — the most common use case — unreliable.
+
+---
+
+## 24. Per-Slide Duration Should Use Probe Data
+
+**Current state:** `POST /api/compose/render` accepts slide durations in the request, but there's no way for an agent to ask "how long is this video?" without calling a separate probe endpoint. And the slide duration defaults to 3 seconds regardless of actual content length.
+
+**Suggestion:** Add a probe parameter to the compose endpoint:
+
+```json
+POST /api/compose/render
+{
+  "slides": [
+    { "jobId": "job_abc", "duration": "auto" },  // ← server probes the file
+    { "jobId": "job_def", "duration": 3 }
+  ]
+}
+```
+
+When `duration: "auto"`, the server calls `probeMedia()` on the slide's media file and uses its actual duration. For images, default to 3s. For videos, use the probe result.
+
+Also expose `GET /api/media/job/:type/:id/probe`:
+
+```json
+→ 200 { "duration": 8.4, "width": 1920, "height": 1080, "codec": "h264", "hasAudio": true }
+```
+
+**Why it matters for agents:** An agent can request correct durations without guessing. `"duration": "auto"` is the safe default that prevents 3-second truncation of long videos.
+
+---
+
+## 25. Full Compose-From-Plan Orchestration Endpoint
+
+**Current state:** Going from a media plan to a rendered video requires 4 separate API calls with manual data wiring between them:
+
+1. `POST /api/media/plan/:id/auto-compose` → groups
+2. (broken) Navigate to Compose and hope it loads → it doesn't
+3. Manually configure the composition
+4. `POST /api/compose/render` → rendered video
+
+No single endpoint ties this together.
+
+**Suggestion:** `POST /api/compose/from-plan`
+
+```json
+{
+  "planId": "plan_abc",
+  "items": [ <approved plan items> ],
+  "templateId": "faceless-explainer",          // optional
+  "captionSource": "voice",                    // auto-pull from voice item
+  "captionStyle": "word-highlight",
+  "captionTiming": "word",
+  "aspectRatio": "9:16",
+  "render": false                              // true = immediately render, false = return ComposeProject JSON for review
+}
+→ 200 {
+  "project": {
+    "mode": "slideshow",
+    "title": "Auto-Composed: Product Launch",
+    "slides": [...],
+    "voiceJobId": "...",
+    "captionConfig": { ... },
+    "outputConfig": { ... }
+  },
+  "reasoning": "Grouped 6 images into 2 compositions. Matched voice_abc to group 1 based on shared 'product-launch' tag."
+}
+```
+
+With `render: true`, it also kicks off the render and returns the compose job ID for polling.
+
+**Why it matters for agents:** This is the holy grail for agent-driven workflows. One call: plan → composition → render. An orchestrating agent can go from "here's my media plan" to "here's a rendered TikTok video" in a single request. This makes the full AI-to-video pipeline automatable.
+
+---
+
+## Updated Priority Order
+
+| # | Change | Effort | Impact |
+|---|--------|--------|--------|
+| 1 | Split server.ts into route modules | Medium | Very high — solves agent collision |
+| **16** | **Fix auto-compose handoff + from-plan endpoint** | **Medium** | **Very high — totally broken pipeline** |
+| **17** | **Add duration to history API** | **Low** | **High — wrong video timing everywhere** |
+| **22** | **Voice→caption auto-fill** | **Low** | **High — every video needs captions** |
+| **23** | **Video slide FFmpeg handling** | **Low** | **High — broken mixed-media output** |
+| 3 | Rate limit headers | Low | High — prevents blind retries |
+| 2 | Capabilities endpoint | Low | High — self-describing API |
+| **25** | **Full compose-from-plan orchestration** | **Medium** | **High — single-call plan→video** |
+| **18** | **Duration/format awareness in suggest** | **Low** | **Medium — prevents impossible plans** |
+| **19** | **Composition metadata in suggest** | **Low** | **Medium — brand-appropriate defaults** |
+| **20** | **Thinking depth parameter** | **Low** | **Medium — agent can control reasoning** |
+| **24** | **Per-slide auto-probe duration** | **Low** | **Medium — correct durations** |
+| **21** | **Plan refinement endpoint** | **Medium** | **Medium — self-improving loop** |
+| 6 | Fix URL prefix inconsistency | Low | Medium — reduces agent config errors |
+| 9 | Agent identity headers | Low | Medium — traceability |
+| 8 | Job cancellation | Medium | Medium — quota safety |
+| 4 | SSE streaming | Medium | High — eliminates polling loops |
+| 5 | Idempotency keys | Medium | Medium — safe retries |
+| 14 | Bulk collection ops | Low | Medium — fewer round trips |
+| 7 | Boardroom inject | High | Medium — mid-session steering |
+| 11 | Per-seat model config | Low | Medium — cost control |
+| 12 | Queue status | Medium | Medium — smart throttling |
+| 10 | Dry-run mode | Medium | Medium — pre-validation |
+| 13 | Research thinking budget | Low | Low-Medium — fine-grained control |
+| 15 | Scoring rubric endpoint | Low | Low — transparency |
+
+---
+
+*Items 16–25 focus on the Media Plan → Compose → Render pipeline — the most critical agent workflow. Without these, an external agent literally cannot produce a video from a media plan via API. Items 16, 17, 22, 23 are bugs (broken or missing wiring); items 18–21 make the planner smarter; items 24–25 build the orchestration layer.*

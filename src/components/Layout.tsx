@@ -30,6 +30,7 @@ import { motion, AnimatePresence } from "motion/react";
 import ErrorBoundary from "./ErrorBoundary";
 import ToastContainer from "./Toast";
 import ArtifactPanel from "./ArtifactPanel";
+import JobQueueOverlay from "./JobQueueOverlay";
 import { useProject } from "../context/ProjectContext";
 // ── Added by Lane 5 (Sprint 9 W1, W2) ──────────────────────────────────────────
 import CommandPalette from "./CommandPalette";
@@ -175,8 +176,7 @@ interface QueueStatus {
   pending: Record<string, number>;
 }
 
-function GlobalJobIndicator() {
-  const navigate = useNavigate();
+function GlobalJobIndicator({ onOpen }: { onOpen: () => void }) {
   const [activeCount, setActiveCount] = useState(0);
 
   useEffect(() => {
@@ -205,8 +205,8 @@ function GlobalJobIndicator() {
 
   return (
     <button
-      onClick={() => navigate("/library")}
-      title={`${activeCount} job${activeCount !== 1 ? "s" : ""} in progress — click to view Library`}
+      onClick={onOpen}
+      title={`${activeCount} job${activeCount !== 1 ? "s" : ""} in progress — click to view queue`}
       className="flex items-center gap-2 px-3 py-2 mx-3 mb-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-300 hover:bg-amber-500/20 transition-colors text-xs font-medium"
     >
       <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
@@ -222,6 +222,7 @@ export default function Layout() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   // ── Added by Lane 5 (Sprint 9 W1) — CommandPalette state ──────────────────
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+  const [isQueueOpen, setIsQueueOpen] = useState(false);
 
   // Cmd+K / Ctrl+K global shortcut
   useEffect(() => {
@@ -302,7 +303,7 @@ export default function Layout() {
           <NavLinks />
         </nav>
         {/* ── W2 (Lane 5): Global Job Indicator ── */}
-        <GlobalJobIndicator />
+        <GlobalJobIndicator onOpen={() => setIsQueueOpen(true)} />
       </div>
 
       {/* Mobile Menu Overlay */}
@@ -347,6 +348,8 @@ export default function Layout() {
       <ToastContainer />
       {/* Global artifact reference panel */}
       <ArtifactPanel />
+      {/* Global job queue overlay */}
+      <JobQueueOverlay open={isQueueOpen} onClose={() => setIsQueueOpen(false)} />
     </div>
   );
 }

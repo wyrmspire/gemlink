@@ -26,6 +26,7 @@ import {
   ChevronDown,
   ArrowRight,
   Maximize2,
+  AlertTriangle,
 } from "lucide-react";
 import TransitionPicker from "./TransitionPicker";
 
@@ -44,6 +45,7 @@ export interface Slide {
     text: string;
     position: "top" | "center" | "bottom";
   };
+  aspectRatio?: string;
 }
 
 interface SlideTimelineProps {
@@ -53,6 +55,7 @@ interface SlideTimelineProps {
   onDeleteSlide: (id: string) => void;
   onDuplicateSlide: (id: string) => void;
   onAddSlide: () => void;
+  targetAspectRatio?: string;
 }
 
 // ─── Individual sortable slide card ──────────────────────────────────────────
@@ -66,6 +69,7 @@ interface SortableSlideCardProps {
   onDelete: () => void;
   onDuplicate: () => void;
   isLast: boolean;
+  targetAspectRatio?: string;
 }
 
 function SortableSlideCard({
@@ -77,6 +81,7 @@ function SortableSlideCard({
   onDelete,
   onDuplicate,
   isLast,
+  targetAspectRatio,
 }: SortableSlideCardProps) {
   const {
     attributes,
@@ -130,13 +135,28 @@ function SortableSlideCard({
           </div>
 
           {/* Slide number */}
-          <div className="absolute top-1 left-1 bg-black/70 text-zinc-300 text-[9px] px-1.5 py-0.5 rounded">
+          <div className="absolute top-1 left-1 bg-black/70 text-zinc-300 text-[9px] px-1.5 py-0.5 rounded flex items-center gap-1">
             {index + 1}
+            {slide.jobType === "video" && (
+              <span className="bg-indigo-600 text-[8px] font-black px-1 rounded-sm border border-indigo-400 leading-tight">
+                VID
+              </span>
+            )}
           </div>
+
+          {/* Aspect Ratio Mismatch Warning */}
+          {targetAspectRatio && slide.aspectRatio && 
+           slide.aspectRatio.replace(":", "x") !== targetAspectRatio.replace(":", "x") && (
+            <div className="absolute top-1 right-1 z-10" title={`Mismatch: Slide is ${slide.aspectRatio}, Composition is ${targetAspectRatio}`}>
+              <div className="bg-amber-500 rounded-sm p-0.5 shadow-lg border border-amber-400">
+                <AlertTriangle className="w-2.5 h-2.5 text-white" />
+              </div>
+            </div>
+          )}
 
           {/* KenBurns badge */}
           {slide.kenBurns && (
-            <div className="absolute top-1 right-1">
+            <div className={`absolute top-1 right-1 ${targetAspectRatio && slide.aspectRatio && slide.aspectRatio.replace(":", "x") !== targetAspectRatio.replace(":", "x") ? "top-5" : ""}`}>
               <Maximize2 className="w-3 h-3 text-indigo-300 drop-shadow" />
             </div>
           )}
@@ -356,6 +376,7 @@ export default function SlideTimeline({
   onDeleteSlide,
   onDuplicateSlide,
   onAddSlide,
+  targetAspectRatio,
 }: SlideTimelineProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -424,6 +445,7 @@ export default function SlideTimeline({
                   }}
                   onDuplicate={() => onDuplicateSlide(slide.id)}
                   isLast={i === slides.length - 1}
+                  targetAspectRatio={targetAspectRatio}
                 />
               ))}
 

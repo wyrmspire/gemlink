@@ -144,7 +144,10 @@ export default function ComposePreview({ project, className = "" }: ComposePrevi
   const slides = project.slides;
   const totalDuration = slides.reduce((s, sl) => s + sl.duration, 0);
   const currentSlide = slides[currentSlideIndex];
-  const ratioStyle = RATIO_STYLES[project.outputConfig?.aspectRatio ?? "16:9"] ?? RATIO_STYLES["16:9"];
+  const ar = project.outputConfig?.aspectRatio ?? "9:16";
+  const ratioStyle = RATIO_STYLES[ar] ?? RATIO_STYLES["9:16"];
+  const isVertical = ar === "9:16" || ar === "4:5";
+  const previewMaxWidth = isVertical ? 200 : 400;
 
   // ── Playback logic ─────────────────────────────────────────────────────────
 
@@ -161,20 +164,18 @@ export default function ComposePreview({ project, className = "" }: ComposePrevi
   }, []);
 
   const advanceSlide = useCallback(() => {
-    setCurrentSlideIndex((prev) => {
-      if (prev < slides.length - 1) {
-        setSlideState("exiting");
-        setTimeout(() => {
-          setSlideState("entering");
-          setTimeout(() => setSlideState("active"), 100);
-        }, 400);
-        return prev + 1;
-      } else {
-        setIsPlaying(false);
-        return prev;
-      }
-    });
-  }, [slides.length]);
+    const nextIdx = currentSlideIndex + 1;
+    if (nextIdx < slides.length) {
+      setSlideState("exiting");
+      setTimeout(() => {
+        setCurrentSlideIndex(nextIdx);
+        setSlideState("entering");
+        setTimeout(() => setSlideState("active"), 100);
+      }, 400);
+    } else {
+      setIsPlaying(false);
+    }
+  }, [currentSlideIndex, slides.length]);
 
   useEffect(() => {
     if (!isPlaying) {
@@ -206,7 +207,7 @@ export default function ComposePreview({ project, className = "" }: ComposePrevi
     if (!project.voiceJobId) { setVoiceAudioUrl(null); return; }
     fetch("/api/media/history", { cache: "no-store" })
       .then((r) => r.ok ? r.json() : [])
-      .then((jobs: Array<{ id: string; outputs?: string[] }>) => {
+      .then((jobs: Array<{ id: string; outputs?: string[]; type?: string }>) => {
         const job = jobs.find((j) => j.id === project.voiceJobId);
         setVoiceAudioUrl(job?.outputs?.[0] ?? null);
       })
@@ -218,14 +219,23 @@ export default function ComposePreview({ project, className = "" }: ComposePrevi
       resetPlayback();
       setTimeout(() => setIsPlaying(true), 50);
     } else {
-      setIsPlaying((p) => !p);
-      if (!isPlaying && audioRef.current && project.voiceJobId) {
+      const next = !isPlaying;
+      setIsPlaying(next);
+      if (next && audioRef.current && project.voiceJobId) {
         audioRef.current.play().catch(() => {});
       } else if (audioRef.current) {
         audioRef.current.pause();
       }
     }
   }
+
+  // W1: Track video element for play/pause sync
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  useEffect(() => {
+    if (!videoRef.current) return;
+    if (isPlaying) videoRef.current.play().catch(() => {});
+    else videoRef.current.pause();
+  }, [isPlaying, currentSlideIndex]);
 
   if (slides.length === 0) {
     return (
@@ -239,6 +249,33 @@ export default function ComposePreview({ project, className = "" }: ComposePrevi
 
   const progressPct = totalDuration > 0 ? (elapsed / totalDuration) * 100 : 0;
 
+  // W2/W3: Timed captions logic
+  const [audioTime, setAudioTime] = useState(0);
+  useEffect(() => {
+    let frame: number;
+    const update = () => {
+      if (audioRef.current && !audioRef.current.paused) {
+        setAudioTime(audioRef.current.currentTime);
+      }
+      frame = requestAnimationFrame(update);
+    };
+    frame = requestAnimationFrame(update);
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  const captionTime = (voiceAudioUrl && isPlaying) ? audioTime : elapsed;
+  
+  const captionWords = useMemo(() => {
+    if (!project.captionConfig?.text) return [];
+    return project.captionConfig.text.split(/\s+/).filter(Boolean);
+  }, [project.captionConfig?.text]);
+
+  const activeWordIndex = useMemo(() => {
+    if (captionWords.length === 0 || totalDuration === 0) return -1;
+    const perWord = totalDuration / captionWords.length;
+    return Math.floor(captionTime / perWord);
+  }, [captionWords.length, totalDuration, captionTime]);
+
   return (
     <div className={`bg-zinc-950 border border-zinc-800 rounded-2xl overflow-hidden ${className}`}>
       {/* Header */}
@@ -248,15 +285,15 @@ export default function ComposePreview({ project, className = "" }: ComposePrevi
         </span>
         <span className="text-xs text-zinc-600 flex items-center gap-1">
           <Info className="w-3.5 h-3.5" />
-          {project.outputConfig?.aspectRatio ?? "16:9"} · {project.outputConfig?.resolution ?? "720p"}
+          {project.outputConfig?.aspectRatio ?? "9:16"} · {project.outputConfig?.resolution ?? "720p"}
         </span>
       </div>
 
       {/* Video frame */}
       <div className="flex justify-center p-4 bg-black">
         <div
-          className="relative w-full max-w-sm overflow-hidden rounded-xl bg-zinc-900"
-          style={{ paddingBottom: ratioStyle.paddingBottom, maxWidth: 300 }}
+          className="relative w-full overflow-hidden rounded-xl bg-zinc-900 shadow-2xl"
+          style={{ paddingBottom: ratioStyle.paddingBottom, maxWidth: previewMaxWidth }}
         >
           <div className="absolute inset-0">
             {/* Slides */}
@@ -271,18 +308,41 @@ export default function ComposePreview({ project, className = "" }: ComposePrevi
                   }}
                 >
                   {currentSlide.thumbnail ? (
-                    <img
-                      src={currentSlide.thumbnail}
-                      alt={`Slide ${currentSlideIndex + 1}`}
-                      className="w-full h-full object-cover"
-                      style={
-                        currentSlide.kenBurns && isPlaying
-                          ? {
-                              animation: `${kenBurnsAnimationName(currentSlide.kenBurnsDirection)} ${currentSlide.duration}s ease-out forwards`,
-                            }
-                          : {}
+                    (() => {
+                      const isVideo = currentSlide.jobType === "video" || 
+                                     currentSlide.thumbnail.endsWith(".mp4") || 
+                                     currentSlide.thumbnail.endsWith(".webm");
+                      
+                      if (isVideo) {
+                        return (
+                          <video
+                            ref={videoRef}
+                            src={currentSlide.thumbnail}
+                            poster={currentSlide.thumbnail} // best effort poster
+                            autoPlay={isPlaying}
+                            muted
+                            loop
+                            playsInline
+                            className="w-full h-full object-cover"
+                          />
+                        );
                       }
-                    />
+                      
+                      return (
+                        <img
+                          src={currentSlide.thumbnail}
+                          alt={`Slide ${currentSlideIndex + 1}`}
+                          className="w-full h-full object-cover"
+                          style={
+                            currentSlide.kenBurns && isPlaying
+                              ? {
+                                  animation: `${kenBurnsAnimationName(currentSlide.kenBurnsDirection)} ${currentSlide.duration}s ease-out forwards`,
+                                }
+                              : {}
+                          }
+                        />
+                      );
+                    })()
                   ) : (
                     <div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-700">
                       <span className="text-xs">Slide {currentSlideIndex + 1}</span>
@@ -315,10 +375,40 @@ export default function ComposePreview({ project, className = "" }: ComposePrevi
               )}
             </AnimatePresence>
 
-            {/* Caption overlay */}
+            {/* Caption overlay (timed) */}
             {project.captionConfig?.text && (
-              <div style={getCaptionCSS(project.captionConfig)}>
-                {project.captionConfig.text.split("\n").slice(0, 2).join(" ")}
+              <div 
+                style={{
+                  ...getCaptionCSS(project.captionConfig),
+                  display: "flex",
+                  flexWrap: "wrap",
+                  justifyContent: "center",
+                  gap: "0.2em",
+                  padding: "0 10px",
+                  ...(project.captionConfig.position === "center" ? { transform: "translateY(-50%)" } : {})
+                }}
+              >
+                {captionWords.map((word, i) => {
+                  const isActive = i === activeWordIndex;
+                  const isPast = i < activeWordIndex;
+                  const animationStyle = (project.captionConfig as any)?.animation ?? "none";
+                  
+                  return (
+                    <span
+                      key={i}
+                      style={{
+                        color: isActive ? "#6366f1" : "inherit",
+                        opacity: isActive ? 1 : isPast ? 0.8 : 0.4,
+                        transition: "all 0.2s ease",
+                        animation: (isActive && animationStyle !== "none") 
+                          ? `${animationStyle === "pop" ? "captionPop" : animationStyle === "fade" ? "captionFade" : "captionBlur"} 0.3s ease-out forwards`
+                          : "none"
+                      }}
+                    >
+                      {word}
+                    </span>
+                  );
+                })}
               </div>
             )}
 
@@ -400,6 +490,19 @@ export default function ComposePreview({ project, className = "" }: ComposePrevi
         @keyframes kenBurnsPanRight {
           from { transform: scale(1.08) translateX(-4%); }
           to   { transform: scale(1.08) translateX(4%); }
+        }
+        @keyframes captionPop {
+          0% { transform: scale(0.8); opacity: 0; }
+          70% { transform: scale(1.05); opacity: 1; }
+          100% { transform: scale(1); opacity: 1; }
+        }
+        @keyframes captionFade {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes captionBlur {
+          from { filter: blur(4px); opacity: 0; }
+          to { filter: blur(0); opacity: 1; }
         }
       `}</style>
     </div>

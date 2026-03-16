@@ -33,8 +33,6 @@ import ComposePreview from "../components/ComposePreview";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type ComposeMode = "slideshow" | "merge" | "captions";
-
 export interface OutputConfig {
   aspectRatio: "9:16" | "16:9" | "1:1" | "4:5";
   resolution: "720p" | "1080p";
@@ -42,7 +40,6 @@ export interface OutputConfig {
 }
 
 export interface ComposeProject {
-  mode: ComposeMode;
   title: string;
   slides: Slide[];
   voiceJobId?: string;
@@ -75,37 +72,43 @@ function genId(): string {
 
 function defaultProject(): ComposeProject {
   return {
-    mode: "slideshow",
     title: "Untitled Composition",
     slides: [],
     outputConfig: {
-      aspectRatio: "16:9",
+      aspectRatio: "9:16",
       resolution: "720p",
       fps: 30,
     },
   };
 }
 
+function deriveMode(project: ComposeProject): "slideshow" | "merge" | "caption" {
+  if (project.slides.length > 0) return "slideshow";
+  if (project.videoJobId) {
+    if (project.captionConfig?.text && !project.voiceJobId && !project.musicJobId) {
+      return "caption";
+    }
+    return "merge";
+  }
+  return "slideshow";
+}
+
 function jobToSlide(job: MediaJob): Slide {
   const thumb = job.outputs?.[0] ?? job.outputPath ?? null;
+  // W5: Use job.duration for video slides, fallback 8s
   return {
     id: genId(),
     jobId: job.id,
     thumbnail: thumb,
     jobType: job.type,
-    duration: 3,
+    duration: job.duration ?? (job.type === "video" ? 8 : 3),
     transition: "fade",
-    kenBurns: false,
+    kenBurns: job.type !== "video", // W5: Disable Ken Burns for video
+    aspectRatio: job.aspectRatio,
   };
 }
 
-// ─── Mode tabs config ─────────────────────────────────────────────────────────
-
-const MODE_TABS: { key: ComposeMode; label: string; icon: React.ReactNode }[] = [
-  { key: "slideshow", label: "Slideshow", icon: <Film className="w-4 h-4" /> },
-  { key: "merge",     label: "Merge",     icon: <Layers className="w-4 h-4" /> },
-  { key: "captions",  label: "Captions Only", icon: <Captions className="w-4 h-4" /> },
-];
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const ASPECT_RATIOS: { value: OutputConfig["aspectRatio"]; label: string }[] = [
   { value: "9:16",  label: "9:16 Reels" },
@@ -219,6 +222,8 @@ export default function Compose() {
   const [showPreview, setShowPreview] = useState(false);
   const [rendering, setRendering] = useState(false);
   const [renderJobId, setRenderJobId] = useState<string | null>(null);
+  const [renderStatus, setRenderStatus] = useState<string | null>(null);
+  const [outputUrl, setOutputUrl] = useState<string | null>(null);
   const [showClearModal, setShowClearModal] = useState(false);  // W4 Lane5
 
   // For merge/captions drop zone pickers
@@ -246,6 +251,34 @@ export default function Compose() {
     }
   }, []);
 
+  // ── Render Polling (W5) ───────────────────────────────────────────────────
+  useEffect(() => {
+    if (!renderJobId || renderStatus === "done" || renderStatus === "failed") return;
+
+    let timer: NodeJS.Timeout;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/media/compose/${renderJobId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        setRenderStatus(data.status);
+        if (data.status === "done" && data.outputPath) {
+          setOutputUrl(data.outputPath);
+          toast("✅ Rendering complete!", "success");
+        } else if (data.status === "failed") {
+          toast(`❌ Rendering failed: ${data.error || "Unknown error"}`, "error");
+        } else {
+          timer = setTimeout(poll, 3000);
+        }
+      } catch (err) {
+        console.error("[compose] Polling failed:", err);
+      }
+    };
+
+    poll();
+    return () => clearTimeout(timer);
+  }, [renderJobId, renderStatus, toast]);
+
   // Resolve URLs whenever voice/music jobIds change
   useEffect(() => {
     if (project.voiceJobId) resolveAudioUrl(project.voiceJobId);
@@ -267,8 +300,53 @@ export default function Compose() {
     } catch { /* ignore */ }
   }, [storageKey]);
 
-  // ── W3: Read "Send to Compose" from sessionStorage on mount ───────────────
+  // ── W3: Read "auto-compose-groups" from sessionStorage on mount ───────────
   useEffect(() => {
+    const rawGroups = sessionStorage.getItem("auto-compose-groups");
+    if (rawGroups) {
+      sessionStorage.removeItem("auto-compose-groups");
+      try {
+        const groups = JSON.parse(rawGroups);
+        if (groups.length > 0) {
+          const first = groups[0];
+          const slides = (first.slideJobIds || []).map((jobId: string, i: number) => ({
+            id: genId(),
+            jobId,
+            thumbnail: null,
+            duration: first.template?.slides?.[i]?.duration ?? 3,
+            transition: first.template?.slides?.[i]?.transition ?? "fade",
+            kenBurns: first.template?.slides?.[i]?.kenBurns ?? false,
+          }));
+
+          const newProject: ComposeProject = {
+            ...defaultProject(),
+            title: first.title || "Auto-Composed",
+            slides,
+            voiceJobId: first.voiceJobId || undefined,
+            captionConfig: first.captionText ? {
+              ...DEFAULT_CAPTION_CONFIG,
+              text: first.captionText,
+              style: first.template?.captions?.style ?? "bold-outline",
+              timing: first.template?.captions?.timing ?? "word",
+              position: first.template?.captions?.position ?? "bottom",
+            } : undefined,
+            outputConfig: {
+              aspectRatio: first.template?.aspectRatio ?? "9:16",
+              resolution: "1080p",
+              fps: 30,
+            },
+          };
+          setProject(newProject);
+          saveProject(newProject);
+          toast(`Loaded "${first.title}" — ${slides.length} slides ready.`, "success");
+          return;
+        }
+      } catch (err) {
+        console.error("[compose] Failed to parse auto-compose-groups", err);
+      }
+    }
+
+    // Existing "Send to Compose" logic
     try {
       const raw = sessionStorage.getItem("compose-send-item");
       if (!raw) return;
@@ -313,19 +391,63 @@ export default function Compose() {
   // ── Slide operations ──────────────────────────────────────────────────────
 
   function addSlideFromJob(job: MediaJob) {
+    if (job.type === "voice" || job.type === "music") {
+      toast("Voice and music jobs cannot be used as slides. Use them as audio tracks instead.", "warning");
+      setPickerTarget(null);
+      return;
+    }
     const slide = jobToSlide(job);
-    const next = { ...project, slides: [...project.slides, slide] };
+    
+    // W5: Match aspect ratio on first slide
+    let nextOutputConfig = project.outputConfig;
+    if (project.slides.length === 0 && job.aspectRatio) {
+      const ar = job.aspectRatio.replace(":", "x") === "9x16" ? "9:16" : 
+                 job.aspectRatio.replace(":", "x") === "16x9" ? "16:9" : 
+                 job.aspectRatio.replace(":", "x") === "1x1" ? "1:1" : 
+                 job.aspectRatio.replace(":", "x") === "4x5" ? "4:5" : null;
+      if (ar && ar !== project.outputConfig.aspectRatio) {
+        nextOutputConfig = { ...project.outputConfig, aspectRatio: ar as any };
+        toast(`Composition aspect ratio matched to first slide (${ar}).`, "info");
+      }
+    } else if (project.slides.length > 0 && job.aspectRatio) {
+      // Warning for mismatch
+      const projAR = project.outputConfig.aspectRatio;
+      const jobAR = job.aspectRatio.replace(":", "x") === "9x16" ? "9:16" : 
+                    job.aspectRatio.replace(":", "x") === "16x9" ? "16:9" : 
+                    job.aspectRatio.replace(":", "x") === "1x1" ? "1:1" : 
+                    job.aspectRatio.replace(":", "x") === "4x5" ? "4:5" : null;
+      if (jobAR && jobAR !== projAR) {
+        toast(`Mismatch: This media is ${jobAR} but your composition is ${projAR}.`, "warning");
+      }
+    }
+
+    const next = { ...project, slides: [...project.slides, slide], outputConfig: nextOutputConfig };
     setProject(next);
     saveProject(next);
     setPickerTarget(null);
-    toast(`Added slide from ${job.type} job.`, "success");
+    toast("Slide added.", "success");
   }
 
   function handleMediaSelect(job: MediaJob) {
     // Explicit picker target always wins
     if (pickerTarget === "voice") {
-      patch({ voiceJobId: job.id });
-      toast("Voiceover selected.", "success");
+      // W2: Voice → Caption Auto-Fill
+      const voiceText = job.text || job.prompt || "";
+      const shouldFill = voiceText && (!project.captionConfig?.text || project.captionConfig.text.trim() === "");
+      
+      patch({ 
+        voiceJobId: job.id,
+        ...(shouldFill ? {
+          captionConfig: {
+            ...(project.captionConfig || DEFAULT_CAPTION_CONFIG),
+            text: voiceText,
+            style: "bold-outline",
+            timing: "word",
+          }
+        } : {})
+      });
+      
+      toast(shouldFill ? "Voiceover added. Captions auto-filled from narration text." : "Voiceover selected.", "success");
       setPickerTarget(null);
     } else if (pickerTarget === "video") {
       patch({ videoJobId: job.id });
@@ -405,13 +527,14 @@ export default function Compose() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   async function handleRender() {
-    // W6/CHECK-012: Validate merge mode has at least one audio track
-    if (project.mode === "merge" && !project.voiceJobId && !project.musicJobId) {
+    const currentMode = deriveMode(project);
+    
+    // Validate required fields client-side
+    if (currentMode === "merge" && !project.voiceJobId && !project.musicJobId) {
       toast("Merge mode requires at least one audio track (voiceover or music).", "warning");
       return;
     }
-    // W6/CHECK-013: Validate captions mode has caption text
-    if (project.mode === "captions" && (!project.captionConfig?.text || !project.captionConfig.text.trim())) {
+    if (currentMode === "caption" && (!project.captionConfig?.text || !project.captionConfig.text.trim())) {
       toast("Captions mode requires caption text. Add text in the captions section.", "warning");
       return;
     }
@@ -421,9 +544,8 @@ export default function Compose() {
 
     // Build the request body following the ComposeRequest API spec in editor.md
     const body: Record<string, unknown> = {
-      // W1/CHECK-010: include apiKey so compose endpoint works when server env var is absent
       apiKey: import.meta.env.VITE_GEMINI_API_KEY || undefined,
-      type: project.mode === "captions" ? "caption" : project.mode,
+      type: currentMode,
       output: {
         aspectRatio: project.outputConfig.aspectRatio,
         resolution: project.outputConfig.resolution,
@@ -452,9 +574,10 @@ export default function Compose() {
       });
     }
 
-    if (project.mode === "slideshow") {
+    if (currentMode === "slideshow") {
       body.slides = project.slides.map((s) => ({
         jobId: s.jobId,
+        jobType: s.jobType,
         duration: s.duration,
         transition: s.transition,
         kenBurns: s.kenBurns,
@@ -462,7 +585,7 @@ export default function Compose() {
         textOverlay: s.textOverlay,
       }));
       if (audioTracks.length > 0) body.audioTracks = audioTracks;
-    } else if (project.mode === "merge") {
+    } else if (currentMode === "merge") {
       body.videoJobId = project.videoJobId;
       if (audioTracks.length > 0) body.audioTracks = audioTracks;
       
@@ -491,6 +614,7 @@ export default function Compose() {
         color: project.captionConfig.color,
         position: project.captionConfig.position,
         timing: project.captionConfig.timing, // W3: sentence vs word timing
+        animation: (project.captionConfig as any).animation,
       };
     }
 
@@ -513,7 +637,9 @@ export default function Compose() {
 
       const data = await res.json();
       setRenderJobId(data.composeId ?? data.jobId ?? "unknown");
-      toast("🎬 Render started! Check the Library when done.", "success");
+      setRenderStatus("processing");
+      setOutputUrl(null);
+      toast("🎬 Render started!", "success");
     } catch (err: any) {
       toast(err?.message || "Compose render failed — check server logs.", "error");
     } finally {
@@ -592,515 +718,258 @@ export default function Compose() {
             <RotateCcw className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Start Fresh</span>
           </button>
-
-          {/* Mode tabs */}
-          <div className="flex border border-zinc-800 rounded-xl overflow-hidden bg-zinc-900 shrink-0">
-            {MODE_TABS.map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => patch({ mode: tab.key })}
-                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium transition-colors ${
-                  project.mode === tab.key
-                    ? "bg-indigo-600 text-white"
-                    : "text-zinc-400 hover:text-white hover:bg-zinc-800"
-                }`}
-              >
-                {tab.icon}
-                <span className="hidden sm:inline">{tab.label}</span>
-              </button>
-            ))}
-          </div>
         </div>
 
         {/* Scrollable editor */}
         <div className="flex-1 overflow-y-auto p-4 space-y-5">
-          {/* ── SLIDESHOW mode ──────────────────────────────────────────── */}
-          {project.mode === "slideshow" && (
-            <>
-              {/* Slide timeline */}
-              <section className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4">
-                <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
-                  <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-                    <Film className="w-4 h-4 text-indigo-400" />
-                    Slide Storyboard
-                  </h2>
-                  {project.slides.length > 1 && (
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {/* Set All Durations */}
-                      <div className="flex items-center gap-1">
-                        <span className="text-[10px] text-zinc-600">All:</span>
-                        {[2, 3, 5].map((d) => (
-                          <button
-                            key={d}
-                            onClick={() => setAllDurations(d)}
-                            className="text-[10px] px-1.5 py-0.5 rounded border border-zinc-700 text-zinc-500 hover:text-white hover:border-zinc-500 transition-colors"
-                            title={`Set all slides to ${d}s`}
-                          >
-                            {d}s
-                          </button>
-                        ))}
-                      </div>
-                      {/* Set All Transitions */}
-                      <select
-                        onChange={(e) => e.target.value && setAllTransitions(e.target.value)}
-                        defaultValue=""
-                        className="text-[10px] bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-zinc-500 hover:text-white cursor-pointer focus:outline-none"
-                        title="Apply one transition to all slides"
-                      >
-                        <option value="" disabled>All transitions…</option>
-                        <option value="fade">Fade</option>
-                        <option value="fadeblack">Fade Black</option>
-                        <option value="dissolve">Dissolve</option>
-                        <option value="slideright">Slide Right</option>
-                        <option value="slideleft">Slide Left</option>
-                        <option value="slideup">Slide Up</option>
-                        <option value="smoothleft">Smooth Left</option>
-                        <option value="wiperight">Wipe Right</option>
-                      </select>
+          {/* ── W4: Smart Empty State ───────────────────────────────────── */}
+          {project.slides.length === 0 && !project.videoJobId && !project.voiceJobId && !project.musicJobId && (
+            <div className="flex flex-col items-center justify-center py-12 px-4">
+              <div className="text-center mb-10">
+                <h2 className="text-2xl font-bold text-white mb-2">What do you want to make?</h2>
+                <p className="text-zinc-400 max-w-md mx-auto">
+                  Select a quick-start template or add media from your library to begin.
+                </p>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full max-w-4xl">
+                {[
+                  {
+                    id: "short-form",
+                    title: "Short-Form Video",
+                    desc: "Slide montages for Reels/TikTok",
+                    icon: <Film className="w-6 h-6 text-indigo-400" />,
+                    onClick: () => {
+                      patch({ outputConfig: { ...project.outputConfig, aspectRatio: "9:16" } });
+                      setPickerTarget("slide");
+                    }
+                  },
+                  {
+                    id: "video-voice",
+                    title: "Video + Voice",
+                    desc: "Narration over a video clip",
+                    icon: <Mic className="w-6 h-6 text-amber-400" />,
+                    onClick: () => {
+                      patch({ 
+                        outputConfig: { ...project.outputConfig, aspectRatio: "9:16" },
+                        captionConfig: { ...DEFAULT_CAPTION_CONFIG, style: "bold-outline", timing: "word" }
+                      });
+                      setPickerTarget("video");
+                    }
+                  },
+                  {
+                    id: "add-captions",
+                    title: "Add Captions",
+                    desc: "Burn subtitles onto a video",
+                    icon: <Captions className="w-6 h-6 text-emerald-400" />,
+                    onClick: () => {
+                      patch({ 
+                        outputConfig: { ...project.outputConfig, aspectRatio: "9:16" },
+                        captionConfig: { ...DEFAULT_CAPTION_CONFIG, style: "clean", timing: "sentence" }
+                      });
+                      setPickerTarget("video");
+                    }
+                  }
+                ].map(card => (
+                  <button
+                    key={card.id}
+                    onClick={card.onClick}
+                    className="flex flex-col items-start p-6 text-left bg-zinc-900 border border-zinc-800 rounded-2xl hover:border-indigo-500/50 hover:bg-zinc-800/50 transition-all group"
+                  >
+                    <div className="p-3 rounded-xl bg-zinc-950 mb-4 group-hover:scale-110 transition-transform">
+                      {card.icon}
                     </div>
-                  )}
-                  {/* W3: Duration warning */}
-                  {(() => {
-                    const slideTotalDur = project.slides.reduce((s, sl) => s + sl.duration, 0);
-                    const voiceDur = project.voiceDuration;
-                    const mismatch = voiceDur !== undefined && Math.abs(slideTotalDur - voiceDur) > 2;
-                    return (
-                      <div className="flex items-center gap-2 ml-auto">
-                        {mismatch && (
-                          <div
-                            className="flex items-center gap-1 text-amber-400"
-                            title={`Slides: ${slideTotalDur.toFixed(1)}s | Voice: ${voiceDur!.toFixed(1)}s — mismatch of ${Math.abs(slideTotalDur - voiceDur!).toFixed(1)}s. Adjust slide durations or add more slides.`}
-                          >
-                            <AlertTriangle className="w-3.5 h-3.5" />
-                            <span className="text-[10px] hidden sm:inline">
-                              {slideTotalDur.toFixed(1)}s slides · {voiceDur!.toFixed(1)}s voice
-                            </span>
-                          </div>
-                        )}
-                        <span className="text-xs text-zinc-500">
-                          {project.slides.length} slide{project.slides.length !== 1 ? "s" : ""} ·{" "}
-                          {slideTotalDur.toFixed(1)}s
-                        </span>
-                      </div>
-                    );
-                  })()}
-                </div>
-
-                {/* ── Visual Track (Slides) ─────────────────────────────── */}
-                <div className="relative">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <Film className="w-3 h-3 text-indigo-400" />
-                    <span className="text-[10px] uppercase tracking-wider text-zinc-600 font-medium">Video Track</span>
-                  </div>
-                  <SlideTimeline
-                    slides={project.slides}
-                    onReorder={reorderSlides}
-                    onUpdateSlide={updateSlide}
-                    onDeleteSlide={deleteSlide}
-                    onDuplicateSlide={duplicateSlide}
-                    onAddSlide={() => setPickerTarget("slide")}
-                  />
-                </div>
-
-                {/* ── Audio Track: Voiceover ─────────────────────────────── */}
-                <div className="mt-3 pt-3 border-t border-zinc-800/60">
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <Mic className="w-3 h-3 text-amber-400" />
-                    <span className="text-[10px] uppercase tracking-wider text-zinc-600 font-medium">Voiceover Track</span>
-                  </div>
-                  {project.voiceJobId ? (
-                    <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl px-3 py-2 space-y-2">
-                      <div className="flex items-center gap-3">
-                        <Mic className="w-4 h-4 text-amber-400 shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          {audioUrls[project.voiceJobId] ? (
-                            <audio
-                              controls
-                              src={audioUrls[project.voiceJobId]}
-                              className="w-full h-7"
-                              style={{ colorScheme: "dark" }}
-                              onLoadedMetadata={(e) => {
-                                const dur = (e.target as HTMLAudioElement).duration;
-                                if (isFinite(dur)) patch({ voiceDuration: dur });
-                              }}
-                            />
-                          ) : (
-                            <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
-                              <RefreshCw className="w-3 h-3 animate-spin" />
-                              Loading audio…
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className="text-[10px] text-zinc-500">Vol</span>
-                          <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.05"
-                            value={project.voiceVolume ?? 1}
-                            onChange={(e) => patch({ voiceVolume: parseFloat(e.target.value) })}
-                            className="w-16 h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
-                          />
-                          <span className="text-[10px] text-zinc-400 w-7 text-right">
-                            {Math.round((project.voiceVolume ?? 1) * 100)}%
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => setPickerTarget("voice")}
-                          className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-zinc-600"
-                        >
-                          Swap
-                        </button>
-                        <button
-                          onClick={() => patch({ voiceJobId: undefined, voiceDuration: undefined })}
-                          className="text-[10px] text-zinc-500 hover:text-red-400 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-red-500/40"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                      {/* W5: Voice fade controls */}
-                      <div className="flex items-center gap-3 pl-7 text-[10px] text-zinc-500">
-                        <span>Fade:</span>
-                        <label className="flex items-center gap-1">
-                          In
-                          <input
-                            type="number"
-                            min={0} max={10} step={0.5}
-                            value={project.voiceFadeIn ?? 0}
-                            onChange={(e) => patch({ voiceFadeIn: parseFloat(e.target.value) || 0 })}
-                            className="w-12 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-white text-[10px] focus:outline-none focus:ring-1 focus:ring-amber-500/50"
-                          />
-                          s
-                        </label>
-                        <label className="flex items-center gap-1">
-                          Out
-                          <input
-                            type="number"
-                            min={0} max={10} step={0.5}
-                            value={project.voiceFadeOut ?? 0}
-                            onChange={(e) => patch({ voiceFadeOut: parseFloat(e.target.value) || 0 })}
-                            className="w-12 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-white text-[10px] focus:outline-none focus:ring-1 focus:ring-amber-500/50"
-                          />
-                          s
-                        </label>
-                      </div>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setPickerTarget("voice")}
-                      className="w-full flex items-center justify-center gap-2 py-2 rounded-xl border border-dashed border-zinc-700 hover:border-amber-500/50 text-zinc-600 hover:text-amber-400 transition-all text-xs"
-                    >
-                      <Mic className="w-3.5 h-3.5" />
-                      Click to add voiceover
-                    </button>
-                  )}
-                </div>
-
-                {/* ── Audio Track: Music ─────────────────────────────────── */}
-                <div className="mt-2">
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <Music className="w-3 h-3 text-emerald-400" />
-                    <span className="text-[10px] uppercase tracking-wider text-zinc-600 font-medium">Music Track</span>
-                  </div>
-                  {project.musicJobId ? (
-                    <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl px-3 py-2 space-y-2">
-                      <div className="flex items-center gap-3">
-                        <Music className="w-4 h-4 text-emerald-400 shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          {audioUrls[project.musicJobId] ? (
-                            <audio
-                              controls
-                              src={audioUrls[project.musicJobId]}
-                              className="w-full h-7"
-                              style={{ colorScheme: "dark" }}
-                            />
-                          ) : (
-                            <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
-                              <RefreshCw className="w-3 h-3 animate-spin" />
-                              Loading audio…
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className="text-[10px] text-zinc-500">Vol</span>
-                          <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.05"
-                            value={project.musicVolume ?? 0.15}
-                            onChange={(e) => patch({ musicVolume: parseFloat(e.target.value) })}
-                            className="w-16 h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-                          />
-                          <span className="text-[10px] text-zinc-400 w-7 text-right">
-                            {Math.round((project.musicVolume ?? 0.15) * 100)}%
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => setPickerTarget("music")}
-                          className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-zinc-600"
-                        >
-                          Swap
-                        </button>
-                        <button
-                          onClick={() => patch({ musicJobId: undefined })}
-                          className="text-[10px] text-zinc-500 hover:text-red-400 transition-colors px-1.5 py-0.5 rounded border border-zinc-800 hover:border-red-500/40"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                      {/* W5: Music fade controls */}
-                      <div className="flex items-center gap-3 pl-7 text-[10px] text-zinc-500">
-                        <span>Fade:</span>
-                        <label className="flex items-center gap-1">
-                          In
-                          <input
-                            type="number"
-                            min={0} max={10} step={0.5}
-                            value={project.musicFadeIn ?? 0}
-                            onChange={(e) => patch({ musicFadeIn: parseFloat(e.target.value) || 0 })}
-                            className="w-12 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-white text-[10px] focus:outline-none focus:ring-1 focus:ring-emerald-500/50"
-                          />
-                          s
-                        </label>
-                        <label className="flex items-center gap-1">
-                          Out
-                          <input
-                            type="number"
-                            min={0} max={10} step={0.5}
-                            value={project.musicFadeOut ?? 0}
-                            onChange={(e) => patch({ musicFadeOut: parseFloat(e.target.value) || 0 })}
-                            className="w-12 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-white text-[10px] focus:outline-none focus:ring-1 focus:ring-emerald-500/50"
-                          />
-                          s
-                        </label>
-                      </div>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setPickerTarget("music")}
-                      className="w-full flex items-center justify-center gap-2 py-2 rounded-xl border border-dashed border-zinc-700 hover:border-emerald-500/50 text-zinc-600 hover:text-emerald-400 transition-all text-xs"
-                    >
-                      <Music className="w-3.5 h-3.5" />
-                      Click to add background music
-                    </button>
-                  )}
-                </div>
-              </section>
-
-              {/* Caption editor */}
-              <CaptionEditor
-                value={project.captionConfig ?? DEFAULT_CAPTION_CONFIG}
-                onChange={(cfg) => patch({ captionConfig: cfg })}
-              />
-            </>
+                    <h3 className="text-base font-semibold text-white mb-1">{card.title}</h3>
+                    <p className="text-xs text-zinc-500 leading-relaxed">{card.desc}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
 
-          {/* ── MERGE mode ──────────────────────────────────────────────── */}
-          {project.mode === "merge" && (
-            <section className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 space-y-4">
-              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-                <Layers className="w-4 h-4 text-indigo-400" />
-                Merge Video + Audio
-              </h2>
-              <p className="text-xs text-zinc-500">
-                Combine a generated video clip with a voiceover / audio track using FFmpeg.
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <DropZone
-                  label="Video Clip"
-                  description="Select a video from your library"
-                  icon={<VideoIcon className="w-8 h-8" />}
-                  selectedJobId={project.videoJobId}
-                  onSelect={() => setPickerTarget("video")}
-                />
-                <div className="space-y-4">
-                  <DropZone
-                    label="Select Voiceover"
-                    description="Optional voice track"
-                    icon={<Mic className="w-8 h-8" />}
-                    selectedJobId={project.voiceJobId}
-                    onSelect={() => setPickerTarget("voice")}
-                  />
-                  {/* W4: Swap button for merge mode voiceover */}
-                  {project.voiceJobId && (
-                    <div className="flex items-center gap-2 -mt-2">
-                      <button
-                        onClick={() => setPickerTarget("voice")}
-                        className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
-                      >
-                        Swap
-                      </button>
-                      <button
-                        onClick={() => patch({ voiceJobId: undefined })}
-                        className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
-                      >
-                        Remove
-                      </button>
+          {/* ── Adaptive visual tracks ────────────────────────────────────── */}
+          
+          {/* Slide timeline section - shows if slides exist, or if user is adding first slides */}
+          {(project.slides.length > 0 || (pickerTarget === "slide" && !project.videoJobId)) && (
+            <section className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4">
+              <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+                <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                  <Film className="w-4 h-4 text-indigo-400" />
+                  Slide Storyboard
+                </h2>
+                {/* ... existing header logic ... */}
+                {project.slides.length > 1 && (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="flex items-center gap-1">
+                      <span className="text-[10px] text-zinc-600">All:</span>
+                      {[2, 3, 5].map((d) => (
+                        <button
+                          key={d}
+                          onClick={() => setAllDurations(d)}
+                          className="text-[10px] px-1.5 py-0.5 rounded border border-zinc-700 text-zinc-500 hover:text-white hover:border-zinc-500 transition-colors"
+                        >
+                          {d}s
+                        </button>
+                      ))}
                     </div>
-                  )}
-                  {/* W2: Audio preview in merge mode */}
-                  {project.voiceJobId && audioUrls[project.voiceJobId] && (
-                    <audio
-                      controls
-                      src={audioUrls[project.voiceJobId]}
-                      className="w-full h-8"
-                      style={{ colorScheme: "dark" }}
-                    />
-                  )}
-                  {project.voiceJobId && (
-                    <div className="flex items-center gap-3 mt-2">
-                       <span className="text-xs text-zinc-400 w-10">Vol:</span>
-                       <input
-                         type="range"
-                         min="0"
-                         max="1"
-                         step="0.05"
-                         value={project.voiceVolume ?? 1}
-                         onChange={(e) => patch({ voiceVolume: parseFloat(e.target.value) })}
-                         className="flex-1 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-                       />
-                       <span className="text-xs text-zinc-400 w-8 text-right">
-                         {Math.round((project.voiceVolume ?? 1) * 100)}%
-                       </span>
+                    <select
+                      onChange={(e) => e.target.value && setAllTransitions(e.target.value)}
+                      defaultValue=""
+                      className="text-[10px] bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-zinc-500 hover:text-white cursor-pointer focus:outline-none"
+                    >
+                      <option value="" disabled>All transitions…</option>
+                      <option value="fade">Fade</option>
+                      <option value="fadeblack">Fade Black</option>
+                      <option value="dissolve">Dissolve</option>
+                      <option value="slideright">Slide Right</option>
+                    </select>
+                  </div>
+                )}
+                {/* Duration warning */}
+                {(() => {
+                  const slideTotalDur = project.slides.reduce((s, sl) => s + sl.duration, 0);
+                  const voiceDur = project.voiceDuration;
+                  const mismatch = voiceDur !== undefined && Math.abs(slideTotalDur - voiceDur) > 2;
+                  return (
+                    <div className="flex items-center gap-2 ml-auto">
+                      {mismatch && (
+                        <div className="flex items-center gap-1 text-amber-400" title={`Mismatch: ${Math.abs(slideTotalDur - voiceDur!).toFixed(1)}s`}>
+                          <AlertTriangle className="w-3.5 h-3.5" />
+                          <span className="text-[10px] hidden sm:inline">{slideTotalDur.toFixed(1)}s slides · {voiceDur!.toFixed(1)}s voice</span>
+                        </div>
+                      )}
+                      <span className="text-xs text-zinc-500">{project.slides.length} slides · {slideTotalDur.toFixed(1)}s</span>
                     </div>
-                  )}
-
-                  <DropZone
-                    label="Select Music"
-                    description="Optional background music"
-                    icon={<Music className="w-8 h-8" />}
-                    selectedJobId={project.musicJobId}
-                    onSelect={() => setPickerTarget("music")}
-                  />
-                  {/* W4: Swap button for merge mode music */}
-                  {project.musicJobId && (
-                    <div className="flex items-center gap-2 -mt-2">
-                      <button
-                        onClick={() => setPickerTarget("music")}
-                        className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
-                      >
-                        Swap
-                      </button>
-                      <button
-                        onClick={() => patch({ musicJobId: undefined })}
-                        className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  )}
-                  {/* W2: Audio preview in merge mode */}
-                  {project.musicJobId && audioUrls[project.musicJobId] && (
-                    <audio
-                      controls
-                      src={audioUrls[project.musicJobId]}
-                      className="w-full h-8"
-                      style={{ colorScheme: "dark" }}
-                    />
-                  )}
-                  {project.musicJobId && (
-                    <div className="flex items-center gap-3 mt-2">
-                       <span className="text-xs text-zinc-400 w-10">Vol:</span>
-                       <input
-                         type="range"
-                         min="0"
-                         max="1"
-                         step="0.05"
-                         value={project.musicVolume ?? 0.15}
-                         onChange={(e) => patch({ musicVolume: parseFloat(e.target.value) })}
-                         className="flex-1 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-                       />
-                       <span className="text-xs text-zinc-400 w-8 text-right">
-                         {Math.round((project.musicVolume ?? 0.15) * 100)}%
-                       </span>
-                    </div>
-                  )}
-                </div>
+                  );
+                })()}
               </div>
 
-              {/* Trim Controls */}
-              {project.videoJobId && (
-                <div className="pt-4 border-t border-zinc-800">
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                      Trim Source Video
-                    </h3>
-                    {(project.trimPoints?.start !== undefined || project.trimPoints?.end !== undefined) && (
-                      <button
-                        onClick={() => patch({ trimPoints: undefined })}
-                        className="text-xs text-red-400 hover:text-red-300 transition-colors font-medium"
-                      >
-                        Clear Trim
-                      </button>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-medium text-zinc-400 mb-1">Start Time (sec)</label>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.1"
-                        value={project.trimPoints?.start ?? ""}
-                        onChange={(e) => {
-                          const val = parseFloat(e.target.value);
-                          patch({
-                            trimPoints: { ...project.trimPoints, start: isNaN(val) ? undefined : val },
-                          });
-                        }}
-                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                        placeholder="e.g. 2.5"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-zinc-400 mb-1">End Time (sec)</label>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.1"
-                        value={project.trimPoints?.end ?? ""}
-                        onChange={(e) => {
-                          const val = parseFloat(e.target.value);
-                          patch({
-                            trimPoints: { ...project.trimPoints, end: isNaN(val) ? undefined : val },
-                          });
-                        }}
-                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                        placeholder="e.g. 10.0"
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
+              <SlideTimeline
+                slides={project.slides}
+                onReorder={reorderSlides}
+                onUpdateSlide={updateSlide}
+                onDeleteSlide={deleteSlide}
+                onDuplicateSlide={duplicateSlide}
+                onAddSlide={() => setPickerTarget("slide")}
+                targetAspectRatio={project.outputConfig.aspectRatio}
+              />
             </section>
           )}
 
-          {/* ── CAPTIONS mode ────────────────────────────────────────────── */}
-          {project.mode === "captions" && (
-            <>
-              <section className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 space-y-4">
-                <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-                  <VideoIcon className="w-4 h-4 text-indigo-400" />
-                  Source Video
-                </h2>
+          {/* Merge video section - shows if video selected and no slides, or explicitly picking video */}
+          {project.videoJobId && project.slides.length === 0 && (
+            <section className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 space-y-4">
+              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                <VideoIcon className="w-4 h-4 text-indigo-400" />
+                Video Source
+              </h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <DropZone
                   label="Video Clip"
-                  description="Select a video to burn captions onto"
+                  description="Primary video content"
                   icon={<VideoIcon className="w-8 h-8" />}
                   selectedJobId={project.videoJobId}
                   onSelect={() => setPickerTarget("video")}
                 />
-              </section>
-              <CaptionEditor
-                value={project.captionConfig ?? DEFAULT_CAPTION_CONFIG}
-                onChange={(cfg) => patch({ captionConfig: cfg })}
-              />
-            </>
+                
+                {/* Trim controls if video exists */}
+                {project.videoJobId && (
+                  <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-3 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-white">Trim Points</span>
+                      <button onClick={() => patch({ trimPoints: undefined })} className="text-[10px] text-red-400">Clear</button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="number" step="0.1" placeholder="Start"
+                        value={project.trimPoints?.start ?? ""}
+                        onChange={(e) => patch({ trimPoints: { ...project.trimPoints, start: parseFloat(e.target.value) || undefined } })}
+                        className="bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-xs text-white"
+                      />
+                      <input
+                        type="number" step="0.1" placeholder="End"
+                        value={project.trimPoints?.end ?? ""}
+                        onChange={(e) => patch({ trimPoints: { ...project.trimPoints, end: parseFloat(e.target.value) || undefined } })}
+                        className="bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-xs text-white"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </section>
           )}
 
-          {/* ── SHARED: Watermark Section ─────────────────────────────────── */}
+          {/* Audio Tracks - shows if any audio exists or if user picking audio */}
+          {(project.voiceJobId || project.musicJobId || pickerTarget === "voice" || pickerTarget === "music" || project.slides.length > 0 || project.videoJobId) && (
+            <section className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                  <Mic className="w-4 h-4 text-amber-400" />
+                  Audio Tracks
+                </h2>
+              </div>
+              
+              <div className="space-y-3">
+                {/* Voiceover Track */}
+                <div className="bg-zinc-900/40 border border-zinc-800/60 rounded-xl p-3">
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <Mic className="w-3 h-3 text-amber-400" />
+                    <span className="text-[10px] uppercase font-bold text-zinc-500">Voiceover</span>
+                  </div>
+                  {project.voiceJobId ? (
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1">
+                        {audioUrls[project.voiceJobId] ? (
+                          <audio controls src={audioUrls[project.voiceJobId]} className="w-full h-7" onLoadedMetadata={(e) => patch({ voiceDuration: (e.target as HTMLAudioElement).duration })} />
+                        ) : <div className="text-[10px] text-zinc-600">Loading audio...</div>}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <input type="range" min="0" max="1" step="0.05" value={project.voiceVolume ?? 1} onChange={(e) => patch({ voiceVolume: parseFloat(e.target.value) })} className="w-16 h-1 accent-amber-500" />
+                        <button onClick={() => setPickerTarget("voice")} className="text-[10px] text-indigo-400">Swap</button>
+                        <button onClick={() => patch({ voiceJobId: undefined, voiceDuration: undefined })} className="text-[10px] text-zinc-500">✕</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button onClick={() => setPickerTarget("voice")} className="w-full h-10 border border-dashed border-zinc-800 rounded-lg text-xs text-zinc-600 hover:text-amber-400 hover:border-amber-400/30 transition-all">Add Voiceover</button>
+                  )}
+                </div>
+
+                {/* Music Track */}
+                <div className="bg-zinc-900/40 border border-zinc-800/60 rounded-xl p-3">
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <Music className="w-3 h-3 text-emerald-400" />
+                    <span className="text-[10px] uppercase font-bold text-zinc-500">Music</span>
+                  </div>
+                  {project.musicJobId ? (
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1">
+                        {audioUrls[project.musicJobId] ? (
+                          <audio controls src={audioUrls[project.musicJobId]} className="w-full h-7" />
+                        ) : <div className="text-[10px] text-zinc-600">Loading audio...</div>}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <input type="range" min="0" max="1" step="0.05" value={project.musicVolume ?? 0.15} onChange={(e) => patch({ musicVolume: parseFloat(e.target.value) })} className="w-16 h-1 accent-emerald-500" />
+                        <button onClick={() => setPickerTarget("music")} className="text-[10px] text-indigo-400">Swap</button>
+                        <button onClick={() => patch({ musicJobId: undefined })} className="text-[10px] text-zinc-500">✕</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button onClick={() => setPickerTarget("music")} className="w-full h-10 border border-dashed border-zinc-800 rounded-lg text-xs text-zinc-600 hover:text-emerald-400 hover:border-emerald-400/30 transition-all">Add Music</button>
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* Caption Editor - shows if voiceover exists or manual captions started */}
+          {(project.voiceJobId || project.captionConfig?.text || (project.videoJobId && !project.slides.length)) && (
+            <CaptionEditor
+              value={project.captionConfig ?? DEFAULT_CAPTION_CONFIG}
+              onChange={(cfg) => patch({ captionConfig: cfg })}
+            />
+          )}
+
+          {/* Watermark Section */}
           <section className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-semibold text-white flex items-center gap-2">
@@ -1202,26 +1071,63 @@ export default function Compose() {
             )}
           </AnimatePresence>
 
-          {/* Render success banner */}
+          {/* Render status and output (W5) */}
           <AnimatePresence>
             {renderJobId && (
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
-                className="flex items-center gap-3 bg-emerald-600/10 border border-emerald-500/30 rounded-2xl px-4 py-3"
+                className={`p-4 rounded-2xl border transition-all ${
+                  renderStatus === "done" 
+                    ? "bg-emerald-600/10 border-emerald-500/30" 
+                    : renderStatus === "failed"
+                    ? "bg-red-600/10 border-red-500/30"
+                    : "bg-indigo-600/10 border-indigo-500/30"
+                }`}
               >
-                <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                <p className="text-sm text-emerald-200">
-                  Render started! Job ID: <code className="font-mono text-xs">{renderJobId}</code>
-                  . Check the Library for output.
-                </p>
+                <div className="flex items-center gap-3 mb-3">
+                  {renderStatus === "done" ? (
+                    <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                  ) : renderStatus === "failed" ? (
+                    <AlertTriangle className="w-5 h-5 text-red-400 shrink-0" />
+                  ) : (
+                    <Loader2 className="w-5 h-5 text-indigo-400 animate-spin shrink-0" />
+                  )}
+                  <div className="flex-1">
+                    <p className={`text-sm font-semibold ${
+                      renderStatus === "done" ? "text-emerald-200" : renderStatus === "failed" ? "text-red-200" : "text-indigo-200"
+                    }`}>
+                      {renderStatus === "done" ? "Rendering Complete!" : renderStatus === "failed" ? "Rendering Failed" : "Rendering in Progress..."}
+                    </p>
+                    <p className="text-[10px] opacity-60 font-mono">Job ID: {renderJobId}</p>
+                  </div>
+                  {renderStatus === "done" && (
+                    <button 
+                      onClick={() => setRenderJobId(null)}
+                      className="text-xs text-zinc-500 hover:text-white"
+                    >
+                      Dismiss
+                    </button>
+                  )}
+                </div>
+
+                {renderStatus === "done" && outputUrl && (
+                  <div className="mt-4 rounded-xl overflow-hidden border border-zinc-800 bg-black aspect-video relative group">
+                    <video 
+                      src={outputUrl} 
+                      controls 
+                      className="w-full h-full"
+                    />
+                    <div className="absolute inset-0 pointer-events-none border border-white/5 rounded-xl shadow-inner" />
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
 
           {/* Preview section */}
-          {project.mode === "slideshow" && project.slides.length > 0 && (
+          {deriveMode(project) === "slideshow" && project.slides.length > 0 && (
             <div>
               <button
                 onClick={() => setShowPreview((p) => !p)}
@@ -1287,21 +1193,19 @@ export default function Compose() {
 
           <div className="ml-auto flex items-center gap-2">
             {/* Preview button */}
-            {project.mode === "slideshow" && (
-              <button
-                onClick={() => setShowPreview((p) => !p)}
-                disabled={project.slides.length === 0}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                <Play className="w-4 h-4" />
-                Preview
-              </button>
-            )}
+            <button
+              onClick={() => setShowPreview((p) => !p)}
+              disabled={project.slides.length === 0 && !project.videoJobId}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Play className="w-4 h-4" />
+              Preview
+            </button>
 
             {/* Render button */}
             <button
               onClick={handleRender}
-              disabled={rendering || (project.mode === "slideshow" && project.slides.length === 0)}
+              disabled={rendering || (project.slides.length === 0 && !project.videoJobId)}
               className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors shadow-lg shadow-indigo-500/20"
             >
               {rendering ? (

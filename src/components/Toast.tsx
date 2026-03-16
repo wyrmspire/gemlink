@@ -53,7 +53,20 @@ function ToastItem({ toast }: { toast: Toast }) {
       role="alert"
     >
       <Icon className={`w-5 h-5 mt-0.5 shrink-0 ${cfg.iconColor}`} />
-      <p className={`text-sm flex-1 leading-relaxed ${cfg.text}`}>{toast.message}</p>
+      <div className="flex-1">
+        <p className={`text-sm leading-relaxed ${cfg.text}`}>{toast.message}</p>
+        {toast.action && (
+          <button
+            onClick={() => {
+              toast.action?.onClick();
+              dismiss(toast.id);
+            }}
+            className="mt-2 text-xs font-bold uppercase tracking-wider text-white hover:underline"
+          >
+            {toast.action.label}
+          </button>
+        )}
+      </div>
       <button
         onClick={() => dismiss(toast.id)}
         aria-label="Dismiss notification"

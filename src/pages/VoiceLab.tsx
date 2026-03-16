@@ -1,9 +1,11 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useBrand } from "../context/BrandContext";
 import { useApiKey } from "../components/ApiKeyGuard";
-import { motion } from "motion/react";
+import { useToast } from "../context/ToastContext";
+import { motion, AnimatePresence } from "motion/react";
+import { useNavigate } from "react-router-dom";
 import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
-import { Loader2, Mic, Play, Square, CheckCircle2, Clock, AlertCircle } from "lucide-react";
+import { Loader2, Mic, Play, Square, CheckCircle2, Clock, AlertCircle, History, Download, Send, Sparkles } from "lucide-react";
 
 interface VoiceJob {
   id: string;
@@ -13,21 +15,88 @@ interface VoiceJob {
   error?: string;
 }
 
+interface HistoryItem {
+  id: string;
+  type: string;
+  prompt: string;
+  text?: string;
+  outputs: string[];
+  createdAt: string;
+}
+
+const VOICE_PRESETS = [
+  { label: "Professional", prefix: "Professional and clear corporate tone" },
+  { label: "Casual", prefix: "Casual, friendly, everyday conversational tone" },
+  { label: "Excited", prefix: "Excited, high-energy, and enthusiastic tone" },
+  { label: "Soft", prefix: "Soft, calm, and soothing whisper-like tone" },
+  { label: "Narration", prefix: "Steady, rhythmical storytelling narration tone" },
+];
+
 export default function VoiceLab() {
   const brand = useBrand();
   const { resetKey } = useApiKey();
+  const { toast } = useToast();
+  const navigate = useNavigate();
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadingExpand, setLoadingExpand] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [voice, setVoice] = useState("Kore");
   const [job, setJob] = useState<VoiceJob | null>(null);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [recentPrompts, setRecentPrompts] = useState<string[]>([]);
+  const [showPrompts, setShowPrompts] = useState(false);
+  const [styles, setStyles] = useState<any[]>([]);
+  const [selectedStyle, setSelectedStyle] = useState("");
 
   const [isLive, setIsLive] = useState(false);
   const [session, setSession] = useState<any>(null);
+
+  useEffect(() => {
+    fetch("/api/media/history?type=voice")
+      .then(res => res.json())
+      .then(data => setHistory(data.slice(0, 5)))
+      .catch(console.error);
+    
+    fetch("/api/agent/style-presets")
+      .then(res => res.json())
+      .then(data => setStyles(data))
+      .catch(console.error);
+
+    try {
+      const saved = localStorage.getItem("gemlink-prompts-voice");
+      if (saved) setRecentPrompts(JSON.parse(saved));
+    } catch {}
+  }, []);
+
+  const savePrompt = (p: string) => {
+    const updated = [p, ...recentPrompts.filter(x => x !== p)].slice(0, 10);
+    setRecentPrompts(updated);
+    try {
+      localStorage.setItem("gemlink-prompts-voice", JSON.stringify(updated));
+    } catch {}
+  };
   const audioContextRef = useRef<AudioContext | null>(null);
+
+  function applyStyle(styleId: string) {
+    const s = styles.find(x => x.id === styleId);
+    if (!s) {
+      setSelectedStyle("");
+      return;
+    }
+    setSelectedStyle(styleId);
+    
+    if (s.positiveAppend && !text.includes(s.positiveAppend)) {
+      setText(prev => {
+        const cleaned = prev.trim();
+        return cleaned ? `${cleaned}, ${s.positiveAppend}` : s.positiveAppend;
+      });
+    }
+  }
 
   const generateSpeech = async () => {
     if (!text) return;
+    savePrompt(text);
     setLoading(true);
     setAudioUrl(null);
     setJob(null);
@@ -53,6 +122,11 @@ export default function VoiceLab() {
       const data = await response.json();
       setJob(data);
       setAudioUrl(data.outputs?.[0] || null);
+      toast("Voice generation complete.", "success");
+      fetch("/api/media/history?type=voice")
+        .then(res => res.json())
+        .then(data => setHistory(data.slice(0, 5)))
+        .catch(console.error);
     } catch (error: any) {
       console.error(error);
       if (error?.message?.includes("PERMISSION_DENIED") || error?.message?.includes("Requested entity was not found")) {
@@ -175,7 +249,20 @@ export default function VoiceLab() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div className="space-y-6 bg-zinc-950 p-6 rounded-2xl border border-zinc-800">
-          <h2 className="text-xl font-semibold text-white">Generate Speech</h2>
+          <div className="flex justify-between items-center">
+            <h2 className="text-xl font-semibold text-white">Generate Speech</h2>
+            <div className="flex gap-1.5">
+              {VOICE_PRESETS.map((p) => (
+                <button
+                  key={p.label}
+                  onClick={() => setText(prev => p.prefix + ": " + (prev.includes(": ") ? prev.split(": ")[1] : prev))}
+                  className="px-2 py-1 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded text-[10px] text-zinc-400 hover:text-zinc-200 transition-colors"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
 
           <div>
             <label className="block text-sm font-medium text-zinc-300 mb-2">Voice</label>
@@ -192,15 +279,99 @@ export default function VoiceLab() {
             </select>
           </div>
 
+          {/* Style selector */}
           <div>
-            <label className="block text-sm font-medium text-zinc-300 mb-2">Text to Speak</label>
+            <label className="block text-sm font-medium text-zinc-300 mb-2">Style Preset</label>
+            <select
+              value={selectedStyle}
+              onChange={(e) => applyStyle(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">No Style (Default)</option>
+              {styles.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+            {selectedStyle && (
+              <p className="mt-1.5 text-[10px] text-zinc-500 italic">
+                {styles.find(x => x.id === selectedStyle)?.description}
+              </p>
+            )}
+          </div>
+
+          <div className="relative">
+            <div className="flex justify-between items-end mb-2">
+              <label className="block text-sm font-medium text-zinc-300">Text to Speak</label>
+              <div className="flex gap-3">
+                <button
+                  onClick={async () => {
+                    if (!text || loadingExpand) return;
+                    setLoadingExpand(true);
+                    try {
+                      const res = await fetch("/api/agent/expand-prompt", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          prompt: text,
+                          type: "voice",
+                          apiKey: import.meta.env.VITE_GEMINI_API_KEY
+                        })
+                      });
+                      if (!res.ok) throw new Error("Failed to enhance text");
+                      const data = await res.json();
+                      setText(data.expanded);
+                      toast("Script enhanced ✨", "success");
+                    } catch (err: any) {
+                      toast(err.message, "error");
+                    } finally {
+                      setLoadingExpand(false);
+                    }
+                  }}
+                  disabled={!text || loadingExpand}
+                  className="text-xs flex items-center gap-1 text-indigo-400 hover:text-indigo-300 transition-colors disabled:opacity-50"
+                  title="Enhance with AI"
+                >
+                  {loadingExpand ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                  Enhance
+                </button>
+                {recentPrompts.length > 0 && (
+                  <button 
+                    onClick={() => setShowPrompts(!showPrompts)} 
+                    className="text-xs flex items-center gap-1 text-indigo-400 hover:text-indigo-300 transition-colors"
+                  >
+                    <History className="w-3.5 h-3.5" /> Recent
+                  </button>
+                )}
+              </div>
+            </div>
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
               rows={4}
               className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
               placeholder="Welcome to our new product launch..."
+              onFocus={() => setShowPrompts(false)}
             />
+            <AnimatePresence>
+              {showPrompts && recentPrompts.length > 0 && (
+                <motion.div 
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="absolute z-10 w-full mt-1 top-full left-0 bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl max-h-48 overflow-y-auto"
+                >
+                  {recentPrompts.map((rp, i) => (
+                    <button
+                      key={i}
+                      onClick={() => { setText(rp); setShowPrompts(false); }}
+                      className="w-full text-left px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-700 truncate border-b border-zinc-700/50 last:border-0"
+                    >
+                      {rp}
+                    </button>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
           <button
@@ -230,8 +401,33 @@ export default function VoiceLab() {
           )}
 
           {audioUrl && (
-            <div className="mt-4 p-4 bg-zinc-900 rounded-xl border border-zinc-800">
+            <div className="mt-4 p-4 bg-zinc-900 rounded-xl border border-zinc-800 space-y-4">
               <audio src={audioUrl} controls className="w-full" />
+              <div className="flex gap-2">
+                <a
+                  href={audioUrl}
+                  download={`voiceover-${job?.id || 'gen'}.wav`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 py-2 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 border border-zinc-700"
+                >
+                  <Download className="w-4 h-4" /> Download
+                </a>
+                <button
+                  onClick={() => {
+                    sessionStorage.setItem("compose-send-item", JSON.stringify({
+                      id: job?.id || `voice-${Date.now()}`,
+                      type: "voice",
+                      url: audioUrl,
+                      prompt: text
+                    }));
+                    navigate("/compose");
+                  }}
+                  className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 border border-indigo-500"
+                >
+                  <Send className="w-4 h-4" /> Send to Compose
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -269,6 +465,56 @@ export default function VoiceLab() {
           </button>
         </div>
       </div>
+
+      {history.length > 0 && (
+        <div className="mt-12 pt-8 border-t border-zinc-800/50">
+          <h2 className="text-xl font-semibold text-white mb-6">Recent Voiceovers</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {history.map(item => (
+              <div key={item.id} className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 space-y-3 relative group">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 bg-indigo-500/10 rounded-lg">
+                      <Mic className="w-4 h-4 text-indigo-400" />
+                    </div>
+                    <span className="text-xs font-medium text-white">Generation {item.id.slice(0, 8)}</span>
+                  </div>
+                  <span className="text-[10px] text-zinc-500 uppercase tracking-wider">{new Date(item.createdAt).toLocaleDateString()}</span>
+                </div>
+                <p className="text-xs text-zinc-400 line-clamp-2 leading-relaxed">{item.prompt}</p>
+                {item.outputs?.[0] && (
+                  <div className="space-y-2">
+                    <audio src={item.outputs[0]} controls className="w-full h-8" />
+                    <div className="flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <a
+                        href={item.outputs[0]}
+                        download={`voice-${item.id}.wav`}
+                        className="flex-1 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-white rounded text-[10px] font-medium transition-colors flex items-center justify-center gap-1"
+                      >
+                        <Download className="w-3 h-3" /> Download
+                      </a>
+                      <button
+                        onClick={() => {
+                          sessionStorage.setItem("compose-send-item", JSON.stringify({
+                            id: item.id,
+                            type: "voice",
+                            url: item.outputs[0],
+                            prompt: item.prompt
+                          }));
+                          navigate("/compose");
+                        }}
+                        className="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[10px] font-medium transition-colors flex items-center justify-center gap-1"
+                      >
+                        <Send className="w-3 h-3" /> Compose
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }
